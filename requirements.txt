@@ -1,0 +1,12 @@
+# AI Research Stack — Python Dependencies
+# Install with: pip install -r requirements.txt
+# Requires Python 3.11 or 3.12 (NOT 3.14 — PyMuPDF not yet compatible)
+
+requests>=2.31.0          # HTTP client for Semantic Scholar, Unpaywall, Ollama APIs
+pymupdf>=1.24.0           # PDF text extraction (imported as 'fitz')
+python-dotenv>=1.0.1      # .env file loader for config.py
+chromadb>=0.5.0           # Local persistent vector database with ONNX embeddings
+pydantic>=2.7.0           # Data validation models used by FastAPI
+tqdm>=4.66.0              # Progress bars for PDF downloads
+fastapi>=0.110.0          # Web API framework for server.py
+uvicorn>=0.28.0           # ASGI server to run FastAPI

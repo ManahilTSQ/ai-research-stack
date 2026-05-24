@@ -1,0 +1,128 @@
+{
+    "21091121.pdf": {
+        "title": "21091121",
+        "doi": "N/A",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T16:17:06.270017"
+    },
+    "38.1.pdf": {
+        "title": "38.1",
+        "doi": "N/A",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T17:53:22.954062"
+    },
+    "cryptography-09-00017.pdf": {
+        "title": "Cryptography-09-00017",
+        "doi": "N/A",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T18:47:12.769915"
+    },
+    "European Cybersecurity and AI Framework.pdf": {
+        "title": "European Cybersecurity And Ai Framework",
+        "doi": "N/A",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T18:47:16.822849"
+    },
+    "Gen+AI+in+Financial+Cybersecurity+A+Comprehensive+Review+of+Architectures,+Algorithms,+and+Regulatory+Challenges (1).pdf": {
+        "title": "Gen+Ai+In+Financial+Cybersecurity+A+Comprehensive+Review+Of+Architectures,+Algorithms,+And+Regulatory+Challenges (1)",
+        "doi": "N/A",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T16:17:29.354672"
+    },
+    "GJCS_01_01_001.pdf": {
+        "title": "Gjcs 01 01 001",
+        "doi": "N/A",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T18:47:20.681860"
+    },
+    "WJARR-2024-2428 Harnessing the power of artificial intelligence to enhance next-generation cybersecurity.pdf": {
+        "title": "Wjarr-2024-2428 Harnessing The Power Of Artificial Intelligence To Enhance Next-Generation Cybersecurity",
+        "doi": "N/A",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T16:17:43.327550"
+    },
+    "pytorch_an_imperative_style_high-performance_deep_learning_l.pdf": {
+        "title": "PyTorch: An Imperative Style, High-Performance Deep Learning Library",
+        "doi": "N/A",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T17:38:37.412407"
+    },
+    "nnu-net_a_self-configuring_method_for_deep_learning-based_bi.pdf": {
+        "title": "nnU-Net: a self-configuring method for deep learning-based biomedical image segmentation",
+        "doi": "10.1038/s41592-020-01008-z",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T17:39:07.003418"
+    },
+    "review_of_deep_learning_concepts_cnn_architectures_challenge.pdf": {
+        "title": "Review of deep learning: concepts, CNN architectures, challenges, applications, future directions",
+        "doi": "10.1186/s40537-021-00444-8",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T17:39:19.642812"
+    },
+    "a_survey_on_deep_learning_in_medical_image_analysis.pdf": {
+        "title": "A survey on deep learning in medical image analysis",
+        "doi": "10.1016/j.media.2017.07.005",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T17:47:09.120833"
+    },
+    "reproducible_interactive_scalable_and_extensible_microbiome_.pdf": {
+        "title": "Reproducible, interactive, scalable and extensible microbiome data science using QIIME 2",
+        "doi": "10.1038/s41587-019-0209-9",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T19:23:26.206165"
+    },
+    "new_frontiers_in_information_systems_theorizing_human-gai_co.pdf": {
+        "title": "New Frontiers in Information Systems Theorizing: Human-gAI Collaboration",
+        "doi": "10.17705/1jais.00868",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T19:15:47.428475"
+    },
+    "useful_products_in_information_systems_theorizing_a_discursi.pdf": {
+        "title": "Useful Products in Information Systems Theorizing: A Discursive Formation Perspective",
+        "doi": "10.17705/1JAIS.00730",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T19:16:58.278058"
+    },
+    "is_it_changing_the_world_conceptions_of_causality_for_inform.pdf": {
+        "title": "Is IT Changing the World? Conceptions of Causality for Information Systems Theorizing",
+        "doi": "10.25300/misq/2018/12903",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T19:17:30.460537"
+    },
+    "next-generation_information_systems_theorizing_a_call_to_act.pdf": {
+        "title": "Next-Generation Information Systems Theorizing: A Call to Action",
+        "doi": "10.25300/misq/2021/15434",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T19:19:26.656152"
+    },
+    "high-dimensional_probability_an_introduction_with_applicatio.pdf": {
+        "title": "High-Dimensional Probability: An Introduction with Applications in Data Science",
+        "doi": "10.1080/14697688.2020.1813475",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T19:27:10.404892"
+    },
+    "deep_residual_learning_for_image_recognition.pdf": {
+        "title": "Deep Residual Learning for Image Recognition",
+        "doi": "10.1109/cvpr.2016.90",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T19:28:29.230673"
+    }
+}

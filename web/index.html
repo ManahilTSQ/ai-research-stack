@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Academic AI Research Stack — Self-Hosted Assistant</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- FontAwesome for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Custom Glassmorphic Stylesheet -->
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+    <!-- Glowing Background Decors -->
+    <div class="glow-bg-1"></div>
+    <div class="glow-bg-2"></div>
+
+    <div class="app-container">
+        
+        <!-- Premium Header Bar -->
+        <header class="app-header">
+            <div class="logo-area">
+                <i class="fa-solid fa-brain-circuit logo-icon"></i>
+                <div class="logo-texts">
+                    <h1>AI Research Stack</h1>
+                    <span class="logo-sub">Self-Hosted Academic Intelligence</span>
+                </div>
+            </div>
+            
+            <!-- Connection Status Badge -->
+            <div class="status-panel">
+                <div class="status-indicator" id="status-ollama">
+                    <span class="status-dot"></span>
+                    <span class="status-label">Ollama: Checking...</span>
+                </div>
+                <div class="status-indicator" id="status-db">
+                    <span class="status-dot"></span>
+                    <span class="status-label">ChromaDB: Checking...</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Navigation Tabs -->
+        <nav class="tab-nav">
+            <button class="nav-btn active" data-tab="tab-discovery">
+                <i class="fa-solid fa-magnifying-glass-arrow-right"></i> Paper Discovery
+            </button>
+            <button class="nav-btn" data-tab="tab-rag" id="nav-rag-btn">
+                <i class="fa-solid fa-comments"></i> RAG Knowledge Base
+            </button>
+            <button class="nav-btn" data-tab="tab-citations">
+                <i class="fa-solid fa-chart-nodes"></i> Citation Analysis
+            </button>
+            <button class="nav-btn" data-tab="tab-prompts">
+                <i class="fa-solid fa-wand-magic-sparkles"></i> Prompt Templates
+            </button>
+        </nav>
+
+        <!-- Main Workspace -->
+        <main class="tab-content-container">
+
+            <!-- TAB 1: PAPER DISCOVERY -->
+            <section id="tab-discovery" class="tab-pane active">
+                <div class="tab-pane-header">
+                    <h2>Discover Academic Literature</h2>
+                    <p>Search global repositories via Semantic Scholar and resolve open-access PDFs with one-click offline ingestion.</p>
+                </div>
+
+                <!-- Search Form -->
+                <div class="search-bar-container glass-card">
+                    <form id="paper-search-form" class="search-form">
+                        <div class="input-with-icon">
+                            <i class="fa-solid fa-magnifying-glass search-icon"></i>
+                            <input type="text" id="search-input" placeholder="Search by keywords, title, or authors (e.g., 'information systems theorizing')..." required autocomplete="off">
+                        </div>
+                        <div class="limit-picker">
+                            <label for="search-limit">Limit:</label>
+                            <select id="search-limit">
+                                <option value="5">5 Results</option>
+                                <option value="10" selected>10 Results</option>
+                                <option value="20">20 Results</option>
+                            </select>
+                        </div>
+                        <button type="submit" class="btn btn-primary glow-button">
+                            <span>Search Papers</span>
+                        </button>
+                    </form>
+                </div>
+
+                <!-- Search Results Area -->
+                <div class="results-layout">
+                    <div id="search-status-message" class="status-msg hidden">
+                        <i class="fa-solid fa-circle-notch fa-spin"></i> Querying Academic Index...
+                    </div>
+                    <div id="search-results-list" class="cards-grid">
+                        <div class="placeholder-card glass-card">
+                            <i class="fa-solid fa-graduation-cap placeholder-icon"></i>
+                            <h3>No Active Search</h3>
+                            <p>Enter research keywords in the search bar above to fetch metadata, citation counts, and open-access PDFs.</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB 2: RAG KNOWLEDGE BASE -->
+            <section id="tab-rag" class="tab-pane">
+                <div class="rag-layout">
+                    
+                    <!-- Left Column: Database Manager -->
+                    <div class="rag-sidebar glass-card">
+                        <div class="sidebar-header">
+                            <h3><i class="fa-solid fa-folder-open"></i> Knowledge Base</h3>
+                            <button id="btn-sync-pdfs" class="btn-icon" title="Refresh file list"><i class="fa-solid fa-rotate"></i></button>
+                        </div>
+
+                        <!-- DB Summary Stats -->
+                        <div class="db-stats-badge">
+                            <div class="stat-item">
+                                <span class="stat-num" id="stat-papers-count">0</span>
+                                <span class="stat-lbl">Papers Ingested</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-num" id="stat-chunks-count">0</span>
+                                <span class="stat-lbl">Vector Chunks</span>
+                            </div>
+                        </div>
+
+                        <div class="sidebar-action">
+                            <button id="btn-scan-pending" class="btn btn-secondary btn-full">
+                                <i class="fa-solid fa-arrows-spin"></i> Scan &amp; Ingest Folder
+                            </button>
+                        </div>
+
+                        <!-- Ingested Files List -->
+                        <div class="files-list-container">
+                            <h4>Local Paper Manifest</h4>
+                            <div id="local-files-list" class="files-list">
+                                <div class="list-empty">Loading file manifest...</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Right/Main Column: Chat/Query interface -->
+                    <div class="rag-chat-area glass-card">
+                        <div class="chat-header">
+                            <div class="chat-title-info">
+                                <h3><i class="fa-solid fa-messages"></i> Grounded AI Chat</h3>
+                                <p>Answers are generated entirely locally, strictly based on the facts in your ingested literature.</p>
+                            </div>
+                            
+                            <!-- RAG Config Panel -->
+                            <div class="rag-controls">
+                                <div class="control-item">
+                                    <label for="rag-limit-slider" id="lbl-rag-limit">Context: 5 chunks</label>
+                                    <input type="range" id="rag-limit-slider" min="3" max="10" value="5" class="slider">
+                                </div>
+                                <div class="control-item">
+                                    <label for="rag-template-select">System Prompt Template:</label>
+                                    <select id="rag-template-select">
+                                        <option value="">Standard Chat RAG</option>
+                                        <!-- Will be filled dynamically -->
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Chat Output Window -->
+                        <div class="chat-messages-container" id="chat-messages">
+                            <div class="chat-bubble bot-message initial-message">
+                                <div class="bubble-avatar"><i class="fa-solid fa-microchip-ai"></i></div>
+                                <div class="bubble-content">
+                                    <p>Hello! I am your offline Research Assistant. I can answer questions about the academic papers you have ingested.</p>
+                                    <p><strong>Sample queries you can try:</strong></p>
+                                    <ul>
+                                        <li>"What are the main arguments presented in the core papers?"</li>
+                                        <li>"Compare the research methodologies across my papers."</li>
+                                        <li>"What are the key limitations outlined by the authors?"</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Collapsible Source Chunks Preview -->
+                        <div id="retrieved-sources-panel" class="retrieved-sources-panel hidden">
+                            <div class="sources-panel-header">
+                                <h4><i class="fa-solid fa-quote-left"></i> Retrieved Context Chunks (Ground Truth)</h4>
+                                <button id="close-sources-btn" class="btn-icon"><i class="fa-solid fa-xmark"></i></button>
+                            </div>
+                            <div id="sources-chunks-list" class="sources-chunks-list">
+                                <!-- Chunks populated dynamically -->
+                            </div>
+                        </div>
+
+                        <!-- Chat Input Box -->
+                        <div class="chat-input-bar">
+                            <form id="rag-query-form" class="chat-form">
+                                <input type="text" id="rag-input" placeholder="Type a research question based on your ingested papers..." required autocomplete="off">
+                                <button type="submit" class="btn btn-primary btn-round glow-button" id="rag-submit-btn">
+                                    <i class="fa-solid fa-paper-plane"></i>
+                                </button>
+                            </form>
+                        </div>
+
+                    </div>
+
+                </div>
+            </section>
+
+            <!-- TAB 3: CITATION ANALYSIS -->
+            <section id="tab-citations" class="tab-pane">
+                <div class="tab-pane-header">
+                    <h2>Citation Context &amp; Intent Analyzer</h2>
+                    <p>Enter a target paper identifier, fetch its citing papers, download open-access PDFs, and classify their citation context using local NLP.</p>
+                </div>
+
+                <div class="citation-analyzer-container glass-card">
+                    <form id="citation-analysis-form" class="citation-form">
+                        <div class="input-with-icon flex-grow">
+                            <i class="fa-solid fa-hashtag search-icon"></i>
+                            <input type="text" id="citation-paper-id" placeholder="Enter Paper DOI, arXiv ID, or Semantic Scholar Paper ID (e.g. 10.48550/arXiv.1706.03762)..." required autocomplete="off">
+                        </div>
+                        <div class="limit-picker">
+                            <label for="citation-limit">Citing Limit:</label>
+                            <select id="citation-limit">
+                                <option value="3">Top 3 Citing</option>
+                                <option value="5" selected>Top 5 Citing</option>
+                                <option value="10">Top 10 Citing</option>
+                                <option value="20">Top 20 Citing</option>
+                            </select>
+                        </div>
+                        <button type="submit" class="btn btn-primary glow-button">
+                            <span>Analyze Citations</span>
+                        </button>
+                    </form>
+                </div>
+
+                <!-- Analysis Job Status -->
+                <div id="citation-job-card" class="citation-job-card glass-card hidden">
+                    <div class="job-header">
+                        <div class="job-title-info">
+                            <h3><i class="fa-solid fa-arrows-spin fa-spin"></i> Citation Analysis Pipeline Active</h3>
+                            <span class="job-timer" id="job-time">Time: 0s</span>
+                        </div>
+                        <div class="job-status-badge" id="job-status-label">Queued</div>
+                    </div>
+                    <div class="job-progress-container">
+                        <div class="job-progress-bar"><div class="job-progress-fill" id="job-bar-fill" style="width: 5%"></div></div>
+                        <p class="job-log-text" id="job-progress-text">Initializing task...</p>
+                    </div>
+                </div>
+
+                <!-- Generated Citation Matrix Grid -->
+                <div id="citation-matrix-card" class="citation-matrix-card glass-card hidden">
+                    <div class="matrix-header">
+                        <h3><i class="fa-solid fa-table-list"></i> Classified Citations Report</h3>
+                        <a id="btn-download-report" class="btn btn-secondary" href="#" target="_blank">
+                            <i class="fa-solid fa-file-csv"></i> Download CSV Report
+                        </a>
+                    </div>
+                    <div class="table-scroll-container">
+                        <table class="citation-table">
+                            <thead>
+                                <tr>
+                                    <th>Citing Paper</th>
+                                    <th>Year</th>
+                                    <th>Extracted Citation Passage</th>
+                                    <th>Classification</th>
+                                    <th>Local LLM Rationale</th>
+                                </tr>
+                            </thead>
+                            <tbody id="citation-table-body">
+                                <!-- Loaded dynamically -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Reports History Section -->
+                <div class="reports-history-section glass-card">
+                    <h3><i class="fa-solid fa-history"></i> Generated Reports Registry</h3>
+                    <div class="reports-grid" id="reports-grid-list">
+                        <div class="list-empty">No reports saved yet. Run an analysis above.</div>
+                    </div>
+                </div>
+
+            </section>
+
+            <!-- TAB 4: PROMPT TEMPLATES -->
+            <section id="tab-prompts" class="tab-pane">
+                <div class="tab-pane-header">
+                    <h2>Academic System Prompts Library</h2>
+                    <p>Pre-configured prompt templates tailored for typical research drafting, literature summaries, and comparative evaluations.</p>
+                </div>
+
+                <div class="prompts-grid" id="prompts-cards-container">
+                    <!-- Templates populated dynamically -->
+                    <div class="placeholder-card glass-card">
+                        <i class="fa-solid fa-spinner fa-spin placeholder-icon"></i>
+                        <h3>Loading Prompt Templates...</h3>
+                    </div>
+                </div>
+            </section>
+
+        </main>
+
+        <!-- Footer -->
+        <footer class="app-footer-bar">
+            <p>© 2026 Academic AI Research Stack. Running entirely locally on host environment.</p>
+            <p>Standalone Deployment Phase 2-5</p>
+        </footer>
+
+    </div>
+
+    <!-- UI Scripts -->
+    <script src="/static/app.js"></script>
+</body>
+</html>
