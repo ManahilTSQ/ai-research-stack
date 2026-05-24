@@ -1,37 +1,66 @@
-# AI Research Stack
+# AI Research Stack — Server Deployment Guide
 
-A fully **self-hosted, offline academic research assistant** that runs entirely on your local machine. No cloud subscriptions, no data leaving your system.
+A fully **self-hosted academic research assistant** running on Ubuntu Server. No cloud subscriptions, no data leaving your system.
 
-Built with Python (FastAPI) + ChromaDB + Ollama + a glassmorphic web UI.
+**Stack:** Python (FastAPI) + ChromaDB + Ollama (llama3:70b) + Open WebUI + Docker
+
+---
+
+## Server Details
+
+| Item | Value |
+|---|---|
+| Server IP | 192.168.68.60 |
+| Research Stack UI | http://192.168.68.60:8000 |
+| Open WebUI (Chat) | http://192.168.68.60:8080 |
+| Project Root | /home/researcher/ai-research-stack |
+| Papers Folder | /home/researcher/ai-research-stack/papers |
+| Vector DB | /home/researcher/ai-research-stack/vectordb |
+| Citation Reports | /home/researcher/ai-research-stack/output |
+| LLM Model | llama3:70b (Q4 quantized, CPU) |
+| Embedding Model | ONNX MiniLM-L6-v2 (local, no cloud) |
+| Vector Database | ChromaDB (persistent on disk) |
+| PDF Extraction | PyMuPDF (fitz) |
+| Chunk Size | 1000 characters, 200 overlap |
+
+---
+
+## Technical Decisions
+
+| Decision | Chosen | Reason |
+|---|---|---|
+| LLM serving | Ollama | Simple setup, supports quantized models |
+| Chat frontend | Open WebUI | Full-featured, Docker deployment |
+| LLM model | llama3:70b (Q4) | No GPU available; 60GB RAM sufficient for CPU inference |
+| Embedding | ONNX MiniLM-L6-v2 | Local, fast, no cloud API needed |
+| Vector DB | ChromaDB | Simple setup, persistent disk storage |
+| PDF extraction | PyMuPDF | Best two-column academic layout handling |
+| Web framework | FastAPI + HTML | Lightweight, async, easy to maintain |
+
+**Note on response times:** With no GPU, llama3:70b on CPU takes 2–5 minutes per RAG response. For faster responses during testing, switch to llama3:8b (see model switching below).
 
 ---
 
 ## Project Structure
 
 ```
-AI Research Stack/             ← project root
+/home/researcher/ai-research-stack/
 ├── papers/                    ← downloaded & manually added PDFs
 ├── vectordb/                  ← ChromaDB persistent vector index (DO NOT DELETE)
 ├── scripts/                   ← all Python source code
-│   ├── config.py              ← central settings loader (.env → typed Settings object)
-│   ├── paper_discovery.py     ← Semantic Scholar search + Unpaywall PDF resolution
-│   ├── pdf_processor.py       ← PyMuPDF text extraction + overlapping chunk splitting
+│   ├── config.py              ← settings loader (.env → typed Settings object)
+│   ├── paper_discovery.py     ← Semantic Scholar + Unpaywall PDF resolution
+│   ├── pdf_processor.py       ← PyMuPDF text extraction + chunk splitting
 │   ├── vector_store.py        ← ChromaDB read/write + ONNX embedding
-│   ├── rag_service.py         ← RAG orchestration: retrieve → prompt → Ollama → answer
-│   ├── citation_analyzer.py   ← Citation intent classification pipeline (LLM-powered)
-│   ├── manifest_manager.py    ← PDF ingestion state tracker (output/ingestion_manifest.json)
-│   ├── main.py                ← CLI entry point (argparse)
+│   ├── rag_service.py         ← RAG: retrieve → prompt → Ollama → answer
+│   ├── citation_analyzer.py   ← Citation intent classification (LLM-powered)
+│   ├── manifest_manager.py    ← PDF ingestion tracker (output/ingestion_manifest.json)
+│   ├── main.py                ← CLI entry point
 │   └── server.py              ← FastAPI web server
-├── web/                       ← browser-based SPA (glassmorphic dark UI)
-│   ├── index.html
-│   ├── styles.css
-│   └── app.js
-├── prompts/                   ← system prompt templates for structured LLM output
-│   ├── summarize.txt
-│   ├── linkedin_draft.txt
-│   ├── article_draft.txt
-│   └── comparative_analysis.txt
-├── output/                    ← citation analysis CSV reports + runtime state
+├── web/                       ← browser-based UI
+├── prompts/                   ← system prompt templates
+├── output/                    ← citation analysis CSV reports
+├── venv/                      ← Python virtual environment
 ├── .env                       ← your local configuration (never commit this)
 ├── .env.example               ← configuration template
 ├── requirements.txt           ← Python dependencies
@@ -40,210 +69,215 @@ AI Research Stack/             ← project root
 
 ---
 
-## Prerequisites
+## Starting and Stopping Services
 
-| Tool | Purpose | Install |
-|---|---|---|
-| **Python 3.11 or 3.12** | Runtime (NOT 3.14 — PyMuPDF incompatible) | [python.org](https://python.org) |
-| **Ollama** | Local LLM server | [ollama.com](https://ollama.com) |
-| A pulled LLM model | Language model for RAG + citation classification | `ollama pull llama3` |
+### Research Stack (FastAPI — port 8000)
 
----
+The research stack runs as a systemd service and **starts automatically on boot**.
 
-## Quick Start
+```bash
+# Start
+sudo systemctl start research-stack
 
-### 1. Install Python dependencies
+# Stop
+sudo systemctl stop research-stack
 
-```powershell
-# From the project root (AI Research Stack/)
-pip install -r requirements.txt
+# Restart
+sudo systemctl restart research-stack
+
+# Check status
+sudo systemctl status research-stack
+
+# View logs
+journalctl -u research-stack -f
 ```
 
-### 2. Configure your environment
+### Open WebUI (Docker — port 8080)
 
-```powershell
-# Copy the example config and edit it
-copy .env.example .env
+Open WebUI runs as a Docker container and **starts automatically on boot**.
+
+```bash
+# Start
+docker start open-webui
+
+# Stop
+docker stop open-webui
+
+# Restart
+docker restart open-webui
+
+# Check status
+docker ps
+
+# View logs
+docker logs open-webui --tail 50
 ```
 
-Open `.env` and set at minimum:
-- `UNPAYWALL_EMAIL` — any valid email address
-- `OLLAMA_MODEL` — the model name you pulled (e.g. `llama3`, `mistral`, `phi3`)
+### Ollama (LLM server — port 11434)
 
-### 3. Start Ollama
+```bash
+# Check if running
+ollama list
 
-```powershell
+# Start manually if needed
 ollama serve
+
+# Check which models are available
+ollama list
 ```
-
-### 4. Start the web server
-
-```powershell
-cd scripts
-uvicorn server:app --host 0.0.0.0 --port 8000 --reload
-```
-
-Then open **http://localhost:8000** in your browser.
 
 ---
 
-## Using the Web Interface
+## How to Add New Papers to the Knowledge Base
 
-### Paper Discovery Tab
-- Enter keywords → searches Semantic Scholar
-- Click **Ingest offline** on any result → downloads PDF (if open-access) + ingests into ChromaDB
+### Option A — Via Web UI (recommended)
+1. Copy your PDF into `/home/researcher/ai-research-stack/papers/`
+2. Open http://192.168.68.60:8000 in your browser
+3. Go to the **RAG Knowledge Base** tab
+4. Click **Scan & Ingest Folder**
+5. The new paper will be ingested and queryable immediately
 
-### RAG Knowledge Base Tab
-- Shows all ingested papers + vector chunk counts
-- **Scan & Ingest Folder** → batch-ingest any PDFs you manually dropped into `papers/`
-- Chat interface → ask research questions → grounded answers with inline [Source N] citations
-- Select a **Prompt Template** for structured output (summarization, LinkedIn post, etc.)
-
-### Citation Analysis Tab
-- Enter a DOI or arXiv ID → fetches citing papers → downloads their PDFs → classifies citation intent with the local LLM
-- Downloads a CSV report with: Citing Paper, Year, Passage, Classification, Rationale
-- **Classifications**: `supporting` | `contrasting` | `extending` | `methodological`
-
-### Prompt Templates Tab
-- View and preview all templates in `prompts/`
-- Click **Use Template** → switches to RAG tab with that template pre-selected
-
----
-
-## Using the CLI
-
-All commands are run from the **project root** (`AI Research Stack/`):
-
-```powershell
-# Interactive wizard — search and select papers to ingest
-python scripts/main.py --interactive
-
-# Auto-ingest the top result for a keyword search
-python scripts/main.py --query "attention mechanism transformers"
-
-# Batch-ingest all PDFs already in papers/
+### Option B — Via CLI
+```bash
+cd /home/researcher/ai-research-stack
+source venv/bin/activate
 python scripts/main.py --ingest-all
-
-# Ask a grounded research question (RAG)
-python scripts/main.py --query-rag "What is multi-head attention?"
-
-# Grounded question with a structured prompt template
-python scripts/main.py --query-rag "Summarize BERT" --prompt summarize
-
-# Citation analysis for a paper (by DOI or arXiv ID)
-python scripts/main.py --analyze-citations "10.48550/arXiv.1706.03762" --limit 5
 ```
 
-Full options:
+### Option C — Via Paper Discovery
+1. Search for a paper in the **Paper Discovery** tab
+2. Click **Ingest** on any result — downloads PDF + ingests automatically
 
-```
-  -q, --query TEXT            Search + auto-ingest top result
-  -i, --interactive           Interactive paper selection wizard
-  -g, --ingest-all            Batch-ingest all PDFs in papers/
-  -r, --query-rag TEXT        RAG question answering
-  -p, --prompt TEMPLATE       Prompt template for RAG (use with -r)
-  -a, --analyze-citations ID  Citation intent analysis
-  -l, --limit N               Result/chunk/citation limit (default: 5)
-  -c, --chunk-size N          Chunk character length (default: 1000)
-  -o, --chunk-overlap N       Overlap between chunks (default: 200)
+**Note:** The system tracks ingested papers in `output/ingestion_manifest.json`. Already-ingested papers are skipped automatically.
+
+---
+
+## How to Update or Switch the LLM Model
+
+```bash
+# Pull a new model
+ollama pull llama3:8b       # faster, less accurate
+ollama pull llama3:70b      # slower, higher quality (current default)
+ollama pull mistral         # alternative
+
+# Switch the active model
+nano /home/researcher/ai-research-stack/.env
+# Change: OLLAMA_MODEL=llama3:8b
+
+# Restart the research stack to apply
+sudo systemctl restart research-stack
 ```
 
 ---
 
-## How It Works
+## How to Run Citation Analysis
 
-```
-Search Query
-     │
-     ▼
-Semantic Scholar API  ──► Paper Metadata + DOI + arXiv ID
-     │
-     ▼
-Unpaywall / arXiv  ──────► PDF Download → papers/
-     │
-     ▼
-PyMuPDF (fitz)  ──────────► Page-level text extraction + cleaning
-     │
-     ▼
-PDFProcessorService  ─────► Overlapping text chunks (default: 1000 chars, 200 overlap)
-     │
-     ▼
-ChromaDB (ONNX MiniLM)  ──► Vector embeddings stored in vectordb/
-     │
- RAG Query
-     │
-     ▼
-Cosine similarity search  ► Top-K relevant chunks retrieved
-     │
-     ▼
-Ollama /api/chat  ─────────► Grounded answer with [Source N] citations
+### Via Web UI
+1. Open http://192.168.68.60:8000
+2. Go to **Citation Analysis** tab
+3. Enter a DOI (e.g. `10.17705/1JAIS.00730`)
+4. Click **Analyze** — results saved to `output/` as CSV
+
+### Via API
+```bash
+curl -X POST http://localhost:8000/api/analyze-citations \
+  -H "Content-Type: application/json" \
+  -d '{"paper_id": "10.17705/1JAIS.00730", "limit": 50}'
 ```
 
----
-
-## Recommended Models
-
-| Model | RAM Required | Best For |
-|---|---|---|
-| `llama3` (8B) | ~8 GB | General RAG, citation analysis |
-| `mistral` (7B) | ~5 GB | Fast responses, lower RAM |
-| `phi3` (3.8B) | ~4 GB | Ultra-lightweight systems |
-| `llama3:70b` | ~40 GB | Highest quality (needs GPU) |
-
-Pull a model: `ollama pull <model-name>`
-
----
-
-## Adding Papers Manually
-
-1. Copy any PDF into the `papers/` directory.
-2. In the web UI → **RAG Knowledge Base** tab → click **Scan & Ingest Folder**.
-3. Or via CLI: `python scripts/main.py --ingest-all`
+### View CSV Reports
+```bash
+ls /home/researcher/ai-research-stack/output/*.csv
+cat /home/researcher/ai-research-stack/output/citation_analysis_FILENAME.csv
+```
 
 ---
 
 ## Prompt Templates
 
-Templates in `prompts/*.txt` follow this format:
+Templates are stored in `/home/researcher/ai-research-stack/prompts/`:
 
+| Template | File | Use |
+|---|---|---|
+| Paper Summarizer | `summarize.txt` | Structured summary of a paper |
+| LinkedIn Post | `linkedin_draft.txt` | Professional LinkedIn post from research topic |
+| Comparative Analysis | `comparative_analysis.txt` | Compare two papers or concepts |
+| Literature Review | `article_draft.txt` | Cohesive literature review paragraph |
+
+### To Add a New Template
+1. Create a new `.txt` file in `prompts/`
+2. Follow the format in existing templates (SYSTEM PROMPT + USER PROMPT TEMPLATE sections)
+3. The template appears automatically in the web UI — no restart needed
+
+### To Modify a Template
+```bash
+nano /home/researcher/ai-research-stack/prompts/linkedin_draft.txt
 ```
-## SYSTEM PROMPT — Template Name
-
-<system instructions for the LLM>
 
 ---
-## USER PROMPT TEMPLATE
 
-Context from ingested research paper(s):
-...
-{context}
-...
-Paper title: {title}
-```
+## Where Data Is Stored
 
-Available placeholders: `{context}`, `{title}`, `{authors}`, `{year}`, `{venue}`, `{context_a}`, `{context_b}`, `{title_a}`, `{title_b}`
+| Data | Location |
+|---|---|
+| Downloaded PDFs | `/home/researcher/ai-research-stack/papers/` |
+| Vector embeddings | `/home/researcher/ai-research-stack/vectordb/` |
+| Citation CSV reports | `/home/researcher/ai-research-stack/output/` |
+| Ingestion manifest | `/home/researcher/ai-research-stack/output/ingestion_manifest.json` |
+| Prompt templates | `/home/researcher/ai-research-stack/prompts/` |
+| Environment config | `/home/researcher/ai-research-stack/.env` |
+| Ollama models | `/usr/share/ollama/.ollama/models/` |
+| Open WebUI data | Docker volume `open-webui` |
+
+---
+
+## Known Limitations
+
+- **No GPU:** llama3:70b runs on CPU only. Expect 2–5 min per RAG response. Switch to llama3:8b for faster responses.
+- **Citation analysis — paywalled papers:** Only open-access citing papers are analyzed. Paywalled papers are listed as "not analyzed" in the CSV.
+- **Scanned PDFs:** PDFs that are scanned images (no extractable text) are skipped during ingestion with a warning logged.
+- **Local network only:** The system is accessible only on the local network (192.168.68.60). No SSL or domain name configured by design.
+- **Single user:** No authentication. Designed for single-user access only.
 
 ---
 
 ## Troubleshooting
 
-**Ollama connection refused**
+**Research stack not responding:**
+```bash
+sudo systemctl status research-stack
+sudo systemctl restart research-stack
 ```
-ollama serve       # Start the Ollama server
-ollama pull llama3 # Pull the model if not already pulled
+
+**Port 8000 already in use:**
+```bash
+sudo fuser -k 8000/tcp
+sudo systemctl start research-stack
 ```
 
-**ChromaDB error on startup**
-- Ensure `vectordb/` directory is not corrupted — if in doubt, delete it and re-ingest papers.
+**Ollama not responding:**
+```bash
+ollama list
+ollama serve
+```
 
-**PDF download fails (403 / paywall)**
-- The paper is behind a paywall. Manually download the PDF and place it in `papers/`, then run **Scan & Ingest Folder**.
+**ChromaDB error on startup:**
+```bash
+# Check vectordb folder
+ls /home/researcher/ai-research-stack/vectordb/
+# If corrupted, delete and re-ingest
+rm -rf /home/researcher/ai-research-stack/vectordb/*
+# Then re-ingest all papers via web UI or CLI
+```
 
-**No results from Semantic Scholar**
-- Add `SEMANTIC_SCHOLAR_API_KEY` to `.env` to increase rate limits.
+**Open WebUI not loading:**
+```bash
+docker ps
+docker restart open-webui
+docker logs open-webui --tail 20
+```
 
----
+**RAG returns no results:**
+- Check that papers are ingested: `curl http://localhost:8000/api/health`
+- Look for `total_chunks > 0` in the response
 
-## License
-
-MIT License — free to use, modify, and distribute for personal and research purposes.
