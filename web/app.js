@@ -32,7 +32,7 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("close-sources-btn").addEventListener("click", () => {
         document.getElementById("retrieved-sources-panel").classList.add("hidden");
     });
-    
+
     // Sync the RAG context-limit slider label with the slider value in real time
     const limitSlider = document.getElementById("rag-limit-slider");
     const limitLabel = document.getElementById("lbl-rag-limit");
@@ -53,11 +53,11 @@ document.addEventListener("DOMContentLoaded", () => {
         try {
             const resp = await fetch(`${API_BASE}/api/health`);
             const data = await resp.json();
-            
+
             // Update the Ollama and ChromaDB status dot + label in the header
             updateStatusIndicator("status-ollama", data.ollama === "online", `Ollama: ${data.ollama.toUpperCase()}`);
             updateStatusIndicator("status-db", data.vector_db === "online", `ChromaDB: ${data.vector_db.toUpperCase()}`);
-            
+
             // Populate the stats badges in the Knowledge Base sidebar
             if (data.db_stats) {
                 document.getElementById("stat-papers-count").textContent = data.db_stats.total_papers || 0;
@@ -119,11 +119,11 @@ document.addEventListener("DOMContentLoaded", () => {
         navButtons.forEach(btn => {
             btn.addEventListener("click", () => {
                 const targetTab = btn.getAttribute("data-tab");
-                
+
                 // Deactivate all tabs and nav buttons
                 navButtons.forEach(b => b.classList.remove("active"));
                 panes.forEach(p => p.classList.remove("active"));
-                
+
                 // Activate the selected tab
                 btn.classList.add("active");
                 document.getElementById(targetTab).classList.add("active");
@@ -223,10 +223,10 @@ document.addEventListener("DOMContentLoaded", () => {
                     </div>
                 </div>
                 <div>
-                    ${paper.has_pdf ? 
-                        '<span class="badge badge-oa"><i class="fa-solid fa-unlock-keyhole"></i> PDF Available</span>' : 
-                        '<span class="badge badge-paywall"><i class="fa-solid fa-file-invoice"></i> Abstract Only</span>'
-                    }
+                    ${paper.has_pdf ?
+                '<span class="badge badge-oa"><i class="fa-solid fa-unlock-keyhole"></i> PDF Available</span>' :
+                '<span class="badge badge-paywall"><i class="fa-solid fa-file-invoice"></i> Abstract Only</span>'
+            }
                 </div>
             </div>
 
@@ -236,8 +236,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
             <div class="paper-footer">
                 <span class="report-meta">DOI: ${doiLabel} | arXiv: ${paper.arxiv}</span>
-                <button class="btn btn-primary btn-download-ingest" id="btn-ingest-${paper.paperId}">
-                    <i class="fa-solid fa-cloud-arrow-down"></i> Ingest offline
+                <button class=\"btn btn-primary btn-download-ingest\" id=\"btn-ingest-${paper.paperId}\">
+                    <i class=\"fa-solid fa-cloud-arrow-down\"></i> ${paper.has_pdf ? 'Download & Ingest PDF' : 'Ingest Abstract Only'}
                 </button>
             </div>
         `;
@@ -273,7 +273,7 @@ document.addEventListener("DOMContentLoaded", () => {
     async function triggerIngestion(paper, button) {
         button.disabled = true;
         button.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i> Downloading PDF...`;
-        
+
         try {
             const resp = await fetch(`${API_BASE}/api/download`, {
                 method: "POST",
@@ -293,7 +293,7 @@ document.addEventListener("DOMContentLoaded", () => {
             });
 
             const result = await resp.json();
-            
+
             if (result.success) {
                 // Show success state — distinguish full PDF from abstract-only
                 button.className = "btn btn-secondary";
@@ -331,7 +331,7 @@ document.addEventListener("DOMContentLoaded", () => {
         try {
             const resp = await fetch(`${API_BASE}/api/pdfs`);
             const files = await resp.json();
-            
+
             if (files.length === 0) {
                 listDiv.innerHTML = `
                     <div class="list-empty">
@@ -346,7 +346,7 @@ document.addEventListener("DOMContentLoaded", () => {
             files.forEach(file => {
                 const item = document.createElement("div");
                 item.className = "file-item";
-                
+
                 // Choose status badge based on manifest status field
                 let statusBadge = "";
                 if (file.status === "success") {
@@ -384,16 +384,16 @@ document.addEventListener("DOMContentLoaded", () => {
         try {
             const resp = await fetch(`${API_BASE}/api/ingest-pending`, { method: "POST" });
             const result = await resp.json();
-            
+
             btn.disabled = false;
             btn.innerHTML = `<i class="fa-solid fa-arrows-spin"></i> Scan & Ingest Folder`;
-            
+
             if (result.processed > 0) {
                 alert(`Processed ${result.processed} PDFs:\nSucceeded: ${result.succeeded}\nFailed: ${result.processed - result.succeeded}`);
             } else {
                 alert("Scan finished. No new PDFs found to ingest!");
             }
-            
+
             // Refresh both the file list and the stats badges
             fetchLocalPDFs();
             checkHealth();
@@ -422,7 +422,7 @@ document.addEventListener("DOMContentLoaded", () => {
         // Show the user's message as a chat bubble immediately
         appendChatBubble("user", query);
         inputEl.value = "";
-        
+
         // Show a loading indicator while waiting for the LLM response
         const loadId = appendChatBubble("bot", `<i class="fa-solid fa-ellipsis fa-bounce"></i> Thinking...`, [], true);
         submitBtn.disabled = true;
@@ -445,7 +445,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
             const data = await resp.json();
             submitBtn.disabled = false;
-            
+
             // Remove the loading bubble and render the actual answer
             document.getElementById(loadId).remove();
 
@@ -476,7 +476,7 @@ document.addEventListener("DOMContentLoaded", () => {
         bubble.className = `chat-bubble ${sender}-message`;
 
         const avatarIcon = sender === "user" ? "fa-user" : "fa-microchip-ai";
-        
+
         // Parse markdown for bot responses; escape HTML for user input (XSS prevention)
         const parsedText = sender === "bot" ? (isHtml ? text : parseMarkdown(text)) : escapeHTML(text);
 
@@ -520,7 +520,7 @@ document.addEventListener("DOMContentLoaded", () => {
     function showRetrievedSourcesPanel(sources, highlightIdx = null) {
         const panel = document.getElementById("retrieved-sources-panel");
         const list = document.getElementById("sources-chunks-list");
-        
+
         panel.classList.remove("hidden");
         list.innerHTML = "";
 
@@ -532,16 +532,16 @@ document.addEventListener("DOMContentLoaded", () => {
                 item.style.borderColor = "var(--accent-blue)";
                 item.style.background = "rgba(0, 242, 254, 0.05)";
             }
-            
+
             const meta = c.metadata || {};
             const pages = meta.pages ? `Pages: ${meta.pages}` : "Abstract snippet";
-            
+
             item.innerHTML = `
                 <div class="source-chunk-title">[Source ${idx + 1}] "${meta.title}" (${pages})</div>
                 <div class="source-chunk-text">"${escapeHTML(c.text)}"</div>
             `;
             list.appendChild(item);
-            
+
             // Scroll highlighted source into view
             if (highlightIdx !== null && highlightIdx === idx) {
                 item.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -577,15 +577,15 @@ document.addEventListener("DOMContentLoaded", () => {
 
         // Bold: **text** → <strong>text</strong>
         html = html.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
-        
+
         // Italics: *text* → <em>text</em>
         html = html.replace(/\*(.*?)\*/g, "<em>$1</em>");
-        
+
         // Headers: ### → h4, ## → h3, # → h2
         html = html.replace(/^### (.*?)$/gm, "<h4>$1</h4>");
         html = html.replace(/^## (.*?)$/gm, "<h3>$1</h3>");
         html = html.replace(/^# (.*?)$/gm, "<h2>$1</h2>");
-        
+
         // Unordered list items: - text or * text → <li>
         html = html.replace(/^\s*[-*+]\s+(.*?)$/gm, "<li>$1</li>");
         // Wrap consecutive <li> elements in a <ul>
@@ -658,7 +658,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
             // Clear any existing polling interval before starting a new one
             if (citationPollInterval) clearInterval(citationPollInterval);
-            
+
             // Poll the job status endpoint every 1.5 seconds
             citationPollInterval = setInterval(async () => {
                 const statusResp = await fetch(`${API_BASE}/api/analyze-citations/${activeCitationRunId}`);
@@ -716,10 +716,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
         records.forEach(row => {
             const tr = document.createElement("tr");
-            
+
             // The CSS class matches the classification category (supporting, contrasting, etc.)
             const pillColor = row.classification.toLowerCase();
-            
+
             tr.innerHTML = `
                 <td class="citing-paper-cell">${escapeHTML(row.citing_title)}</td>
                 <td>${row.year}</td>
@@ -752,9 +752,9 @@ document.addEventListener("DOMContentLoaded", () => {
             reports.forEach(r => {
                 const card = document.createElement("div");
                 card.className = "report-file-card";
-                
+
                 // Format the creation timestamp for human-readable display
-                const createdDate = new Date(r.created_at).toLocaleDateString(undefined, {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'});
+                const createdDate = new Date(r.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
                 card.innerHTML = `
                     <div class="report-info">

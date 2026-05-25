@@ -88,21 +88,21 @@
         "doi": "10.17705/1jais.00868",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-24T19:15:47.428475"
+        "ingested_at": "2026-05-25T13:53:40.695638"
     },
     "useful_products_in_information_systems_theorizing_a_discursi.pdf": {
         "title": "Useful Products in Information Systems Theorizing: A Discursive Formation Perspective",
         "doi": "10.17705/1JAIS.00730",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-24T19:16:58.278058"
+        "ingested_at": "2026-05-25T13:53:48.974063"
     },
     "is_it_changing_the_world_conceptions_of_causality_for_inform.pdf": {
         "title": "Is IT Changing the World? Conceptions of Causality for Information Systems Theorizing",
         "doi": "10.25300/misq/2018/12903",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-24T19:17:30.460537"
+        "ingested_at": "2026-05-25T00:18:13.852324"
     },
     "next-generation_information_systems_theorizing_a_call_to_act.pdf": {
         "title": "Next-Generation Information Systems Theorizing: A Call to Action",
@@ -124,5 +124,54 @@
         "status": "success",
         "error": "",
         "ingested_at": "2026-05-24T19:28:29.230673"
+    },
+    "the_process_of_information_systems_theorizing_as_a_discursiv.pdf": {
+        "title": "The process of information systems theorizing as a discursive practice",
+        "doi": "10.1177/0268396219832004",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-25T00:18:41.373038"
+    },
+    "mobilising_new_frontiers_in_digital_transformation_research_.pdf": {
+        "title": "Mobilising new frontiers in digital transformation research: A problematization review",
+        "doi": "10.1111/isj.12531",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-25T14:42:48.789080"
+    },
+    "exploring_the_role_of_third_parties_in_digital_transformatio.pdf": {
+        "title": "Exploring the Role of Third Parties in Digital Transformation Initiatives: A Problematized Assumptions Perspective",
+        "doi": "10.17705/1cais.05707",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-25T14:42:50.524524"
+    },
+    "the_wpr_analysis_of_digital_transformation_policy_discourse_.pdf": {
+        "title": "The WPR Analysis of Digital Transformation Policy Discourse in Education",
+        "doi": "10.22251/jlcci.2025.25.9.1097",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-25T14:42:53.154021"
+    },
+    "native_point_defects_and_their_implications_for_the_dirac_po.pdf": {
+        "title": "Native point defects and their implications for the Dirac point gap at MnBi2Te4(0001)",
+        "doi": "10.1038/s41535-021-00414-6",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-25T14:05:53.350576"
+    },
+    "the_concept_of_psychological_and_pedagogical_support_of_digi.pdf": {
+        "title": "The concept of psychological and pedagogical support of digital transformation of educational process of higher education institution (anthropocentric approach)",
+        "doi": "10.18384/2949-5105-2024-3-133-149",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-25T14:43:10.849713"
+    },
+    "digital_humanities_challenges_of_the_transformation_of_tools.pdf": {
+        "title": "Digital Humanities: Challenges of the Transformation of Tools and Objects of Knowledge in Contemporary Humanities",
+        "doi": "10.55630/dipp.2013.3.11",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-25T14:44:28.534913"
     }
 }

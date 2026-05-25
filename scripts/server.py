@@ -35,7 +35,7 @@ from datetime import datetime
 from typing import Optional
 import requests as _req  # Aliased to avoid collision with FastAPI's own 'requests' concept
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -238,8 +238,13 @@ async def search_papers(q: str, limit: int = 10):
         external_ids = paper.get("externalIds") or {}
         doi   = external_ids.get("DOI")   or "N/A"
         arxiv = external_ids.get("ArXiv") or "N/A"
-        # Determine if a PDF is likely available (DOI or arXiv provides a path to PDF)
-        has_pdf = doi != "N/A" or arxiv != "N/A"
+        # Check actual open-access availability via Unpaywall
+        has_pdf = False
+        if arxiv != "N/A":
+            has_pdf = True  # arXiv papers are always open access
+        elif doi != "N/A":
+            pdf_url = discover_service.fetch_open_access_pdf_url(doi)
+            has_pdf = pdf_url is not None
 
         formatted.append({
             "paperId":       paper.get("paperId", ""),
@@ -258,98 +263,101 @@ async def search_papers(q: str, limit: int = 10):
 
 
 @app.post("/api/download")
-async def download_paper(request: DownloadRequest):
+async def download_paper(request: DownloadRequest, background_tasks: BackgroundTasks):
     """
     Download the PDF for a paper and ingest it into the ChromaDB vector database.
 
-    Runs synchronously so the response reflects the actual result — whether a
-    full PDF was downloaded, abstract-only fallback was used, or ingestion failed.
+    Runs the download + extraction + ingestion pipeline as a FastAPI background
+    task so the HTTP response is returned immediately (the UI shows a spinner
+    while the background task runs).
+
+    The ingestion follows the same 3-tier strategy as main.py:
+      Tier 1: Unpaywall OA PDF → full-text ingestion
+      Tier 2: arXiv direct PDF → full-text ingestion
+      Tier 3: Abstract-only ingestion (last resort)
 
     Returns:
-        {"success": True, "mode": "pdf"|"abstract", "chunks": N, "message": "..."}
+        {"success": True} immediately. The UI refreshes its manifest view after.
     """
-    import asyncio
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, lambda: _run_ingest(request))
-    return result
-
-
-def _run_ingest(request) -> dict:
-    """Synchronous ingest pipeline — runs in a thread pool executor."""
-    ext_ids  = request.externalIds or {}
+    # Extract the identifiers needed for the download strategies
+    ext_ids = request.externalIds or {}
     doi      = ext_ids.get("DOI")
     arxiv_id = ext_ids.get("ArXiv")
     title    = request.title
 
-    logger.info(f"Ingest started: '{title}' | DOI={doi} | ArXiv={arxiv_id}")
-    chunks = []
-    mode   = "none"
+    def _ingest():
+        """
+        Internal background function that runs the full ingest pipeline.
+        Runs in a separate thread so it doesn't block the event loop.
+        """
+        logger.info(f"BG Ingest started: '{title}'")
+        chunks = []
 
-    # ── Tier 1: Unpaywall open-access PDF ─────────────────────────────────────
-    pdf_url = None
-    if doi:
-        pdf_url = discover_service.fetch_open_access_pdf_url(doi)
+        # ── Tier 1: Unpaywall open-access PDF ─────────────────────────────────
+        pdf_url = None
+        if doi:
+            pdf_url = discover_service.fetch_open_access_pdf_url(doi)
 
-    # ── Tier 2: arXiv direct PDF fallback ─────────────────────────────────────
-    if not pdf_url and arxiv_id:
-        pdf_url = f"https://arxiv.org/pdf/{arxiv_id}"
-        logger.info(f"Using arXiv fallback: {pdf_url}")
+        # ── Tier 2: arXiv direct PDF fallback ─────────────────────────────────
+        if not pdf_url and arxiv_id:
+            pdf_url = f"https://arxiv.org/pdf/{arxiv_id}"
 
-    # ── Download and extract text from the PDF ────────────────────────────────
-    if pdf_url:
-        safe_name = sanitize_filename(title)
-        pdf_path  = discover_service.download_pdf(pdf_url, safe_name)
+        # ── Download and extract text from the PDF ────────────────────────────
+        if pdf_url:
+            safe_name = sanitize_filename(title)
+            pdf_path  = discover_service.download_pdf(pdf_url, safe_name)
 
-        if pdf_path and pdf_path.exists():
-            try:
-                pages  = pdf_service.extract_text_by_page(pdf_path)
-                chunks = pdf_service.chunk_text(pages, chunk_size=1000, chunk_overlap=200)
-                mode   = "pdf"
-                logger.info(f"PDF downloaded and extracted: {len(chunks)} chunks from '{title}'")
-            except Exception as e:
-                logger.error(f"Text extraction failed for '{title}': {e}")
+            if pdf_path and pdf_path.exists():
+                try:
+                    pages  = pdf_service.extract_text_by_page(pdf_path)
+                    chunks = pdf_service.chunk_text(pages, chunk_size=1000, chunk_overlap=200)
+                except Exception as e:
+                    logger.error(f"Text extraction failed for '{title}': {e}")
+
+        # ── Tier 3: Abstract-only fallback ────────────────────────────────────
+        if not chunks and request.abstract:
+            abstract = request.abstract.strip()
+            identifier = doi or (f"arXiv:{arxiv_id}" if arxiv_id else title)
+            chunks = [{
+                "chunk_index": 0,
+                "text": abstract,
+                "metadata": {
+                    "pages": [0], "char_start": 0,
+                    "char_end": len(abstract), "length": len(abstract)
+                }
+            }]
+            logger.info(f"Abstract-only fallback for '{title}'")
+            vector_store.add_paper_chunks(paper_title=title, doi=identifier, chunks=chunks)
+            manifest_service.mark_as_ingested(
+                sanitize_filename(title), title, doi, status="success"
+            )
+            return
+
+        # ── Ingest chunks into ChromaDB ────────────────────────────────────────
+        if chunks:
+            identifier = doi or (f"arXiv:{arxiv_id}" if arxiv_id else title)
+            success = vector_store.add_paper_chunks(
+                paper_title=title, doi=identifier, chunks=chunks
+            )
+            filename = sanitize_filename(title)
+            manifest_service.mark_as_ingested(
+                filename, title, doi,
+                status="success" if success else "failed"
+            )
+            logger.info(
+                f"BG Ingest complete for '{title}': "
+                f"{len(chunks)} chunks, success={success}"
+            )
         else:
-            logger.warning(f"PDF download returned no file for '{title}' (url: {pdf_url})")
+            manifest_service.mark_as_ingested(
+                sanitize_filename(title), title, doi, status="failed",
+                error="No PDF and no abstract available."
+            )
+            logger.warning(f"Ingestion failed for '{title}': no content could be obtained.")
 
-    # ── Tier 3: Abstract-only fallback ────────────────────────────────────────
-    if not chunks and request.abstract:
-        abstract   = request.abstract.strip()
-        identifier = doi or (f"arXiv:{arxiv_id}" if arxiv_id else title)
-        chunks = [{
-            "chunk_index": 0,
-            "text": abstract,
-            "metadata": {
-                "pages": [0], "char_start": 0,
-                "char_end": len(abstract), "length": len(abstract)
-            }
-        }]
-        mode = "abstract"
-        logger.info(f"Abstract-only fallback for '{title}' — no open-access PDF found.")
-
-    # ── Ingest chunks into ChromaDB ───────────────────────────────────────────
-    if chunks:
-        identifier = doi or (f"arXiv:{arxiv_id}" if arxiv_id else title)
-        success = vector_store.add_paper_chunks(
-            paper_title=title, doi=identifier, chunks=chunks
-        )
-        manifest_service.mark_as_ingested(
-            sanitize_filename(title), title, doi,
-            status="success" if success else "failed"
-        )
-        msg = (
-            f"Full PDF ingested ({len(chunks)} chunks)." if mode == "pdf"
-            else f"Abstract-only ingested (no open-access PDF available)."
-        )
-        logger.info(f"Ingest complete for '{title}': mode={mode}, chunks={len(chunks)}, success={success}")
-        return {"success": success, "mode": mode, "chunks": len(chunks), "message": msg}
-
-    # ── Complete failure ───────────────────────────────────────────────────────
-    manifest_service.mark_as_ingested(
-        sanitize_filename(title), title, doi, status="failed",
-        error="No PDF and no abstract available."
-    )
-    logger.warning(f"Ingest failed for '{title}': no content available.")
-    return {"success": False, "mode": "none", "chunks": 0, "message": "No PDF or abstract available for this paper."}
+    # Schedule the ingest function to run in the background
+    background_tasks.add_task(_ingest)
+    return {"success": True, "message": f"Ingestion started for: {title}"}
 
 
 @app.get("/api/pdfs")
