@@ -35,7 +35,7 @@ from datetime import datetime
 from typing import Optional
 import requests as _req  # Aliased to avoid collision with FastAPI's own 'requests' concept
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -175,6 +175,34 @@ async def serve_ui():
     The SPA then loads its CSS and JS from the /static/* paths.
     """
     return FileResponse(str(WEB_DIR / "index.html"))
+
+
+@app.get("/sw.js", include_in_schema=False)
+@app.get("/service-worker.js", include_in_schema=False)
+async def serve_sw_unregister():
+    """
+    Serve a self-unregistering service worker script.
+    
+    This is extremely important for situations where a previously deployed
+    service worker (like from an old Open WebUI deployment on this domain)
+    is stale and intercepts all traffic in the user's browser, preventing
+    them from loading the new Research Stack app.
+    """
+    content = (
+        "self.addEventListener('install', function(e) {\n"
+        "    self.skipWaiting();\n"
+        "});\n"
+        "self.addEventListener('activate', function(e) {\n"
+        "    self.registration.unregister()\n"
+        "    .then(function() {\n"
+        "        return self.clients.matchAll();\n"
+        "    })\n"
+        "    .then(function(clients) {\n"
+        "        clients.forEach(client => client.navigate(client.url));\n"
+        "    });\n"
+        "});\n"
+    )
+    return Response(content=content, media_type="application/javascript")
 
 
 @app.get("/api/health")
