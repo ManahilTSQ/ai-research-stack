@@ -14,6 +14,7 @@ from typing import Optional
 import requests as _req
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Response
+from fastapi.websockets import WebSocket
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -109,6 +110,11 @@ def sanitize_filename(title: str) -> str:
 async def serve_ui():
     return FileResponse(str(WEB_DIR / "index.html"))
 
+@app.websocket("/")
+async def websocket_root(websocket: WebSocket):
+	"""Accept and close WebSocket probes (e.g. from Cloudflare health checks)."""
+	await websocket.accept()
+	await websocket.close()
 
 @app.get("/sw.js", include_in_schema=False)
 @app.get("/service-worker.js", include_in_schema=False)
