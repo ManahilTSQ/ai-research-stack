@@ -332,7 +332,7 @@ def download_paper(request: DownloadRequest, background_tasks: BackgroundTasks):
     return {"success": True, "message": f"Ingestion started for: {title}", "mode": "pdf" if request.externalIds else "abstract"}
 
 
-@app.delete("/api/papers/{filename}")
+@app.delete("/api/papers/{filename:path}")
 def delete_paper(filename: str):
     manifest = manifest_service.get_all_entries()
     if filename not in manifest:

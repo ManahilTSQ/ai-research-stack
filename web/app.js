@@ -357,9 +357,11 @@ document.addEventListener("DOMContentLoaded", () => {
                     statusBadge = `<span class="badge badge-failed" style="font-size: 9px;"><i class="fa-solid fa-triangle-exclamation"></i> Error</span>`;
                 }
 
+                const sidebarLabel = formatSidebarLabel(file.authors, file.year, file.title);
+
                 item.innerHTML = `
                     <div class="file-item-main" title="${file.title}">
-                        <div class="file-name-row">${file.title}</div>
+                        <div class="file-name-row">${sidebarLabel}</div>
                         <div class="file-meta-row">
                             <span>${formatBytes(file.size_bytes)}</span>
                             ${statusBadge}
@@ -372,31 +374,23 @@ document.addEventListener("DOMContentLoaded", () => {
                 listDiv.appendChild(item);
             });
 
-            // Wire up deletion for each button
+            // Wire up deletion for each button — no confirmation dialog, no alert pop-ups
             listDiv.querySelectorAll(".btn-delete-file").forEach(btn => {
                 btn.addEventListener("click", async (e) => {
                     e.stopPropagation();
                     const filename = btn.getAttribute("data-filename");
-                    if (confirm(`Are you sure you want to delete this paper and remove all its vector chunks from the database?\nFile: ${filename}`)) {
-                        try {
-                            btn.disabled = true;
-                            btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i>`;
-                            const deleteResp = await fetch(`${API_BASE}/api/papers/${filename}`, {
-                                method: "DELETE"
-                            });
-                            const delResult = await deleteResp.json();
-                            if (delResult.success) {
-                                alert("Paper successfully deleted.");
-                                fetchLocalPDFs();
-                                checkHealth();
-                            } else {
-                                alert("Failed to fully delete paper chunks. Check backend logs.");
-                                fetchLocalPDFs();
-                            }
-                        } catch (delErr) {
-                            alert(`Error deleting paper: ${delErr.message || delErr}`);
-                            fetchLocalPDFs();
-                        }
+                    try {
+                        btn.disabled = true;
+                        btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i>`;
+                        const deleteResp = await fetch(`${API_BASE}/api/papers/${filename}`, {
+                            method: "DELETE"
+                        });
+                        // Silently refresh the list regardless of outcome
+                        fetchLocalPDFs();
+                        checkHealth();
+                    } catch (delErr) {
+                        // Silently refresh even on network error
+                        fetchLocalPDFs();
                     }
                 });
             });
@@ -404,6 +398,61 @@ document.addEventListener("DOMContentLoaded", () => {
         } catch (err) {
             listDiv.innerHTML = `<div class="list-empty text-crimson">Failed to load manifest.</div>`;
         }
+    }
+
+    /**
+     * Build a compact academic-style sidebar label from authors + year.
+     * Format: "LastName, Year" | "LastName & LastName2, Year" | "LastName et al., Year"
+     * Falls back to a shortened title if authors/year are not available.
+     * @param {string} authorsStr - Authors string from manifest (e.g. "Smith, J., Doe, A. et al.")
+     * @param {string} year - Publication year (e.g. "2026") or "N/A".
+     * @param {string} title - Full paper title (used as fallback).
+     * @returns {string} Formatted label.
+     */
+    function formatSidebarLabel(authorsStr, year, title) {
+        const hasYear = year && year !== "N/A" && year !== "None";
+        const hasAuthors = authorsStr && authorsStr !== "Unknown Authors";
+
+        if (!hasAuthors && !hasYear) {
+            // Pure fallback: truncate the title
+            return title && title.length > 35 ? title.slice(0, 33) + "…" : (title || "Unknown Paper");
+        }
+
+        // Extract last names from a formatted authors string
+        // Handles: "First Last", "Last, First", "F. Last", combined with commas and "et al."
+        const extractLastNames = (str) => {
+            // Strip trailing "et al." for parsing
+            const cleaned = str.replace(/\s*et al\.?$/i, "").trim();
+            // Split by comma-space patterns but NOT by "Last, First" internal commas
+            // Strategy: split on " , " or "; " to get individual author tokens
+            const parts = cleaned.split(/,\s+(?=[A-Z])/);
+            return parts.map(part => {
+                const tokens = part.trim().split(/\s+/);
+                // Last token that isn't an initial (length > 1) is the last name
+                // e.g. "John Smith" → "Smith"; "J. Smith" → "Smith"
+                const meaningful = tokens.filter(t => t.length > 1 && !/^[A-Z]\.$/.test(t));
+                return meaningful.length > 0 ? meaningful[meaningful.length - 1] : tokens[tokens.length - 1];
+            }).filter(Boolean);
+        };
+
+        const hasEtAl = /et al\.?/i.test(authorsStr);
+        const lastNames = hasAuthors ? extractLastNames(authorsStr) : [];
+        const yearPart = hasYear ? year : "";
+
+        let namePart;
+        if (lastNames.length === 0) {
+            namePart = "";
+        } else if (lastNames.length === 1) {
+            namePart = hasEtAl ? `${lastNames[0]} et al.` : lastNames[0];
+        } else if (lastNames.length === 2) {
+            namePart = `${lastNames[0]} & ${lastNames[1]}`;
+        } else {
+            namePart = `${lastNames[0]} et al.`;
+        }
+
+        if (namePart && yearPart) return `${namePart}, ${yearPart}`;
+        if (namePart) return namePart;
+        return yearPart || title;
     }
 
     /**
@@ -421,12 +470,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
             btn.disabled = false;
             btn.innerHTML = `<i class="fa-solid fa-arrows-spin"></i> Scan & Ingest Folder`;
-
-            if (result.success) {
-                alert("Bulk folder scanning and ingestion started in the background.\nThe document list and database stats will update automatically as PDFs are processed.");
-            } else {
-                alert("Scan failed to initiate. Please check backend logs.");
-            }
 
             // Refresh the file list to show "pending" or new status
             fetchLocalPDFs();
@@ -447,7 +490,6 @@ document.addEventListener("DOMContentLoaded", () => {
         } catch (err) {
             btn.disabled = false;
             btn.innerHTML = `<i class="fa-solid fa-arrows-spin"></i> Scan & Ingest Folder`;
-            alert(`Scan error: ${err.message || err}`);
         }
     }
 

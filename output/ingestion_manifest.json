@@ -4,188 +4,260 @@
         "doi": "N/A",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-24T16:17:06.270017"
+        "ingested_at": "2026-05-24T16:17:06.270017",
+        "authors": "Unknown Authors",
+        "year": "N/A"
     },
     "38.1.pdf": {
         "title": "38.1",
-        "doi": "N/A",
+        "doi": "10.1177/10598405241253565",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-24T17:53:22.954062"
+        "ingested_at": "2026-05-24T17:53:22.954062",
+        "authors": "M. Willgerodt, Andrea Tanner, Ellen M. McCabe et al.",
+        "year": "2024"
     },
     "cryptography-09-00017.pdf": {
         "title": "Cryptography-09-00017",
-        "doi": "N/A",
+        "doi": "10.1109/ACCESS.2024.3489452",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-24T18:47:12.769915"
+        "ingested_at": "2026-05-24T18:47:12.769915",
+        "authors": "Divya Sharma, C. Prabha, Md Mehedi Hassan et al.",
+        "year": "2024"
     },
     "European Cybersecurity and AI Framework.pdf": {
         "title": "European Cybersecurity And Ai Framework",
-        "doi": "N/A",
+        "doi": "10.60097/acig/213864",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-24T18:47:16.822849"
+        "ingested_at": "2026-05-24T18:47:16.822849",
+        "authors": "Muhammad Sajid Khan",
+        "year": "2025"
     },
     "Gen+AI+in+Financial+Cybersecurity+A+Comprehensive+Review+of+Architectures,+Algorithms,+and+Regulatory+Challenges (1).pdf": {
         "title": "Gen+Ai+In+Financial+Cybersecurity+A+Comprehensive+Review+Of+Architectures,+Algorithms,+And+Regulatory+Challenges (1)",
-        "doi": "N/A",
+        "doi": "10.69968/ijisem.2025v4i373-88",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-24T16:17:29.354672"
+        "ingested_at": "2026-05-24T16:17:29.354672",
+        "authors": "Satyadhar Joshi",
+        "year": "2025"
     },
     "GJCS_01_01_001.pdf": {
         "title": "Gjcs 01 01 001",
         "doi": "N/A",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-24T18:47:20.681860"
+        "ingested_at": "2026-05-24T18:47:20.681860",
+        "authors": "Unknown Authors",
+        "year": "N/A"
     },
     "WJARR-2024-2428 Harnessing the power of artificial intelligence to enhance next-generation cybersecurity.pdf": {
         "title": "Wjarr-2024-2428 Harnessing The Power Of Artificial Intelligence To Enhance Next-Generation Cybersecurity",
         "doi": "N/A",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-24T16:17:43.327550"
+        "ingested_at": "2026-05-24T16:17:43.327550",
+        "authors": "Unknown Authors",
+        "year": "N/A"
     },
     "pytorch_an_imperative_style_high-performance_deep_learning_l.pdf": {
         "title": "PyTorch: An Imperative Style, High-Performance Deep Learning Library",
-        "doi": "N/A",
+        "doi": "arXiv:1912.01703",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-24T17:38:37.412407"
+        "ingested_at": "2026-05-24T17:38:37.412407",
+        "authors": "Adam Paszke, Sam Gross, Francisco Massa et al.",
+        "year": "2019"
     },
     "nnu-net_a_self-configuring_method_for_deep_learning-based_bi.pdf": {
         "title": "nnU-Net: a self-configuring method for deep learning-based biomedical image segmentation",
         "doi": "10.1038/s41592-020-01008-z",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-24T17:39:07.003418"
+        "ingested_at": "2026-05-24T17:39:07.003418",
+        "authors": "Fabian Isensee, P. Jaeger, Simon A. A. Kohl et al.",
+        "year": "2020"
     },
     "review_of_deep_learning_concepts_cnn_architectures_challenge.pdf": {
         "title": "Review of deep learning: concepts, CNN architectures, challenges, applications, future directions",
         "doi": "10.1186/s40537-021-00444-8",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-24T17:39:19.642812"
+        "ingested_at": "2026-05-24T17:39:19.642812",
+        "authors": "Laith Alzubaidi, Jinglan Zhang, A. Humaidi et al.",
+        "year": "2021"
     },
     "a_survey_on_deep_learning_in_medical_image_analysis.pdf": {
         "title": "A survey on deep learning in medical image analysis",
         "doi": "10.1016/j.media.2017.07.005",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-25T22:59:23.802236"
+        "ingested_at": "2026-05-25T22:59:23.802236",
+        "authors": "G. Litjens, Thijs Kooi, B. Bejnordi et al.",
+        "year": "2017"
     },
     "reproducible_interactive_scalable_and_extensible_microbiome_.pdf": {
         "title": "Reproducible, interactive, scalable and extensible microbiome data science using QIIME 2",
         "doi": "10.1038/s41587-019-0209-9",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-24T19:23:26.206165"
+        "ingested_at": "2026-05-24T19:23:26.206165",
+        "authors": "Evan Bolyen, J. Rideout, Matthew R. Dillon et al.",
+        "year": "2019"
     },
     "new_frontiers_in_information_systems_theorizing_human-gai_co.pdf": {
         "title": "New Frontiers in Information Systems Theorizing: Human-gAI Collaboration",
         "doi": "10.17705/1jais.00868",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-25T13:53:40.695638"
+        "ingested_at": "2026-05-25T13:53:40.695638",
+        "authors": "S. Jarvenpaa, Stefan Klein",
+        "year": "2024"
     },
     "useful_products_in_information_systems_theorizing_a_discursi.pdf": {
         "title": "Useful Products in Information Systems Theorizing: A Discursive Formation Perspective",
         "doi": "10.17705/1JAIS.00730",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-26T10:16:22.762954"
+        "ingested_at": "2026-05-26T10:16:22.762954",
+        "authors": "N. Hassan, P. Lowry, L. Mathiassen",
+        "year": "2022"
     },
     "is_it_changing_the_world_conceptions_of_causality_for_inform.pdf": {
         "title": "Is IT Changing the World? Conceptions of Causality for Information Systems Theorizing",
         "doi": "10.25300/misq/2018/12903",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-25T00:18:13.852324"
+        "ingested_at": "2026-05-25T00:18:13.852324",
+        "authors": "M. Markus, F. Rowe",
+        "year": "2018"
     },
     "next-generation_information_systems_theorizing_a_call_to_act.pdf": {
         "title": "Next-Generation Information Systems Theorizing: A Call to Action",
         "doi": "10.25300/misq/2021/15434",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-24T19:19:26.656152"
+        "ingested_at": "2026-05-24T19:19:26.656152",
+        "authors": "Andrew Burton-Jones, Brian S. Butler, Susan V. Scott et al.",
+        "year": "2021"
     },
     "high-dimensional_probability_an_introduction_with_applicatio.pdf": {
         "title": "High-Dimensional Probability: An Introduction with Applications in Data Science",
         "doi": "10.1080/14697688.2020.1813475",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-24T19:27:10.404892"
+        "ingested_at": "2026-05-24T19:27:10.404892",
+        "authors": "Unknown Authors",
+        "year": "N/A"
     },
     "deep_residual_learning_for_image_recognition.pdf": {
         "title": "Deep Residual Learning for Image Recognition",
         "doi": "10.1109/cvpr.2016.90",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-24T19:28:29.230673"
+        "ingested_at": "2026-05-24T19:28:29.230673",
+        "authors": "Kaiming He, X. Zhang, Shaoqing Ren et al.",
+        "year": "2015"
     },
     "the_process_of_information_systems_theorizing_as_a_discursiv.pdf": {
         "title": "The process of information systems theorizing as a discursive practice",
         "doi": "10.1177/0268396219832004",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-25T00:18:41.373038"
+        "ingested_at": "2026-05-25T00:18:41.373038",
+        "authors": "N. Hassan, L. Mathiassen, P. Lowry",
+        "year": "2019"
     },
     "mobilising_new_frontiers_in_digital_transformation_research_.pdf": {
         "title": "Mobilising new frontiers in digital transformation research: A problematization review",
         "doi": "10.1111/isj.12531",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-25T14:42:48.789080"
+        "ingested_at": "2026-05-25T14:42:48.789080",
+        "authors": "Amir Ashrafi, P. Constantinides, Nikolay Mehandjiev et al.",
+        "year": "2024"
     },
     "exploring_the_role_of_third_parties_in_digital_transformatio.pdf": {
         "title": "Exploring the Role of Third Parties in Digital Transformation Initiatives: A Problematized Assumptions Perspective",
         "doi": "10.17705/1cais.05707",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-25T14:42:50.524524"
+        "ingested_at": "2026-05-25T14:42:50.524524",
+        "authors": "Jack O'Neill, David Pidoyma, Ciara Northridge et al.",
+        "year": "2025"
     },
     "the_wpr_analysis_of_digital_transformation_policy_discourse_.pdf": {
         "title": "The WPR Analysis of Digital Transformation Policy Discourse in Education",
         "doi": "10.22251/jlcci.2025.25.9.1097",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-25T14:42:53.154021"
+        "ingested_at": "2026-05-25T14:42:53.154021",
+        "authors": "Doohyoo Lee",
+        "year": "2025"
     },
     "native_point_defects_and_their_implications_for_the_dirac_po.pdf": {
         "title": "Native point defects and their implications for the Dirac point gap at MnBi2Te4(0001)",
         "doi": "10.1038/s41535-021-00414-6",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-25T14:05:53.350576"
+        "ingested_at": "2026-05-25T14:05:53.350576",
+        "authors": "M. Garnica, M. Otrokov, P. Aguilar et al.",
+        "year": "2021"
     },
     "the_concept_of_psychological_and_pedagogical_support_of_digi.pdf": {
         "title": "The concept of psychological and pedagogical support of digital transformation of educational process of higher education institution (anthropocentric approach)",
         "doi": "10.18384/2949-5105-2024-3-133-149",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-25T14:43:10.849713"
+        "ingested_at": "2026-05-25T14:43:10.849713",
+        "authors": "O. Vannovskaya",
+        "year": "2024"
     },
     "digital_humanities_challenges_of_the_transformation_of_tools.pdf": {
         "title": "Digital Humanities: Challenges of the Transformation of Tools and Objects of Knowledge in Contemporary Humanities",
         "doi": "10.55630/dipp.2013.3.11",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-25T14:44:28.534913"
+        "ingested_at": "2026-05-25T14:44:28.534913",
+        "authors": "Alexandre Camus, D. Paneva-Marinova, Detelin Luchev",
+        "year": "2013"
     },
     "deeplabcut_markerless_pose_estimation_of_user-defined_body_p.pdf": {
         "title": "DeepLabCut: markerless pose estimation of user-defined body parts with deep learning",
         "doi": "10.1038/s41593-018-0209-y",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-25T22:59:59.609486"
+        "ingested_at": "2026-05-25T22:59:59.609486",
+        "authors": "Alexander Mathis, P. Mamidanna, Kevin M. Cury et al.",
+        "year": "2018"
     },
     "machine_learning_algorithms_real-world_applications_and_rese.pdf": {
         "title": "Machine Learning: Algorithms, Real-World Applications and Research Directions",
         "doi": "10.1007/s42979-021-00592-x",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-26T15:20:16.004483"
+        "ingested_at": "2026-05-26T15:20:16.004483",
+        "authors": "Iqbal H. Sarker",
+        "year": "2021"
+    },
+    "a_survey_on_image_data_augmentation_for_deep_learning.pdf": {
+        "title": "A Survey On Image Data Augmentation For Deep Learning",
+        "doi": "N/A",
+        "status": "pending",
+        "error": "",
+        "authors": "Unknown Authors",
+        "year": "N/A",
+        "ingested_at": null
+    },
+    "what_uncertainties_do_we_need_in_bayesian_deep_learning_for_.pdf": {
+        "title": "What Uncertainties Do We Need In Bayesian Deep Learning For ",
+        "doi": "N/A",
+        "status": "pending",
+        "error": "",
+        "authors": "Unknown Authors",
+        "year": "N/A",
+        "ingested_at": null
     }
 }

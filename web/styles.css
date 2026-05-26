@@ -98,9 +98,9 @@ body {
 
 /* Common Layout Components */
 .app-container {
-    max-width: 1400px;
+    max-width: 100%;
     margin: 0 auto;
-    padding: 20px;
+    padding: 16px 28px;
     display: flex;
     flex-direction: column;
     min-height: 100vh;
@@ -593,9 +593,10 @@ select:focus {
 
 .rag-layout {
     display: grid;
-    grid-template-columns: 320px 1fr;
+    grid-template-columns: 400px 1fr;
     gap: 20px;
-    height: 700px;
+    height: calc(100vh - 220px);
+    min-height: 600px;
 }
 
 /* Left Sidebar */

@@ -201,8 +201,8 @@ class ManifestManagerService:
         """
         with self.manifest_lock:
             pdf_dir = settings.PDF_DOWNLOAD_DIR  # papers/ directory
-            # Glob all PDF files currently present on disk
-            pdf_files = list(pdf_dir.glob("*.pdf"))
+            # Recursively glob all PDF files in papers/ and all subfolders
+            pdf_files = list(pdf_dir.rglob("*.pdf"))
 
             manifest = self._load_manifest()
 
@@ -220,7 +220,9 @@ class ManifestManagerService:
 
             # ── Pass 1: Add new files to the manifest ─────────────────────────────
             for pdf_path in pdf_files:
-                filename = pdf_path.name
+                # Use relative path as key to support subfolders without collisions
+                # e.g. "subgroup/paper.pdf" instead of bare "paper.pdf"
+                filename = str(pdf_path.relative_to(pdf_dir))
 
                 if filename not in manifest:
                     # Derive a human-readable title from the filename as a best guess
@@ -470,7 +472,8 @@ class ManifestManagerService:
                 threading.Thread(target=_bg_resolve_metadata, daemon=True).start()
 
             # ── Pass 2: Remove stale entries for deleted files ─────────────────────
-            existing_filenames = {f.name for f in pdf_files}  # Fast set lookup
+            # Build set of current relative paths for O(1) lookup
+            existing_filenames = {str(f.relative_to(pdf_dir)) for f in pdf_files}
             for filename in list(manifest.keys()):
                 if filename not in existing_filenames:
                     meta = manifest[filename]
