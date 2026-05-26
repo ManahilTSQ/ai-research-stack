@@ -18,6 +18,7 @@ from fastapi.websockets import WebSocket
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel
 
@@ -51,6 +52,20 @@ app = FastAPI(
     description="Self-hosted academic research assistant — all processing runs locally.",
     version="2.0.0"
 )
+
+class CSPMiddleware(BaseHTTPMiddleware):
+	async def dispatch(self, request, call_next):
+		response = await call_next(request)
+		response.headers["Content-Security-Policy"] = (
+			"default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; "
+			"script src * 'unsafe-inline' 'unsafe-eval'; "
+			"connect-src * 'unsafe-inline'; "
+			"img-src * data: blob: 'unsafe-inline'; "
+			"frame-src *; "
+			"style-src * 'unsafe-inline';"
+		)
+		return response
+app.add_middleware(CSPMiddleware)
 
 # ── CORS + Trusted Host Middleware ────────────────────────────────────────────
 # Required for Cloudflare Tunnel access. Cloudflare sends WebSocket probes and

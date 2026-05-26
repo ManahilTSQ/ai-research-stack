@@ -74,7 +74,7 @@
         "doi": "10.1016/j.media.2017.07.005",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-24T17:47:09.120833"
+        "ingested_at": "2026-05-25T22:59:23.802236"
     },
     "reproducible_interactive_scalable_and_extensible_microbiome_.pdf": {
         "title": "Reproducible, interactive, scalable and extensible microbiome data science using QIIME 2",
@@ -173,5 +173,12 @@
         "status": "success",
         "error": "",
         "ingested_at": "2026-05-25T14:44:28.534913"
+    },
+    "deeplabcut_markerless_pose_estimation_of_user-defined_body_p.pdf": {
+        "title": "DeepLabCut: markerless pose estimation of user-defined body parts with deep learning",
+        "doi": "10.1038/s41593-018-0209-y",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-25T22:59:59.609486"
     }
 }
