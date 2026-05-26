@@ -162,7 +162,7 @@ def format_authors(authors: list) -> str:
 
 
 @app.get("/", response_class=FileResponse, include_in_schema=False)
-async def serve_ui():
+def serve_ui():
     return FileResponse(str(WEB_DIR / "index.html"))
 
 @app.websocket("/")
@@ -192,7 +192,7 @@ async def serve_sw_unregister():
 
 
 @app.get("/api/health")
-async def health_check():
+def health_check():
     ollama_status = "offline"
     try:
         resp = _req.get(f"{settings.OLLAMA_BASE_URL}/api/tags", timeout=3)
@@ -217,7 +217,7 @@ async def health_check():
 
 
 @app.get("/api/search")
-async def search_papers(q: str, limit: int = 10):
+def search_papers(q: str, limit: int = 10):
     if not q or not q.strip():
         raise HTTPException(status_code=400, detail="Query string 'q' is required.")
 
@@ -252,7 +252,7 @@ async def search_papers(q: str, limit: int = 10):
 
 
 @app.post("/api/download")
-async def download_paper(request: DownloadRequest, background_tasks: BackgroundTasks):
+def download_paper(request: DownloadRequest, background_tasks: BackgroundTasks):
     ext_ids = request.externalIds or {}
     doi      = ext_ids.get("DOI")
     arxiv_id = ext_ids.get("ArXiv")
@@ -333,7 +333,7 @@ async def download_paper(request: DownloadRequest, background_tasks: BackgroundT
 
 
 @app.delete("/api/papers/{filename}")
-async def delete_paper(filename: str):
+def delete_paper(filename: str):
     manifest = manifest_service.get_all_entries()
     if filename not in manifest:
         raise HTTPException(
@@ -378,7 +378,7 @@ async def delete_paper(filename: str):
 
 
 @app.get("/api/pdfs")
-async def list_pdfs():
+def list_pdfs():
     manifest = manifest_service.sync_with_vector_store(vector_store)
     pdf_dir  = settings.PDF_DOWNLOAD_DIR
 
@@ -422,7 +422,7 @@ async def list_pdfs():
 
 
 @app.post("/api/ingest-pending")
-async def ingest_pending(background_tasks: BackgroundTasks):
+def ingest_pending(background_tasks: BackgroundTasks):
     # Perform directory scan & sync first to find any newly dropped PDFs
     manifest_service.sync_with_vector_store(vector_store)
 
@@ -481,7 +481,7 @@ async def ingest_pending(background_tasks: BackgroundTasks):
 
 
 @app.post("/api/query-rag")
-async def query_rag(request: RAGQueryRequest):
+def query_rag(request: RAGQueryRequest):
     if not request.query.strip():
         raise HTTPException(status_code=422, detail="Query string must not be empty.")
 
@@ -611,7 +611,7 @@ async def query_rag(request: RAGQueryRequest):
 
 
 @app.get("/api/prompts")
-async def list_prompts():
+def list_prompts():
     prompts = []
     if not PROMPTS_DIR.exists():
         return []
@@ -641,7 +641,7 @@ async def list_prompts():
 
 
 @app.post("/api/analyze-citations")
-async def start_citation_analysis(request: CitationAnalysisRequest):
+def start_citation_analysis(request: CitationAnalysisRequest):
     run_id = str(uuid.uuid4())
 
     citation_jobs[run_id] = {
@@ -710,7 +710,7 @@ async def start_citation_analysis(request: CitationAnalysisRequest):
 
 
 @app.get("/api/analyze-citations/{run_id}")
-async def get_citation_status(run_id: str):
+def get_citation_status(run_id: str):
     if run_id not in citation_jobs:
         raise HTTPException(
             status_code=404,
@@ -720,7 +720,7 @@ async def get_citation_status(run_id: str):
 
 
 @app.get("/api/reports")
-async def list_reports():
+def list_reports():
     reports = []
     for csv_file in sorted(REPORTS_DIR.glob("*.csv"), reverse=True):
         stat = csv_file.stat()
@@ -733,7 +733,7 @@ async def list_reports():
 
 
 @app.get("/api/reports/download/{filename}")
-async def download_report(filename: str):
+def download_report(filename: str):
     safe_name = Path(filename).name
     report_path = REPORTS_DIR / safe_name
 
