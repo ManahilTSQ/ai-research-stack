@@ -208,6 +208,35 @@ class VectorStoreService:
             logger.error(f"Failed to delete paper chunks from ChromaDB: {e}")
             return False
 
+    def update_paper_metadata(self, title: str, authors: str, year: int | str, doi: str | None = None) -> bool:
+        """
+        Update metadata (authors, year, doi) in-place for all chunks of a paper.
+        """
+        try:
+            # Retrieve all chunks belonging to this paper title
+            data = self.collection.get(where={"title": title}, include=["metadatas"])
+            if not data or not data.get("ids"):
+                logger.warning(f"No chunks found in ChromaDB to update metadata for paper title: '{title}'")
+                return False
+
+            ids = data["ids"]
+            metadatas = data["metadatas"]
+            
+            # Update metadata fields
+            for meta in metadatas:
+                meta["authors"] = authors
+                meta["year"] = str(year)
+                if doi and doi != "N/A":
+                    meta["doi"] = doi
+
+            # Batch update in ChromaDB
+            self.collection.update(ids=ids, metadatas=metadatas)
+            logger.info(f"Successfully updated metadata in ChromaDB for '{title}' ({len(ids)} chunks).")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to update paper metadata in ChromaDB for '{title}': {e}")
+            return False
+
     # ──────────────────────────────────────────────────────────────────────────
     # PUBLIC: Vector Similarity Search
     # ──────────────────────────────────────────────────────────────────────────

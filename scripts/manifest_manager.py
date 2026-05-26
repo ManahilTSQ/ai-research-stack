@@ -259,6 +259,17 @@ class ManifestManagerService:
                 updated = True
 
         # ── Pass 1b: Backfill metadata and check for phantom-success entries ──
+        from paper_discovery import PaperDiscoveryService
+        discovery_service = PaperDiscoveryService()
+
+        def _format_authors_helper(authors: list) -> str:
+            if not authors:
+                return "Unknown Authors"
+            names = [a.get("name", "") for a in authors if a.get("name")]
+            if len(names) > 3:
+                return ", ".join(names[:3]) + " et al."
+            return ", ".join(names)
+
         for filename, meta in manifest.items():
             title = meta.get("title", "")
             is_verified = False
@@ -284,14 +295,52 @@ class ManifestManagerService:
                 elif matched_title:
                     # Backfill missing metadata fields
                     paper_meta = papers_metadata.get(matched_title, {})
-                    if "authors" not in meta or meta["authors"] == "Unknown Authors":
-                        meta["authors"] = paper_meta.get("authors", "Unknown Authors")
+                    authors = paper_meta.get("authors", "Unknown Authors")
+                    year = paper_meta.get("year", "N/A")
+                    doi = paper_meta.get("doi", "N/A")
+
+                    # If metadata is missing/unknown, search Semantic Scholar by title
+                    if authors == "Unknown Authors" or year in [None, "N/A", "None", "unknown"]:
+                        logger.info(f"Querying Semantic Scholar to resolve metadata for: '{title}'")
+                        try:
+                            # Search by title to find correct authors/year
+                            results = discovery_service.search_papers(title, limit=3)
+                            best_match = None
+                            for cand in results:
+                                c_title = cand.get("title", "").lower().strip()
+                                if c_title == title.lower().strip() or title.lower().strip() in c_title or c_title in title.lower().strip():
+                                    best_match = cand
+                                    break
+                            
+                            if best_match:
+                                s2_authors = _format_authors_helper(best_match.get("authors", []))
+                                s2_year = best_match.get("year", "N/A")
+                                s2_doi = (best_match.get("externalIds") or {}).get("DOI", "N/A")
+                                
+                                logger.info(f"Resolved S2 Metadata for '{title}': authors='{s2_authors}', year={s2_year}")
+                                authors = s2_authors
+                                year = str(s2_year)
+                                if s2_doi and s2_doi != "N/A":
+                                    doi = s2_doi
+
+                                # Update chunks in ChromaDB
+                                vector_store_service.update_paper_metadata(
+                                    title=matched_title,
+                                    authors=authors,
+                                    year=year,
+                                    doi=doi
+                                )
+                        except Exception as lookup_err:
+                            logger.warning(f"Failed to lookup metadata on S2 for '{title}': {lookup_err}")
+
+                    if "authors" not in meta or meta["authors"] == "Unknown Authors" or meta["authors"] != authors:
+                        meta["authors"] = authors
                         updated = True
-                    if "year" not in meta or meta["year"] in [None, "N/A", "None"]:
-                        meta["year"] = paper_meta.get("year", "N/A")
+                    if "year" not in meta or meta["year"] in [None, "N/A", "None"] or meta["year"] != str(year):
+                        meta["year"] = str(year)
                         updated = True
-                    if meta.get("doi") in [None, "N/A", "None"]:
-                        meta["doi"] = paper_meta.get("doi", "N/A")
+                    if meta.get("doi") in [None, "N/A", "None"] or meta["doi"] != doi:
+                        meta["doi"] = doi
                         updated = True
 
         # ── Pass 2: Remove stale entries for deleted files ─────────────────────
