@@ -208,9 +208,9 @@ class VectorStoreService:
             logger.error(f"Failed to delete paper chunks from ChromaDB: {e}")
             return False
 
-    def update_paper_metadata(self, title: str, authors: str, year: int | str, doi: str | None = None) -> bool:
+    def update_paper_metadata(self, title: str, authors: str, year: int | str, doi: str | None = None, new_title: str | None = None) -> bool:
         """
-        Update metadata (authors, year, doi) in-place for all chunks of a paper.
+        Update metadata (authors, year, doi, title) in-place for all chunks of a paper.
         """
         try:
             # Retrieve all chunks belonging to this paper title
@@ -228,6 +228,8 @@ class VectorStoreService:
                 meta["year"] = str(year)
                 if doi and doi != "N/A":
                     meta["doi"] = doi
+                if new_title:
+                    meta["title"] = new_title
 
             # Batch update in ChromaDB
             self.collection.update(ids=ids, metadatas=metadatas)

@@ -325,6 +325,7 @@ class ManifestManagerService:
 
                 def _bg_resolve_metadata():
                     try:
+                        import re
                         from paper_discovery import PaperDiscoveryService
                         discovery_service = PaperDiscoveryService()
 
@@ -338,41 +339,66 @@ class ManifestManagerService:
 
                         logger.info(f"Background thread starting to resolve metadata for {len(entries_to_resolve)} papers...")
                         for filename, matched_title, title, existing_doi in entries_to_resolve:
-                            logger.info(f"Querying Semantic Scholar to resolve metadata for: '{title}'")
+                            # Clean up title for search: replace '+', '_', '-' with space, remove trailing dots
+                            search_title = title.replace("+", " ").replace("_", " ").replace("-", " ").strip(".")
+                            logger.info(f"Querying Semantic Scholar to resolve metadata for: '{search_title}' (original: '{title}')")
                             try:
                                 # Search by title to find correct authors/year
-                                results = discovery_service.search_papers(title, limit=3)
+                                results = discovery_service.search_papers(search_title, limit=5)
                                 best_match = None
                                 for cand in results:
-                                    c_title = cand.get("title", "").lower().strip()
-                                    if c_title == title.lower().strip() or title.lower().strip() in c_title or c_title in title.lower().strip():
+                                    c_title = (cand.get("title") or "").lower().strip()
+                                    t_clean = search_title.lower().strip()
+                                    
+                                    # Normalize both titles by removing non-alphanumeric characters
+                                    c_title_norm = re.sub(r'[^a-z0-9\s]', '', c_title)
+                                    t_clean_norm = re.sub(r'[^a-z0-9\s]', '', t_clean)
+                                    
+                                    # 1. Exact or substring match after normalization
+                                    if (c_title_norm == t_clean_norm or 
+                                        t_clean_norm in c_title_norm or 
+                                        c_title_norm in t_clean_norm):
                                         best_match = cand
                                         break
+                                    
+                                    # 2. Or >= 70% word overlap match
+                                    t_words = set(t_clean_norm.split())
+                                    c_words = set(c_title_norm.split())
+                                    if t_words and c_words:
+                                        overlap = len(t_words & c_words) / max(len(t_words), 1)
+                                        if overlap >= 0.7:
+                                            best_match = cand
+                                            break
                                 
                                 if best_match:
+                                    s2_title = best_match.get("title", title)
                                     s2_authors = _format_authors_helper(best_match.get("authors", []))
                                     s2_year = best_match.get("year", "N/A")
                                     s2_doi = (best_match.get("externalIds") or {}).get("DOI", "N/A")
                                     
-                                    logger.info(f"Resolved S2 Metadata for '{title}': authors='{s2_authors}', year={s2_year}")
+                                    logger.info(f"Resolved S2 Metadata for '{title}': title='{s2_title}', authors='{s2_authors}', year={s2_year}")
                                     
-                                    # Update chunks in ChromaDB
+                                    # Update chunks in ChromaDB (updating both metadata fields AND the title)
                                     vector_store_service.update_paper_metadata(
                                         title=matched_title,
                                         authors=s2_authors,
                                         year=str(s2_year),
-                                        doi=s2_doi if s2_doi != "N/A" else existing_doi
+                                        doi=s2_doi if s2_doi != "N/A" else existing_doi,
+                                        new_title=s2_title
                                     )
 
                                     # Load latest manifest, write the metadata, and save
                                     with self.manifest_lock:
                                         current_manifest = self._load_manifest()
                                         if filename in current_manifest:
+                                            current_manifest[filename]["title"] = s2_title
                                             current_manifest[filename]["authors"] = s2_authors
                                             current_manifest[filename]["year"] = str(s2_year)
                                             if s2_doi and s2_doi != "N/A":
                                                 current_manifest[filename]["doi"] = s2_doi
                                             self._save_manifest(current_manifest)
+                                else:
+                                    logger.warning(f"No matching S2 paper found for title '{search_title}' among {len(results)} search results.")
                             except Exception as lookup_err:
                                 logger.warning(f"Background S2 lookup failed for '{title}': {lookup_err}")
                             finally:
