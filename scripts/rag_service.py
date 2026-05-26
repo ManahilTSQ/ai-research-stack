@@ -133,12 +133,16 @@ class RAGService:
               - "success" (bool): Whether generation succeeded.
               - "error" (str, optional): Error message if success=False.
         """
+        # Fetch library index to support meta-queries
+        stats = self.vector_store.get_collection_stats()
+        papers_metadata = stats.get("papers_metadata", {})
+
         # ── Step 1: Retrieve relevant context chunks from ChromaDB ─────────────
         chunks = self.vector_store.query_similar_chunks(query, limit=limit)
 
-        if not chunks:
-            # No relevant context found — return a polite refusal rather than hallucinating
-            logger.warning("No relevant chunks found in ChromaDB for this query.")
+        if not chunks and not papers_metadata:
+            # No papers at all in database — return a polite refusal
+            logger.warning("No relevant chunks and no papers found in ChromaDB.")
             return {
                 "query": query,
                 "answer": (
@@ -147,50 +151,70 @@ class RAGService:
                 ),
                 "sources": [],
                 "success": False,
-                "error": "No matching context in the vector database."
+                "error": "No matching papers in the vector database."
             }
 
+        # Format Library Inventory string
+        library_inventory_blocks = []
+        for i, (title, meta) in enumerate(papers_metadata.items()):
+            library_inventory_blocks.append(
+                f"- Paper {i+1}: \"{title}\" | Authors: {meta.get('authors', 'Unknown Authors')} | Year: {meta.get('year', 'N/A')} | DOI: {meta.get('doi', 'N/A')}"
+            )
+        library_inventory_str = "\n".join(library_inventory_blocks) if library_inventory_blocks else "No papers in database library."
+
         # ── Step 2: Format context blocks for the prompt ───────────────────────
-        # Each chunk is labelled [Source N] so the LLM can reference it by number.
         context_blocks = []
         for idx, chunk in enumerate(chunks):
             meta = chunk["metadata"]
             title = meta.get("title", "Untitled Paper")
+            authors = meta.get("authors", "Unknown Authors")
+            year = meta.get("year", "N/A")
+            doi = meta.get("doi", "N/A")
             pages = meta.get("pages", "N/A")
             text = chunk["text"]
 
-            # Format: [Source 1] "Paper Title" (Pages: 3,4)\nContent: <text>
+            # Detailed structured metadata format for LLM reference
             block = (
-                f'[Source {idx + 1}] "{title}" (Pages: {pages})\n'
-                f"Content: {text}\n"
+                f'Document [Source {idx + 1}]:\n'
+                f'Title: "{title}"\n'
+                f'Authors: {authors}\n'
+                f'Year: {year}\n'
+                f'DOI: {doi}\n'
+                f'Pages: {pages}\n'
+                f'Content: {text}\n'
             )
             context_blocks.append(block)
 
         # Join all blocks into one context string for the prompt
-        context_str = "\n".join(context_blocks)
+        context_str = "\n".join(context_blocks) if context_blocks else "No relevant text passage chunks found for this query."
 
         # ── Step 3: Build structured prompts ──────────────────────────────────
         # System prompt: sets the LLM's role and strict citation rules
         system_prompt = (
-            "You are a professional, self-hosted academic AI research assistant. "
-            "Your task is to answer the researcher's query based strictly on the provided context blocks from ingested documents.\n\n"
+            "You are a professional, self-hosted academic AI research assistant.\n"
+            "Your task is to answer the researcher's query based strictly on the provided Document context blocks and the Ingested Paper Library Inventory.\n\n"
             "Rules:\n"
-            "1. Use ONLY facts stated in the provided context blocks. Do NOT use your pre-trained knowledge or make up any details.\n"
-            "2. For every claim you make, cite the source number (e.g. [Source 1]) and page numbers.\n"
-            "3. If a query asks about a named author (e.g. Hassan, Smith) or a specific paper title that does NOT appear anywhere in the context blocks, respond with EXACTLY: 'I could not find any relevant papers or context in the local database to answer your question. Please ingest papers first.'\n"
-            "4. If the context blocks are on the right general topic but lack sufficient detail for the specific question, honestly state that the available ingested papers do not contain enough detail on that aspect, then summarise what the context DOES say on the topic.\n"
-            "5. Maintain a formal, neutral, and academic tone throughout."
+            "1. Use ONLY facts stated in the provided Document context blocks or the Ingested Paper Library Inventory. Do NOT use your pre-trained knowledge or make up any details.\n"
+            "2. Cite your sources inline using APA7 style, for example: (Hassan, 2020) or (Smith & Jones, 2018, p. 12). If citing specific pages, use the Pages metadata from the Document block (e.g. p. 45).\n"
+            "3. Do NOT use bracketed source numbers like '[Source 1]' or 'Source 1' in your inline citations. Convert them to proper (Author, Year) citations using the Authors and Year metadata provided in each Document block.\n"
+            "4. At the end of your response, you MUST compile a 'References' section containing all the papers you cited in your answer. Format each reference in proper APA7 bibliography style, using the Authors, Year, Title, and DOI/URL if available in the metadata.\n"
+            "5. If a query asks about a named author or paper that does not appear in the context blocks or Library Inventory, respond with EXACTLY: 'I could not find any relevant papers or context in the local database to answer your question. Please ingest papers first.'\n"
+            "6. If the context blocks are on the right general topic but lack sufficient detail for the specific question, honestly state that the available ingested papers do not contain enough detail on that aspect, then summarise what the context DOES say on the topic.\n"
+            "7. Maintain a formal, neutral, and academic tone throughout."
         )
 
-        # User prompt: the context blocks + the actual research question
+        # User prompt: the context blocks + library inventory + the actual research query
         user_prompt = (
+            f"Ingested Paper Library Inventory:\n"
+            f"{'─' * 80}\n"
+            f"{library_inventory_str}\n"
+            f"{'─' * 80}\n\n"
             f"Context from ingested research papers:\n"
             f"{'─' * 80}\n"
             f"{context_str}\n"
             f"{'─' * 80}\n\n"
             f"Researcher Query: {query}\n\n"
-            "Provide your structured academic answer below "
-            "(remember to inline cite sources and page numbers):"
+            "Provide your structured academic answer below (remember to use inline APA7 citations and append a References section):"
         )
 
         # ── Step 4: Send to Ollama /api/chat ──────────────────────────────────

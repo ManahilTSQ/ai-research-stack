@@ -106,7 +106,9 @@ class VectorStoreService:
         self,
         paper_title: str,
         doi: str | None,
-        chunks: list[dict]
+        chunks: list[dict],
+        authors: str | None = None,
+        year: int | None = None
     ) -> bool:
         """
         Upsert (insert or update) all text chunks for a single paper into ChromaDB.
@@ -125,6 +127,8 @@ class VectorStoreService:
             paper_title: Human-readable title of the paper.
             doi: DOI identifier (used to generate stable IDs). May be None.
             chunks: List of chunk dicts as produced by PDFProcessorService.chunk_text().
+            authors: Formatted string of authors. May be None.
+            year: Publication year. May be None.
 
         Returns:
             True on successful upsert, False if no chunks were provided or on error.
@@ -156,6 +160,8 @@ class VectorStoreService:
             metadata = {
                 "title": paper_title,
                 "doi": doi or "N/A",
+                "authors": authors or "Unknown Authors",
+                "year": str(year) if year else "N/A",
                 # Convert the list of page numbers to a comma-separated string
                 "pages": ",".join(map(str, chunk_meta.get("pages", []))),
                 "char_start": int(chunk_meta.get("char_start", 0)),
@@ -182,6 +188,24 @@ class VectorStoreService:
 
         except Exception as e:
             logger.error(f"ChromaDB upsert failed for '{paper_title}': {e}")
+            return False
+
+    def delete_paper(self, title: str, doi: str | None = None) -> bool:
+        """
+        Delete all chunks associated with a specific paper in ChromaDB.
+        Uses title or doi as criteria.
+        """
+        try:
+            # Delete by DOI if available (more precise), otherwise by title
+            if doi and doi != "N/A":
+                self.collection.delete(where={"doi": doi})
+                logger.info(f"Deleted paper chunks from ChromaDB for DOI: '{doi}'")
+            else:
+                self.collection.delete(where={"title": title})
+                logger.info(f"Deleted paper chunks from ChromaDB for Title: '{title}'")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete paper chunks from ChromaDB: {e}")
             return False
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -263,22 +287,32 @@ class VectorStoreService:
               - "total_chunks" (int): Total number of vectors stored.
               - "total_papers" (int): Number of unique paper titles.
               - "papers_list" (list[str]): Sorted list of unique paper titles.
+              - "papers_metadata" (dict): Mapping from paper title (str) to dict containing 'authors', 'year', and 'doi'.
         """
         try:
             total_chunks = self.collection.count()
             unique_papers = set()
+            papers_metadata = {}
 
             if total_chunks > 0:
                 # Fetch only metadata (not document text) to keep the response small
                 data = self.collection.get(include=["metadatas"])
                 for meta in data.get("metadatas", []):
                     if meta and "title" in meta:
-                        unique_papers.add(meta["title"])
+                        title = meta["title"]
+                        unique_papers.add(title)
+                        if title not in papers_metadata:
+                            papers_metadata[title] = {
+                                "authors": meta.get("authors", "Unknown Authors"),
+                                "year": meta.get("year", "N/A"),
+                                "doi": meta.get("doi", "N/A")
+                            }
 
             return {
                 "total_chunks": total_chunks,
                 "total_papers": len(unique_papers),
-                "papers_list": sorted(list(unique_papers))
+                "papers_list": sorted(list(unique_papers)),
+                "papers_metadata": papers_metadata
             }
 
         except Exception as e:
@@ -287,5 +321,6 @@ class VectorStoreService:
             return {
                 "total_chunks": 0,
                 "total_papers": 0,
-                "papers_list": []
+                "papers_list": [],
+                "papers_metadata": {}
             }

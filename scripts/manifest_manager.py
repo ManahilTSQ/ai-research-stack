@@ -132,7 +132,9 @@ class ManifestManagerService:
         title: str,
         doi: str | None = None,
         status: str = "success",
-        error: str = ""
+        error: str = "",
+        authors: str | None = None,
+        year: int | str | None = None
     ) -> None:
         """
         Record the ingestion result for a PDF file in the manifest.
@@ -146,6 +148,8 @@ class ManifestManagerService:
             doi: DOI of the paper, or None if unknown.
             status: "success", "failed", or "pending".
             error: Error message string if status is "failed", else empty string.
+            authors: Authors string.
+            year: Year of publication.
         """
         manifest = self._load_manifest()
 
@@ -155,6 +159,8 @@ class ManifestManagerService:
             "doi": doi or "N/A",
             "status": status,
             "error": error,
+            "authors": authors or "Unknown Authors",
+            "year": str(year) if year else "N/A",
             # ISO-format timestamp for human-readable audit trail
             "ingested_at": datetime.now().isoformat()
         }
@@ -170,10 +176,11 @@ class ManifestManagerService:
         """
         Reconcile the manifest against the actual papers/ directory and ChromaDB.
 
-        This sync performs two cleanup operations:
+        This sync performs three cleanup operations:
           1. Add any new PDFs in papers/ that are not yet in the manifest
              (marking them as "pending" or "success" if already in ChromaDB).
-          2. Remove manifest entries for PDFs that no longer exist on disk
+          2. Backfill missing metadata (authors, year, doi) for existing entries.
+          3. Remove manifest entries for PDFs that no longer exist on disk
              (so deleted files don't show up in the UI as pending forever).
 
         Args:
@@ -192,6 +199,7 @@ class ManifestManagerService:
         # Get the set of paper titles currently indexed in ChromaDB
         stats = vector_store_service.get_collection_stats()
         ingested_titles = set(stats.get("papers_list", []))
+        papers_metadata = stats.get("papers_metadata", {})
 
         logger.info(
             f"Syncing manifest: {len(pdf_files)} PDFs on disk, "
@@ -223,11 +231,14 @@ class ManifestManagerService:
                         f"Auto-detected existing ChromaDB paper '{matched_title}' "
                         f"for local file '{filename}'"
                     )
+                    paper_meta = papers_metadata.get(matched_title, {})
                     manifest[filename] = {
                         "title": matched_title,
-                        "doi": "N/A",
+                        "doi": paper_meta.get("doi", "N/A"),
                         "status": "success",
                         "error": "",
+                        "authors": paper_meta.get("authors", "Unknown Authors"),
+                        "year": paper_meta.get("year", "N/A"),
                         # Use the file's last-modified time as a proxy for ingestion time
                         "ingested_at": datetime.fromtimestamp(
                             pdf_path.stat().st_mtime
@@ -240,37 +251,48 @@ class ManifestManagerService:
                         "doi": "N/A",
                         "status": "pending",
                         "error": "",
+                        "authors": "Unknown Authors",
+                        "year": "N/A",
                         "ingested_at": None
                     }
 
                 updated = True
 
-        # ── Pass 1b: Integrity audit — detect and reset phantom-success entries ──
-        # A "phantom success" is a manifest entry marked "success" whose title
-        # cannot be found in ChromaDB. This happens when ingestion appeared to
-        # succeed (no Python exception) but ChromaDB actually stored nothing
-        # (e.g. corrupt PDF, empty text, upsert silent failure).
-        # Fix: reset to "pending" so the next Scan & Ingest Folder picks it up.
+        # ── Pass 1b: Backfill metadata and check for phantom-success entries ──
         for filename, meta in manifest.items():
-            if meta.get("status") != "success":
-                continue  # Only audit entries already marked as success
             title = meta.get("title", "")
             is_verified = False
+            matched_title = None
             for t in ingested_titles:
                 if (t.lower().strip() in title.lower().strip() or
                         title.lower().strip() in t.lower().strip()):
                     is_verified = True
+                    matched_title = t
                     break
-            if not is_verified:
-                logger.warning(
-                    f"Manifest integrity: '{filename}' is marked 'success' but "
-                    "its title was not found in ChromaDB. Resetting to 'pending' "
-                    "for automatic re-ingestion."
-                )
-                manifest[filename]["status"] = "pending"
-                manifest[filename]["error"] = "Auto-reset: title not found in ChromaDB. Will be re-ingested."
-                manifest[filename]["ingested_at"] = None
-                updated = True
+
+            if meta.get("status") == "success":
+                if not is_verified:
+                    logger.warning(
+                        f"Manifest integrity: '{filename}' is marked 'success' but "
+                        "its title was not found in ChromaDB. Resetting to 'pending' "
+                        "for automatic re-ingestion."
+                    )
+                    manifest[filename]["status"] = "pending"
+                    manifest[filename]["error"] = "Auto-reset: title not found in ChromaDB. Will be re-ingested."
+                    manifest[filename]["ingested_at"] = None
+                    updated = True
+                elif matched_title:
+                    # Backfill missing metadata fields
+                    paper_meta = papers_metadata.get(matched_title, {})
+                    if "authors" not in meta or meta["authors"] == "Unknown Authors":
+                        meta["authors"] = paper_meta.get("authors", "Unknown Authors")
+                        updated = True
+                    if "year" not in meta or meta["year"] in [None, "N/A", "None"]:
+                        meta["year"] = paper_meta.get("year", "N/A")
+                        updated = True
+                    if meta.get("doi") in [None, "N/A", "None"]:
+                        meta["doi"] = paper_meta.get("doi", "N/A")
+                        updated = True
 
         # ── Pass 2: Remove stale entries for deleted files ─────────────────────
         existing_filenames = {f.name for f in pdf_files}  # Fast set lookup

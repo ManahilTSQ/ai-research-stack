@@ -680,14 +680,24 @@ select:focus {
     border: 1px solid var(--border-glass);
     font-size: 12.5px;
     display: flex;
-    flex-direction: column;
-    gap: 4px;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
     transition: all 0.2s ease;
 }
 
 .file-item:hover {
     background: rgba(255, 255, 255, 0.02);
     border-color: var(--border-glass-active);
+}
+
+.file-item-main {
+    flex-grow: 1;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
 }
 
 .file-name-row {
@@ -704,6 +714,39 @@ select:focus {
     align-items: center;
     font-size: 11px;
     color: var(--text-secondary);
+}
+
+.btn-delete-file {
+    flex-shrink: 0;
+    color: var(--accent-crimson) !important;
+    opacity: 0.6;
+    transition: opacity 0.2s ease, transform 0.2s ease, background-color 0.2s ease;
+    padding: 6px;
+    border-radius: 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.btn-delete-file:hover {
+    opacity: 1;
+    background: rgba(239, 68, 68, 0.15) !important;
+    transform: scale(1.1);
+}
+
+.helper-caption {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 6px;
+    line-height: 1.35;
+}
+
+.helper-caption code {
+    color: var(--accent-blue);
+    background: rgba(0, 0, 0, 0.2);
+    padding: 1px 4px;
+    border-radius: 4px;
+    font-family: monospace;
 }
 
 .list-empty {

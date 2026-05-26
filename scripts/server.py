@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Optional
 import requests as _req
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Response
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Response, Request
 from fastapi.websockets import WebSocket
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel
+import base64
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -84,6 +85,36 @@ app.add_middleware(
     allowed_hosts=["*"]
 )
 
+# ── HTTP Basic Authentication Middleware ──────────────────────────────────────
+@app.middleware("http")
+async def basic_auth_middleware(request: Request, call_next):
+    # Bypass public routes
+    if request.url.path in ["/api/health", "/sw.js", "/service-worker.js"]:
+        return await call_next(request)
+
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Basic "):
+        return Response(
+            status_code=401,
+            headers={"WWW-Authenticate": "Basic realm='AI Research Stack'"},
+            content="Unauthorized Access"
+        )
+
+    try:
+        payload = auth_header.split(" ")[1]
+        decoded = base64.b64decode(payload).decode("utf-8")
+        username, password = decoded.split(":", 1)
+        if username == "admin" and password == "aitawfiq2026":
+            return await call_next(request)
+    except Exception:
+        pass
+
+    return Response(
+        status_code=401,
+        headers={"WWW-Authenticate": "Basic realm='AI Research Stack'"},
+        content="Unauthorized Access"
+    )
+
 WEB_DIR = settings.BASE_DIR / "web"
 app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
 
@@ -119,6 +150,15 @@ def sanitize_filename(title: str) -> str:
     clean = clean.replace(" ", "_")
     clean = re.sub(r"_{2,}", "_", clean)
     return clean.strip("_")[:60].lower() + ".pdf"
+
+
+def format_authors(authors: list) -> str:
+    if not authors:
+        return "Unknown Authors"
+    names = [a.get("name", "") for a in authors if a.get("name")]
+    if len(names) > 3:
+        return ", ".join(names[:3]) + " et al."
+    return ", ".join(names)
 
 
 @app.get("/", response_class=FileResponse, include_in_schema=False)
@@ -217,6 +257,8 @@ async def download_paper(request: DownloadRequest, background_tasks: BackgroundT
     doi      = ext_ids.get("DOI")
     arxiv_id = ext_ids.get("ArXiv")
     title    = request.title
+    authors_str = format_authors(request.authors)
+    year = request.year
 
     def _ingest():
         logger.info(f"BG Ingest started: '{title}'")
@@ -252,21 +294,27 @@ async def download_paper(request: DownloadRequest, background_tasks: BackgroundT
                 }
             }]
             logger.info(f"Abstract-only fallback for '{title}'")
-            vector_store.add_paper_chunks(paper_title=title, doi=identifier, chunks=chunks)
+            vector_store.add_paper_chunks(
+                paper_title=title, doi=identifier, chunks=chunks,
+                authors=authors_str, year=year
+            )
             manifest_service.mark_as_ingested(
-                sanitize_filename(title), title, doi, status="success"
+                sanitize_filename(title), title, doi, status="success",
+                authors=authors_str, year=year
             )
             return
 
         if chunks:
             identifier = doi or (f"arXiv:{arxiv_id}" if arxiv_id else title)
             success = vector_store.add_paper_chunks(
-                paper_title=title, doi=identifier, chunks=chunks
+                paper_title=title, doi=identifier, chunks=chunks,
+                authors=authors_str, year=year
             )
             filename = sanitize_filename(title)
             manifest_service.mark_as_ingested(
                 filename, title, doi,
-                status="success" if success else "failed"
+                status="success" if success else "failed",
+                authors=authors_str, year=year
             )
             logger.info(
                 f"BG Ingest complete for '{title}': "
@@ -275,12 +323,58 @@ async def download_paper(request: DownloadRequest, background_tasks: BackgroundT
         else:
             manifest_service.mark_as_ingested(
                 sanitize_filename(title), title, doi, status="failed",
-                error="No PDF and no abstract available."
+                error="No PDF and no abstract available.",
+                authors=authors_str, year=year
             )
             logger.warning(f"Ingestion failed for '{title}': no content could be obtained.")
 
     background_tasks.add_task(_ingest)
-    return {"success": True, "message": f"Ingestion started for: {title}"}
+    return {"success": True, "message": f"Ingestion started for: {title}", "mode": "pdf" if request.externalIds else "abstract"}
+
+
+@app.delete("/api/papers/{filename}")
+async def delete_paper(filename: str):
+    manifest = manifest_service.get_all_entries()
+    if filename not in manifest:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Paper '{filename}' not found in the manifest."
+        )
+
+    meta = manifest[filename]
+    title = meta.get("title")
+    doi = meta.get("doi")
+
+    # 1. Delete from vector store
+    success_db = vector_store.delete_paper(title=title, doi=doi)
+
+    # 2. Delete physical file
+    pdf_path = settings.PDF_DOWNLOAD_DIR / filename
+    success_file = True
+    if pdf_path.exists():
+        try:
+            pdf_path.unlink()
+        except Exception as e:
+            logger.error(f"Failed to delete PDF file '{filename}': {e}")
+            success_file = False
+
+    # 3. Delete from manifest
+    try:
+        del manifest[filename]
+        manifest_service._save_manifest(manifest)
+        success_manifest = True
+    except Exception as e:
+        logger.error(f"Failed to delete manifest entry for '{filename}': {e}")
+        success_manifest = False
+
+    return {
+        "success": success_db and success_manifest,
+        "details": {
+            "database": success_db,
+            "file": success_file,
+            "manifest": success_manifest
+        }
+    }
 
 
 @app.get("/api/pdfs")
@@ -319,53 +413,71 @@ async def list_pdfs():
             "doi":         meta.get("doi", "N/A"),
             "status":      status,
             "ingested_at": meta_ingested_at,
-            "size_bytes":  size_bytes
+            "size_bytes":  size_bytes,
+            "authors":     meta.get("authors", "Unknown Authors"),
+            "year":        meta.get("year", "N/A")
         })
 
     return file_list
 
 
 @app.post("/api/ingest-pending")
-async def ingest_pending():
-    manifest = manifest_service.sync_with_vector_store(vector_store)
-    pdf_dir  = settings.PDF_DOWNLOAD_DIR
+async def ingest_pending(background_tasks: BackgroundTasks):
+    # Perform directory scan & sync first to find any newly dropped PDFs
+    manifest_service.sync_with_vector_store(vector_store)
 
-    processed = 0
-    succeeded = 0
+    def _bulk_ingest():
+        logger.info("Starting background bulk ingestion...")
+        manifest = manifest_service.get_all_entries()
+        pdf_dir  = settings.PDF_DOWNLOAD_DIR
 
-    for filename, meta in manifest.items():
-        if meta.get("status") == "success":
-            continue
+        processed = 0
+        succeeded = 0
 
-        pdf_path = pdf_dir / filename
-        if not pdf_path.exists():
-            continue
+        for filename, meta in manifest.items():
+            if meta.get("status") == "success":
+                continue
 
-        logger.info(f"Ingesting pending PDF: {filename}")
-        try:
-            pages  = pdf_service.extract_text_by_page(pdf_path)
-            chunks = pdf_service.chunk_text(pages, chunk_size=1000, chunk_overlap=200)
-            title  = meta.get("title", pdf_path.stem.replace("_", " ").title())
-            doi    = meta.get("doi")
-            success = vector_store.add_paper_chunks(paper_title=title, doi=doi, chunks=chunks)
+            pdf_path = pdf_dir / filename
+            if not pdf_path.exists():
+                continue
 
-            manifest_service.mark_as_ingested(
-                filename, title, doi,
-                status="success" if success else "failed"
-            )
-            processed += 1
-            if success:
-                succeeded += 1
+            logger.info(f"Ingesting pending PDF: {filename}")
+            try:
+                pages  = pdf_service.extract_text_by_page(pdf_path)
+                chunks = pdf_service.chunk_text(pages, chunk_size=1000, chunk_overlap=200)
+                title  = meta.get("title", pdf_path.stem.replace("_", " ").title())
+                doi    = meta.get("doi")
+                authors = meta.get("authors", "Unknown Authors")
+                year_str = meta.get("year", "N/A")
+                year = int(year_str) if year_str.isdigit() else None
 
-        except Exception as e:
-            logger.error(f"Failed to ingest '{filename}': {e}")
-            manifest_service.mark_as_ingested(
-                filename, meta.get("title", filename), None,
-                status="failed", error=str(e)
-            )
-            processed += 1
+                success = vector_store.add_paper_chunks(
+                    paper_title=title, doi=doi, chunks=chunks,
+                    authors=authors, year=year
+                )
 
-    return {"processed": processed, "succeeded": succeeded}
+                manifest_service.mark_as_ingested(
+                    filename, title, doi,
+                    status="success" if success else "failed",
+                    authors=authors, year=year
+                )
+                processed += 1
+                if success:
+                    succeeded += 1
+
+            except Exception as e:
+                logger.error(f"Failed to ingest '{filename}': {e}")
+                manifest_service.mark_as_ingested(
+                    filename, meta.get("title", filename), None,
+                    status="failed", error=str(e),
+                    authors=meta.get("authors"), year=None
+                )
+                processed += 1
+        logger.info(f"Background bulk ingestion complete. Processed: {processed}, Succeeded: {succeeded}")
+
+    background_tasks.add_task(_bulk_ingest)
+    return {"success": True, "message": "Bulk ingestion started in the background."}
 
 
 @app.post("/api/query-rag")
@@ -398,21 +510,59 @@ async def query_rag(request: RAGQueryRequest):
             system_prompt = raw_template
             user_template = "{context}"
 
+        # Fetch library index to support meta-queries
+        stats = vector_store.get_collection_stats()
+        papers_metadata = stats.get("papers_metadata", {})
+
         chunks = vector_store.query_similar_chunks(request.query, limit=request.limit)
-        if not chunks:
+        if not chunks and not papers_metadata:
             raise HTTPException(
                 status_code=404,
                 detail="No relevant papers found in the database. Ingest papers first."
             )
 
-        context_blocks = [
-            f'[Source {i+1}] "{c["metadata"].get("title", "Untitled")}" '
-            f'(Pages: {c["metadata"].get("pages", "N/A")})\nContent: {c["text"]}'
-            for i, c in enumerate(chunks)
-        ]
-        context_str  = "\n\n".join(context_blocks)
+        # Format Library Inventory string
+        library_inventory_blocks = []
+        for i, (title, meta) in enumerate(papers_metadata.items()):
+            library_inventory_blocks.append(
+                f"- Paper {i+1}: \"{title}\" | Authors: {meta.get('authors', 'Unknown Authors')} | Year: {meta.get('year', 'N/A')} | DOI: {meta.get('doi', 'N/A')}"
+            )
+        library_inventory_str = "\n".join(library_inventory_blocks) if library_inventory_blocks else "No papers in database library."
+
+        context_blocks = []
+        for idx, c in enumerate(chunks):
+            meta = c["metadata"]
+            title = meta.get("title", "Untitled Paper")
+            authors = meta.get("authors", "Unknown Authors")
+            year = meta.get("year", "N/A")
+            doi = meta.get("doi", "N/A")
+            pages = meta.get("pages", "N/A")
+            text = c["text"]
+
+            block = (
+                f'Document [Source {idx + 1}]:\n'
+                f'Title: "{title}"\n'
+                f'Authors: {authors}\n'
+                f'Year: {year}\n'
+                f'DOI: {doi}\n'
+                f'Pages: {pages}\n'
+                f'Content: {text}\n'
+            )
+            context_blocks.append(block)
+
+        # Combine library inventory with passage chunks context
+        context_str = f"Ingested Paper Library Inventory:\n{library_inventory_str}\n\n"
+        if context_blocks:
+            context_str += "Context Chunks:\n" + "\n\n".join(context_blocks)
+        else:
+            context_str += "No relevant text passage chunks found for this query."
+
         titles       = {c["metadata"].get("title", "") for c in chunks}
-        title_str    = " | ".join(sorted(titles))
+        title_str    = " | ".join(sorted(titles)) if titles else "None"
+        authors_list = [c["metadata"].get("authors", "Unknown Authors") for c in chunks]
+        authors_str  = " | ".join(sorted(set(authors_list))) if authors_list else "None"
+        years_list   = [str(c["metadata"].get("year", "N/A")) for c in chunks]
+        years_str    = " | ".join(sorted(set(years_list))) if years_list else "None"
 
         user_prompt = (
             user_template
@@ -422,8 +572,8 @@ async def query_rag(request: RAGQueryRequest):
             .replace("{title}",   title_str)
             .replace("{title_a}", title_str)
             .replace("{title_b}", title_str)
-            .replace("{authors}", "See source metadata")
-            .replace("{year}",    "Various")
+            .replace("{authors}", authors_str)
+            .replace("{year}",    years_str)
             .replace("{venue}",   "Various")
         )
 

@@ -358,13 +358,47 @@ document.addEventListener("DOMContentLoaded", () => {
                 }
 
                 item.innerHTML = `
-                    <div class="file-name-row" title="${file.title}">${file.title}</div>
-                    <div class="file-meta-row">
-                        <span>${formatBytes(file.size_bytes)}</span>
-                        ${statusBadge}
+                    <div class="file-item-main" title="${file.title}">
+                        <div class="file-name-row">${file.title}</div>
+                        <div class="file-meta-row">
+                            <span>${formatBytes(file.size_bytes)}</span>
+                            ${statusBadge}
+                        </div>
                     </div>
+                    <button class="btn-delete-file btn-icon" data-filename="${file.filename}" title="Delete Paper">
+                        <i class="fa-solid fa-trash-can text-crimson"></i>
+                    </button>
                 `;
                 listDiv.appendChild(item);
+            });
+
+            // Wire up deletion for each button
+            listDiv.querySelectorAll(".btn-delete-file").forEach(btn => {
+                btn.addEventListener("click", async (e) => {
+                    e.stopPropagation();
+                    const filename = btn.getAttribute("data-filename");
+                    if (confirm(`Are you sure you want to delete this paper and remove all its vector chunks from the database?\nFile: ${filename}`)) {
+                        try {
+                            btn.disabled = true;
+                            btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i>`;
+                            const deleteResp = await fetch(`${API_BASE}/api/papers/${filename}`, {
+                                method: "DELETE"
+                            });
+                            const delResult = await deleteResp.json();
+                            if (delResult.success) {
+                                alert("Paper successfully deleted.");
+                                fetchLocalPDFs();
+                                checkHealth();
+                            } else {
+                                alert("Failed to fully delete paper chunks. Check backend logs.");
+                                fetchLocalPDFs();
+                            }
+                        } catch (delErr) {
+                            alert(`Error deleting paper: ${delErr.message || delErr}`);
+                            fetchLocalPDFs();
+                        }
+                    }
+                });
             });
 
         } catch (err) {
@@ -379,7 +413,7 @@ document.addEventListener("DOMContentLoaded", () => {
     async function handleScanPending() {
         const btn = document.getElementById("btn-scan-pending");
         btn.disabled = true;
-        btn.innerHTML = `<i class="fa-solid fa-arrows-spin fa-spin"></i> Extracting & Ingesting...`;
+        btn.innerHTML = `<i class="fa-solid fa-arrows-spin fa-spin"></i> Scanning folder...`;
 
         try {
             const resp = await fetch(`${API_BASE}/api/ingest-pending`, { method: "POST" });
@@ -388,15 +422,28 @@ document.addEventListener("DOMContentLoaded", () => {
             btn.disabled = false;
             btn.innerHTML = `<i class="fa-solid fa-arrows-spin"></i> Scan & Ingest Folder`;
 
-            if (result.processed > 0) {
-                alert(`Processed ${result.processed} PDFs:\nSucceeded: ${result.succeeded}\nFailed: ${result.processed - result.succeeded}`);
+            if (result.success) {
+                alert("Bulk folder scanning and ingestion started in the background.\nThe document list and database stats will update automatically as PDFs are processed.");
             } else {
-                alert("Scan finished. No new PDFs found to ingest!");
+                alert("Scan failed to initiate. Please check backend logs.");
             }
 
-            // Refresh both the file list and the stats badges
+            // Refresh the file list to show "pending" or new status
             fetchLocalPDFs();
             checkHealth();
+
+            // Set up a temporary shorter polling interval for health and files
+            // to show progress in real time (every 4 seconds, for 1 minute)
+            let pollCount = 0;
+            const tempPollInterval = setInterval(async () => {
+                fetchLocalPDFs();
+                checkHealth();
+                pollCount++;
+                if (pollCount >= 15) { // 15 * 4s = 60s
+                    clearInterval(tempPollInterval);
+                }
+            }, 4000);
+
         } catch (err) {
             btn.disabled = false;
             btn.innerHTML = `<i class="fa-solid fa-arrows-spin"></i> Scan & Ingest Folder`;
