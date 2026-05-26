@@ -1,9 +1,9 @@
-cat > /home/researcher/ai-research-stack/web/sw-unregister.js << 'EOF'
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.getRegistrations().then(function(registrations) {
-    for (let registration of registrations) {
-      registration.unregister();
+    if (registrations.length > 0) {
+      Promise.all(registrations.map(function(r) { return r.unregister(); })).then(function() {
+        window.location.reload();
+      });
     }
   });
 }
-EOF

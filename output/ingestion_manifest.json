@@ -95,7 +95,7 @@
         "doi": "10.17705/1JAIS.00730",
         "status": "success",
         "error": "",
-        "ingested_at": "2026-05-25T13:53:48.974063"
+        "ingested_at": "2026-05-26T10:16:22.762954"
     },
     "is_it_changing_the_world_conceptions_of_causality_for_inform.pdf": {
         "title": "Is IT Changing the World? Conceptions of Causality for Information Systems Theorizing",
@@ -180,5 +180,12 @@
         "status": "success",
         "error": "",
         "ingested_at": "2026-05-25T22:59:59.609486"
+    },
+    "machine_learning_algorithms_real-world_applications_and_rese.pdf": {
+        "title": "Machine Learning: Algorithms, Real-World Applications and Research Directions",
+        "doi": "10.1007/s42979-021-00592-x",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-26T15:20:16.004483"
     }
 }
