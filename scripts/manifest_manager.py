@@ -327,7 +327,10 @@ class ManifestManagerService:
                     try:
                         import re
                         from paper_discovery import PaperDiscoveryService
+                        from pdf_processor import PDFProcessorService
+                        
                         discovery_service = PaperDiscoveryService()
+                        pdf_service = PDFProcessorService()
 
                         def _format_authors_helper(authors: list) -> str:
                             if not authors:
@@ -339,37 +342,90 @@ class ManifestManagerService:
 
                         logger.info(f"Background thread starting to resolve metadata for {len(entries_to_resolve)} papers...")
                         for filename, matched_title, title, existing_doi in entries_to_resolve:
-                            # Clean up title for search: replace '+', '_', '-' with space, remove trailing dots
-                            search_title = title.replace("+", " ").replace("_", " ").replace("-", " ").strip(".")
-                            logger.info(f"Querying Semantic Scholar to resolve metadata for: '{search_title}' (original: '{title}')")
-                            try:
-                                # Search by title to find correct authors/year
-                                results = discovery_service.search_papers(search_title, limit=5)
-                                best_match = None
-                                for cand in results:
-                                    c_title = (cand.get("title") or "").lower().strip()
-                                    t_clean = search_title.lower().strip()
-                                    
-                                    # Normalize both titles by removing non-alphanumeric characters
-                                    c_title_norm = re.sub(r'[^a-z0-9\s]', '', c_title)
-                                    t_clean_norm = re.sub(r'[^a-z0-9\s]', '', t_clean)
-                                    
-                                    # 1. Exact or substring match after normalization
-                                    if (c_title_norm == t_clean_norm or 
-                                        t_clean_norm in c_title_norm or 
-                                        c_title_norm in t_clean_norm):
-                                        best_match = cand
-                                        break
-                                    
-                                    # 2. Or >= 70% word overlap match
-                                    t_words = set(t_clean_norm.split())
-                                    c_words = set(c_title_norm.split())
-                                    if t_words and c_words:
-                                        overlap = len(t_words & c_words) / max(len(t_words), 1)
-                                        if overlap >= 0.7:
+                            pdf_path = settings.PDF_DOWNLOAD_DIR / filename
+                            extracted_doi = None
+                            first_page_text = ""
+                            
+                            # 1. Try to extract DOI from PDF text on disk
+                            if pdf_path.exists():
+                                try:
+                                    pages = pdf_service.extract_text_by_page(pdf_path)
+                                    if pages:
+                                        first_page_text = pages[0]
+                                        # Search for DOI pattern
+                                        doi_match = re.search(r"\b(10\.\d{4,9}/[^\s]+)\b", first_page_text, re.IGNORECASE)
+                                        if doi_match:
+                                            extracted_doi = doi_match.group(1).rstrip(".,;()[]{}")
+                                            logger.info(f"Extracted DOI '{extracted_doi}' from PDF text for '{filename}'")
+                                except Exception as pdf_err:
+                                    logger.warning(f"Failed to extract text from PDF '{filename}' for DOI lookup: {pdf_err}")
+                            
+                            best_match = None
+                            
+                            # 2. If DOI extracted, do a direct high-priority lookup
+                            if extracted_doi:
+                                try:
+                                    logger.info(f"Performing direct S2 lookup for DOI: '{extracted_doi}'")
+                                    best_match = discovery_service.get_paper_details(extracted_doi)
+                                except Exception as doi_err:
+                                    logger.warning(f"Direct S2 DOI lookup failed for '{extracted_doi}': {doi_err}")
+                            
+                            # 3. If direct lookup failed or no DOI was extracted, perform search
+                            if not best_match:
+                                # Clean up title for search: replace '+', '_', '-' with space, remove trailing dots
+                                search_title = title.replace("+", " ").replace("_", " ").replace("-", " ").strip(".")
+                                
+                                # Heuristic: if title is a short code or digit sequence, extract a better search query from PDF text
+                                is_short_code = (
+                                    len(search_title) < 15 or 
+                                    search_title.isdigit() or 
+                                    re.match(r'^[a-zA-Z0-9_\-\s\.]+$', search_title) and any(x in search_title.lower() for x in ['vol', 'no', 'issue', 'page', 'gjcs'])
+                                )
+                                
+                                if is_short_code and first_page_text:
+                                    lines = [l.strip() for l in first_page_text.split("\n") if l.strip()]
+                                    clean_lines = []
+                                    for l in lines[:8]:
+                                        if any(x in l.lower() for x in ['http', 'doi:', 'vol.', 'no.', 'issn', '@', 'page', 'journal']):
+                                            continue
+                                        clean_lines.append(l)
+                                        if len(clean_lines) >= 2:
+                                            break
+                                    if clean_lines:
+                                        search_title = " ".join(clean_lines)[:150].strip()
+                                        logger.info(f"Extracted search title query from PDF text for '{filename}': '{search_title}'")
+                                
+                                logger.info(f"Querying Semantic Scholar to resolve metadata for: '{search_title}' (original: '{title}')")
+                                try:
+                                    results = discovery_service.search_papers(search_title, limit=5)
+                                    for cand in results:
+                                        c_title = (cand.get("title") or "").lower().strip()
+                                        t_clean = search_title.lower().strip()
+                                        
+                                        # Normalize both titles by removing non-alphanumeric characters
+                                        c_title_norm = re.sub(r'[^a-z0-9\s]', '', c_title)
+                                        t_clean_norm = re.sub(r'[^a-z0-9\s]', '', t_clean)
+                                        
+                                        # A. Exact or substring match after normalization
+                                        if (c_title_norm == t_clean_norm or 
+                                            t_clean_norm in c_title_norm or 
+                                            c_title_norm in t_clean_norm):
                                             best_match = cand
                                             break
-                                
+                                        
+                                        # B. Or >= 70% word overlap match
+                                        t_words = set(t_clean_norm.split())
+                                        c_words = set(c_title_norm.split())
+                                        if t_words and c_words:
+                                            overlap = len(t_words & c_words) / max(len(t_words), 1)
+                                            if overlap >= 0.7:
+                                                best_match = cand
+                                                break
+                                except Exception as search_err:
+                                    logger.warning(f"S2 search failed for '{search_title}': {search_err}")
+                            
+                            # 4. If we successfully found a match, backfill it
+                            try:
                                 if best_match:
                                     s2_title = best_match.get("title", title)
                                     s2_authors = _format_authors_helper(best_match.get("authors", []))
@@ -398,9 +454,9 @@ class ManifestManagerService:
                                                 current_manifest[filename]["doi"] = s2_doi
                                             self._save_manifest(current_manifest)
                                 else:
-                                    logger.warning(f"No matching S2 paper found for title '{search_title}' among {len(results)} search results.")
-                            except Exception as lookup_err:
-                                logger.warning(f"Background S2 lookup failed for '{title}': {lookup_err}")
+                                    logger.warning(f"Could not resolve metadata for '{filename}' (title: '{title}') via direct DOI or search.")
+                            except Exception as save_err:
+                                logger.error(f"Failed to save resolved metadata for '{filename}': {save_err}")
                             finally:
                                 with self.resolving_lock:
                                     self.resolving_filenames.discard(filename)
