@@ -334,6 +334,35 @@ class ManifestManagerService:
             except Exception as e:
                 logger.warning(f"Failed to extract internal metadata from '{pdf_path.name}': {e}")
 
+        # Step 6: Extract year and author from filename/title_guess if still Unknown/N/A
+        if resolved["year"] == "N/A" or not resolved["year"]:
+            year_match = re.search(r'\b(19[5-9]\d|20[0-2]\d)\b', pdf_path.name)
+            if not year_match:
+                year_match = re.search(r'\b(19[5-9]\d|20[0-2]\d)\b', title_guess)
+            if year_match:
+                resolved["year"] = year_match.group(1)
+
+        if resolved["authors"] == "Unknown Authors" or not resolved["authors"]:
+            fn_clean = pdf_path.stem
+            year_match = re.search(r'\b(19[5-9]\d|20[0-2]\d)\b', fn_clean)
+            if year_match:
+                year_idx = year_match.start()
+                prefix = fn_clean[:year_idx].strip("-_ ()[]{},")
+                if prefix and len(prefix.split()) <= 4:
+                    cleaned_author = re.sub(r'[-_]', ' ', prefix).strip()
+                    resolved["authors"] = cleaned_author.title()
+
+        # Step 7: Fallback abstract from first page text if empty
+        if not resolved["abstract"] and first_page_text:
+            paragraphs = [p.strip() for p in first_page_text.split("\n\n") if p.strip()]
+            if paragraphs:
+                for p in paragraphs[:5]:
+                    if len(p) > 100 and not any(x in p.lower() for x in ['http', 'downloaded', 'vol.', 'issn', '@', 'page', 'journal']):
+                        resolved["abstract"] = p[:600] + ("..." if len(p) > 600 else "")
+                        break
+                if not resolved["abstract"]:
+                    resolved["abstract"] = paragraphs[0][:400] + "..."
+
         return resolved
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -473,8 +502,11 @@ class ManifestManagerService:
                                 meta["doi"] = db_doi
                                 updated = True
                         
-                        # If BOTH the DB and manifest are missing metadata, queue it for background resolution
-                        if (meta.get("authors") == "Unknown Authors" or meta.get("year") in [None, "N/A", "None"]):
+                        # If the DB and manifest are missing metadata or abstract, queue it for background resolution
+                        if (meta.get("authors") == "Unknown Authors" 
+                            or meta.get("year") in [None, "N/A", "None"]
+                            or "abstract" not in meta 
+                            or meta.get("abstract") in [None, ""]):
                             with self.resolving_lock:
                                 if filename not in self.resolving_filenames:
                                     self.resolving_filenames.add(filename)
