@@ -110,12 +110,13 @@ class RAGService:
 
         logger.info("RAG Service initialised successfully.")
 
-    def generate_answer(self, query: str, limit: int = 4) -> dict:
+    def generate_answer(self, query: str, limit: int = 4, filter_title: str | None = None) -> dict:
         """
         Execute the complete RAG pipeline for a researcher's query.
 
         Steps:
           1. Retrieve top-K relevant chunks from ChromaDB using cosine similarity.
+             If filter_title is set, restricts retrieval to only that paper.
           2. Format each chunk into a labelled context block with source attribution.
           3. Build a structured system prompt instructing the LLM on citation rules.
           4. Send both prompts to Ollama's /api/chat endpoint.
@@ -124,6 +125,7 @@ class RAGService:
         Args:
             query: The research question to answer.
             limit: Number of context chunks to retrieve from ChromaDB (default: 4).
+            filter_title: If set, restricts retrieval to only chunks from this paper.
 
         Returns:
             Dict with keys:
@@ -138,7 +140,7 @@ class RAGService:
         papers_metadata = stats.get("papers_metadata", {})
 
         # ── Step 1: Retrieve relevant context chunks from ChromaDB ─────────────
-        chunks = self.vector_store.query_similar_chunks(query, limit=limit)
+        chunks = self.vector_store.query_similar_chunks(query, limit=limit, filter_title=filter_title)
 
         if not chunks and not papers_metadata:
             # No papers at all in database — return a polite refusal
@@ -189,10 +191,19 @@ class RAGService:
         context_str = "\n".join(context_blocks) if context_blocks else "No relevant text passage chunks found for this query."
 
         # ── Step 3: Build structured prompts ──────────────────────────────────
+        # Note if the query is scoped to a specific paper
+        scope_note = ""
+        if filter_title:
+            scope_note = (
+                f"NOTE: This query is scoped to a SINGLE paper: \"{filter_title}\". "
+                "Only use information from this paper's context blocks when answering.\n"
+            )
+
         # System prompt: sets the LLM's role and strict citation rules
         system_prompt = (
             "You are a professional, self-hosted academic AI research assistant.\n"
             "Your task is to answer the researcher's query based strictly on the provided Document context blocks and the Ingested Paper Library Inventory.\n\n"
+            f"{scope_note}"
             "Rules:\n"
             "1. Use ONLY facts stated in the provided Document context blocks or the Ingested Paper Library Inventory. Do NOT use your pre-trained knowledge or make up any details.\n"
             "2. Cite your sources inline using APA7 style, for example: (Hassan, 2020) or (Smith & Jones, 2018, p. 12). If citing specific pages, use the Pages metadata from the Document block (e.g. p. 45).\n"

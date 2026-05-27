@@ -12,7 +12,7 @@
     <!-- FontAwesome for Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <!-- Custom Glassmorphic Stylesheet -->
-    <link rel="stylesheet" href="/static/styles.css?v=2.0.2">
+    <link rel="stylesheet" href="/static/styles.css?v=2.0.3">
 </head>
 <body>
 
@@ -167,6 +167,13 @@
                                         <!-- Will be filled dynamically -->
                                     </select>
                                 </div>
+                                <div class="control-item">
+                                    <label for="rag-paper-filter"><i class="fa-solid fa-filter" style="color: var(--accent-indigo)"></i> Focus on paper:</label>
+                                    <select id="rag-paper-filter">
+                                        <option value="">All Papers in Knowledge Base</option>
+                                        <!-- Populated dynamically from manifest -->
+                                    </select>
+                                </div>
                             </div>
                         </div>
 
@@ -318,6 +325,6 @@
     </div>
 
     <!-- UI Scripts -->
-    <script src="/static/app.js?v=2.0.2"></script>
+    <script src="/static/app.js?v=2.0.3"></script>
 </body>
 </html>

@@ -243,7 +243,7 @@ class VectorStoreService:
     # PUBLIC: Vector Similarity Search
     # ──────────────────────────────────────────────────────────────────────────
 
-    def query_similar_chunks(self, query: str, limit: int = 4) -> list[dict]:
+    def query_similar_chunks(self, query: str, limit: int = 4, filter_title: str | None = None) -> list[dict]:
         """
         Perform a cosine-similarity vector search across all ingested paper chunks.
 
@@ -255,6 +255,7 @@ class VectorStoreService:
         Args:
             query: The researcher's natural language question or search phrase.
             limit: Maximum number of similar chunks to return (default: 4).
+            filter_title: If set, restricts search to chunks from this paper title only.
 
         Returns:
             List of result dicts, each containing:
@@ -263,14 +264,21 @@ class VectorStoreService:
               - "metadata": dict with title, doi, pages, char offsets, length
               - "distance": Float cosine distance (lower = more similar, range: 0–2)
         """
-        logger.info(f"Querying ChromaDB: '{query}' (top {limit} chunks)")
+        logger.info(f"Querying ChromaDB: '{query}' (top {limit} chunks, filter={filter_title!r})")
 
         try:
+            # Build optional where clause to restrict to a specific paper
+            where_clause = {"title": filter_title} if filter_title else None
+
             # query() accepts a list of query texts (we always pass exactly one)
-            results = self.collection.query(
-                query_texts=[query],
-                n_results=limit
-            )
+            query_kwargs = {
+                "query_texts": [query],
+                "n_results": limit
+            }
+            if where_clause:
+                query_kwargs["where"] = where_clause
+
+            results = self.collection.query(**query_kwargs)
 
             formatted_results = []
 

@@ -138,6 +138,7 @@ class RAGQueryRequest(BaseModel):
     query: str
     limit: Optional[int] = 5
     prompt_template: Optional[str] = None
+    filter_title: Optional[str] = None  # If set, restrict RAG to chunks from this paper only
 
 
 class CitationAnalysisRequest(BaseModel):
@@ -517,7 +518,11 @@ def query_rag(request: RAGQueryRequest):
         stats = vector_store.get_collection_stats()
         papers_metadata = stats.get("papers_metadata", {})
 
-        chunks = vector_store.query_similar_chunks(request.query, limit=request.limit)
+        chunks = vector_store.query_similar_chunks(
+            request.query,
+            limit=request.limit,
+            filter_title=request.filter_title or None
+        )
         if not chunks and not papers_metadata:
             raise HTTPException(
                 status_code=404,
@@ -605,7 +610,11 @@ def query_rag(request: RAGQueryRequest):
         }
 
     rag_service = RAGService()
-    result      = rag_service.generate_answer(request.query, limit=request.limit)
+    result      = rag_service.generate_answer(
+        request.query,
+        limit=request.limit,
+        filter_title=request.filter_title or None
+    )
 
     if not result["success"]:
         raise HTTPException(status_code=500, detail=result.get("error", "RAG failed."))

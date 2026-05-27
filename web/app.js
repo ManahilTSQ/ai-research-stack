@@ -332,6 +332,9 @@ document.addEventListener("DOMContentLoaded", () => {
             const resp = await fetch(`${API_BASE}/api/pdfs`);
             const files = await resp.json();
 
+            // Always refresh the paper filter dropdown whenever the manifest is loaded
+            populatePaperFilter(files);
+
             if (files.length === 0) {
                 listDiv.innerHTML = `
                     <div class="list-empty">
@@ -382,15 +385,15 @@ document.addEventListener("DOMContentLoaded", () => {
                     try {
                         btn.disabled = true;
                         btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i>`;
-                        const deleteResp = await fetch(`${API_BASE}/api/papers/${filename}`, {
-                            method: "DELETE"
-                        });
-                        // Silently refresh the list regardless of outcome
-                        fetchLocalPDFs();
-                        checkHealth();
+                        // Await the delete to fully complete before refreshing stats
+                        await fetch(`${API_BASE}/api/papers/${filename}`, { method: "DELETE" });
                     } catch (delErr) {
-                        // Silently refresh even on network error
-                        fetchLocalPDFs();
+                        // Continue even on network error
+                    } finally {
+                        // Small delay to let ChromaDB commit the deletion before stat refresh
+                        await new Promise(r => setTimeout(r, 600));
+                        await checkHealth();
+                        await fetchLocalPDFs();
                     }
                 });
             });
@@ -398,6 +401,30 @@ document.addEventListener("DOMContentLoaded", () => {
         } catch (err) {
             listDiv.innerHTML = `<div class="list-empty text-crimson">Failed to load manifest.</div>`;
         }
+    }
+
+    /**
+     * Populate the paper filter dropdown in the RAG tab.
+     * Adds one <option> per successfully ingested paper, plus an "All Papers" default.
+     * @param {Array} files - Array of file objects from /api/pdfs response.
+     */
+    function populatePaperFilter(files) {
+        const sel = document.getElementById("rag-paper-filter");
+        if (!sel) return;
+        const prevVal = sel.value;
+        sel.innerHTML = `<option value="">All Papers in Knowledge Base</option>`;
+        // Only show papers that are successfully ingested
+        const ingested = files.filter(f => f.status === "success");
+        ingested.forEach(f => {
+            const label = formatSidebarLabel(f.authors, f.year, f.title);
+            const opt = document.createElement("option");
+            opt.value = f.title;  // use the canonical title as the filter key
+            opt.textContent = label;
+            opt.title = f.title;  // tooltip with full title
+            sel.appendChild(opt);
+        });
+        // Restore previous selection if still available
+        if ([...sel.options].some(o => o.value === prevVal)) sel.value = prevVal;
     }
 
     /**
@@ -517,13 +544,16 @@ document.addEventListener("DOMContentLoaded", () => {
         submitBtn.disabled = true;
 
         try {
+            // Get optional paper filter — empty string means query all papers
+            const paperFilter = document.getElementById("rag-paper-filter")?.value || "";
             const resp = await fetch(`${API_BASE}/api/query-rag`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     query: query,
                     limit: parseInt(limit),
-                    prompt_template: template ? template : null
+                    prompt_template: template ? template : null,
+                    filter_title: paperFilter || null
                 })
             });
 
