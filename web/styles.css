@@ -750,6 +750,80 @@ select:focus {
     font-family: monospace;
 }
 
+/* ── PDF Upload Section ────────────────────────────────────────── */
+.upload-section {
+    background: rgba(0, 0, 0, 0.18);
+    border: 1px dashed rgba(99, 102, 241, 0.35);
+    border-radius: 10px;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    transition: border-color 0.2s ease;
+}
+
+.upload-section:hover {
+    border-color: rgba(99, 102, 241, 0.6);
+}
+
+.upload-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+
+.upload-section input[type="text"] {
+    font-size: 12px !important;
+    padding: 7px 12px !important;
+}
+
+.upload-status-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 130px;
+    overflow-y: auto;
+    margin-top: 2px;
+}
+
+.upload-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 11.5px;
+    padding: 5px 8px;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.15);
+    border: 1px solid var(--border-glass);
+    animation: scaleIn 0.2s ease forwards;
+}
+
+.upload-row-pending .upload-row-icon  { color: var(--accent-amber); }
+.upload-row-success .upload-row-icon  { color: var(--accent-emerald); }
+.upload-row-failed  .upload-row-icon  { color: var(--accent-crimson); }
+
+.upload-row-success { border-color: rgba(16, 185, 129, 0.25); background: rgba(16, 185, 129, 0.06); }
+.upload-row-failed  { border-color: rgba(239, 68, 68, 0.25);  background: rgba(239, 68, 68, 0.06); }
+
+.upload-row-name {
+    flex-grow: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text-primary);
+}
+
+.upload-row-size {
+    font-size: 10.5px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
 .list-empty {
     text-align: center;
     padding: 20px;

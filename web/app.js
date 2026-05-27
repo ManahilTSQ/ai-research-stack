@@ -40,6 +40,13 @@ document.addEventListener("DOMContentLoaded", () => {
         limitLabel.textContent = `Context: ${e.target.value} chunks`;
     });
 
+    // Upload button opens the native file picker
+    document.getElementById("btn-upload-pdfs").addEventListener("click", () => {
+        document.getElementById("pdf-file-input").click();
+    });
+    // When files are selected, start uploading immediately
+    document.getElementById("pdf-file-input").addEventListener("change", handleUploadPDFs);
+
 
     /* ==========================================================================
        HEALTH CHECK & UTILS
@@ -102,6 +109,21 @@ document.addEventListener("DOMContentLoaded", () => {
         const sizes = ['Bytes', 'KB', 'MB', 'GB'];
         const i = Math.floor(Math.log(bytes) / Math.log(k));
         return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+    }
+
+    /**
+     * Escape a string for safe insertion into HTML content.
+     * Prevents XSS when rendering user-supplied filenames or metadata.
+     * @param {string} str - Raw string to escape.
+     * @returns {string} HTML-safe string.
+     */
+    function escapeHTML(str) {
+        return String(str)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;");
     }
 
     /* ==========================================================================
@@ -517,6 +539,100 @@ document.addEventListener("DOMContentLoaded", () => {
         } catch (err) {
             btn.disabled = false;
             btn.innerHTML = `<i class="fa-solid fa-arrows-spin"></i> Scan & Ingest Folder`;
+        }
+    }
+
+    /**
+     * Handle PDF file upload from the user's local computer.
+     * Triggered when files are selected via the hidden <input type="file">.
+     * Uploads each file individually to /api/upload, showing per-file progress rows.
+     * After all uploads finish, refreshes the manifest and stats counters.
+     */
+    async function handleUploadPDFs(e) {
+        const files = Array.from(e.target.files);
+        if (!files.length) return;
+
+        const statusList = document.getElementById("upload-status-list");
+        const subfolder = document.getElementById("upload-subfolder").value.trim();
+        const uploadBtn = document.getElementById("btn-upload-pdfs");
+
+        uploadBtn.disabled = true;
+        uploadBtn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i> Uploading...`;
+        statusList.innerHTML = "";
+
+        // Create a status row for each file immediately
+        const rowIds = {};
+        files.forEach(file => {
+            const rowId = `up-${Math.random().toString(36).substring(2, 8)}`;
+            rowIds[file.name] = rowId;
+            const row = document.createElement("div");
+            row.className = "upload-row upload-row-pending";
+            row.id = rowId;
+            row.innerHTML = `
+                <i class="fa-solid fa-spinner fa-spin upload-row-icon"></i>
+                <span class="upload-row-name" title="${escapeHTML(file.name)}">${escapeHTML(file.name.length > 30 ? file.name.slice(0, 28) + '…' : file.name)}</span>
+                <span class="upload-row-size">${formatBytes(file.size)}</span>
+            `;
+            statusList.appendChild(row);
+        });
+
+        // Upload all files together as a single multipart POST
+        try {
+            const formData = new FormData();
+            files.forEach(file => formData.append("files", file));
+            if (subfolder) formData.append("subfolder", subfolder);
+
+            const resp = await fetch(`${API_BASE}/api/upload`, {
+                method: "POST",
+                body: formData
+                // Do NOT set Content-Type header — browser sets it with the multipart boundary
+            });
+
+            const result = await resp.json();
+
+            // Mark each file row as succeeded or failed based on the result
+            const uploadedNames = new Set((result.uploaded || []).map(u => u.filename.split(/[\/\\]/).pop()));
+            const rejectedNames = new Set(result.rejected || []);
+
+            files.forEach(file => {
+                const rowEl = document.getElementById(rowIds[file.name]);
+                if (!rowEl) return;
+                if (uploadedNames.has(file.name)) {
+                    rowEl.className = "upload-row upload-row-success";
+                    rowEl.querySelector(".upload-row-icon").className = "fa-solid fa-circle-check upload-row-icon";
+                } else if (rejectedNames.has(file.name)) {
+                    rowEl.className = "upload-row upload-row-failed";
+                    rowEl.querySelector(".upload-row-icon").className = "fa-solid fa-circle-xmark upload-row-icon";
+                } else {
+                    rowEl.className = "upload-row upload-row-failed";
+                    rowEl.querySelector(".upload-row-icon").className = "fa-solid fa-triangle-exclamation upload-row-icon";
+                }
+            });
+
+        } catch (err) {
+            // Mark all rows as failed on network error
+            files.forEach(file => {
+                const rowEl = document.getElementById(rowIds[file.name]);
+                if (rowEl) {
+                    rowEl.className = "upload-row upload-row-failed";
+                    rowEl.querySelector(".upload-row-icon").className = "fa-solid fa-circle-xmark upload-row-icon";
+                }
+            });
+        } finally {
+            // Reset the button and file input for the next upload
+            uploadBtn.disabled = false;
+            uploadBtn.innerHTML = `<i class="fa-solid fa-file-arrow-up"></i> Select PDF Files...`;
+            e.target.value = "";
+
+            // Poll the manifest for a minute to reflect ingestion progress
+            await fetchLocalPDFs();
+            await checkHealth();
+            let pollCount = 0;
+            const poll = setInterval(async () => {
+                await fetchLocalPDFs();
+                await checkHealth();
+                if (++pollCount >= 15) clearInterval(poll);
+            }, 4000);
         }
     }
 

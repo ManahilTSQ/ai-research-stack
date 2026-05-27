@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Optional
 import requests as _req
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Response, Request
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Response, Request, UploadFile, File
 from fastapi.websockets import WebSocket
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -22,6 +22,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel
 import base64
+import shutil
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -423,6 +424,110 @@ def list_pdfs():
         })
 
     return file_list
+
+
+@app.post("/api/upload")
+async def upload_pdfs(
+    files: list[UploadFile] = File(...),
+    subfolder: str = "",
+    background_tasks: BackgroundTasks = None
+):
+    """
+    Upload one or more PDF files from the user's computer to the server's papers/ directory.
+    Optionally saves into a subfolder within papers/.
+    After saving, auto-triggers background ingestion of each uploaded file.
+    """
+    pdf_dir = settings.PDF_DOWNLOAD_DIR
+
+    # Resolve target directory (support optional subfolder)
+    if subfolder:
+        # Sanitize subfolder to prevent path traversal attacks
+        safe_subfolder = re.sub(r"[^a-zA-Z0-9_\-\s/]", "", subfolder).strip("/")
+        target_dir = pdf_dir / safe_subfolder
+    else:
+        target_dir = pdf_dir
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    uploaded = []
+    rejected = []
+
+    for upload in files:
+        # Only accept PDF files
+        if not upload.filename.lower().endswith(".pdf"):
+            rejected.append(upload.filename)
+            continue
+
+        # Safe destination path
+        dest_path = target_dir / upload.filename
+
+        try:
+            with open(dest_path, "wb") as f:
+                shutil.copyfileobj(upload.file, f)
+
+            # Relative path from pdf_dir for manifest key
+            rel_path = str(dest_path.relative_to(pdf_dir))
+            file_size = dest_path.stat().st_size
+
+            # Register as pending in manifest immediately so it shows in the UI
+            title = upload.filename.replace("_", " ").replace("-", " ").replace(".pdf", "").title()
+            manifest_service.mark_as_ingested(
+                rel_path, title, doi=None, status="pending",
+                authors="Unknown Authors", year=None
+            )
+
+            uploaded.append({"filename": rel_path, "size_bytes": file_size})
+            logger.info(f"Uploaded PDF: '{rel_path}' ({file_size} bytes)")
+        except Exception as e:
+            logger.error(f"Failed to save uploaded file '{upload.filename}': {e}")
+            rejected.append(upload.filename)
+        finally:
+            upload.file.close()
+
+    # Auto-trigger background ingestion for the newly uploaded files
+    if uploaded and background_tasks:
+        def _ingest_uploaded():
+            logger.info(f"Auto-ingesting {len(uploaded)} uploaded PDF(s)...")
+            for item in uploaded:
+                rel = item["filename"]
+                pdf_path = pdf_dir / rel
+                if not pdf_path.exists():
+                    continue
+                try:
+                    manifest = manifest_service.get_all_entries()
+                    meta = manifest.get(rel, {})
+                    title = meta.get("title", pdf_path.stem.replace("_", " ").title())
+                    pages = pdf_service.extract_text_by_page(pdf_path)
+                    chunks = pdf_service.chunk_text(pages, chunk_size=1000, chunk_overlap=200)
+                    if chunks:
+                        success = vector_store.add_paper_chunks(
+                            paper_title=title, doi=None, chunks=chunks,
+                            authors="Unknown Authors", year=None
+                        )
+                        manifest_service.mark_as_ingested(
+                            rel, title, doi=None,
+                            status="success" if success else "failed",
+                            authors="Unknown Authors", year=None
+                        )
+                        logger.info(f"Auto-ingested '{rel}': {len(chunks)} chunks, success={success}")
+                    else:
+                        manifest_service.mark_as_ingested(
+                            rel, title, doi=None, status="failed",
+                            error="No text extracted — may be a scanned/image PDF.",
+                            authors="Unknown Authors", year=None
+                        )
+                        logger.warning(f"No text extracted from uploaded PDF '{rel}'")
+                except Exception as e:
+                    logger.error(f"Auto-ingest failed for '{rel}': {e}")
+
+        background_tasks.add_task(_ingest_uploaded)
+
+    return {
+        "success": len(uploaded) > 0,
+        "uploaded": uploaded,
+        "rejected": rejected,
+        "message": f"{len(uploaded)} file(s) uploaded and queued for ingestion."
+    }
 
 
 @app.post("/api/ingest-pending")

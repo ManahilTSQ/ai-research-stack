@@ -12,7 +12,7 @@
     <!-- FontAwesome for Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <!-- Custom Glassmorphic Stylesheet -->
-    <link rel="stylesheet" href="/static/styles.css?v=2.0.3">
+    <link rel="stylesheet" href="/static/styles.css?v=2.0.4">
 </head>
 <body>
 
@@ -135,6 +135,22 @@
                                 <i class="fa-solid fa-arrows-spin"></i> Scan &amp; Ingest Folder
                             </button>
                             <p class="helper-caption"><i class="fa-solid fa-circle-info"></i> Recursively scans the server's <code>papers/</code> directory and all subfolders for new PDFs to ingest.</p>
+                        </div>
+
+                        <!-- PDF Upload from Local Computer -->
+                        <div class="upload-section">
+                            <div class="upload-header">
+                                <i class="fa-solid fa-cloud-arrow-up" style="color: var(--accent-indigo)"></i>
+                                <span>Upload PDFs from your computer</span>
+                            </div>
+                            <input type="text" id="upload-subfolder" placeholder="Optional: subfolder name (e.g. cybersecurity)" autocomplete="off" style="font-size:12px; padding: 7px 12px;">
+                            <button id="btn-upload-pdfs" class="btn btn-primary btn-full" style="margin-top:6px;">
+                                <i class="fa-solid fa-file-arrow-up"></i> Select PDF Files...
+                            </button>
+                            <!-- Hidden native file picker — multi-select, PDF only -->
+                            <input type="file" id="pdf-file-input" multiple accept=".pdf" style="display:none;">
+                            <!-- Upload progress list -->
+                            <div id="upload-status-list" class="upload-status-list"></div>
                         </div>
 
                         <!-- Ingested Files List -->
@@ -325,6 +341,6 @@
     </div>
 
     <!-- UI Scripts -->
-    <script src="/static/app.js?v=2.0.3"></script>
+    <script src="/static/app.js?v=2.0.4"></script>
 </body>
 </html>
