@@ -211,8 +211,8 @@
                             <!-- RAG Config Panel -->
                             <div class="rag-controls">
                                 <div class="control-item">
-                                    <label for="rag-limit-slider" id="lbl-rag-limit">Context: 5 chunks</label>
-                                    <input type="range" id="rag-limit-slider" min="3" max="10" value="5" class="slider">
+                                    <label for="rag-limit-slider" id="lbl-rag-limit">Context: 15 chunks</label>
+                                    <input type="range" id="rag-limit-slider" min="5" max="50" value="15" class="slider">
                                 </div>
                                 <div class="control-item">
                                     <label for="rag-template-select">System Prompt Template:</label>
@@ -293,6 +293,8 @@
                                 <option value="5" selected>Top 5 Citing</option>
                                 <option value="10">Top 10 Citing</option>
                                 <option value="20">Top 20 Citing</option>
+                                <option value="50">Top 50 Citing</option>
+                                <option value="100">Top 100 Citing</option>
                             </select>
                         </div>
                         <button type="submit" class="btn btn-primary glow-button">

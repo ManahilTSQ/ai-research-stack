@@ -676,7 +676,7 @@ def query_rag(request: RAGQueryRequest):
         library_inventory_blocks = []
         for i, (title, meta) in enumerate(papers_metadata.items()):
             library_inventory_blocks.append(
-                f"- Paper {i+1}: \"{title}\" | Authors: {meta.get('authors', 'Unknown Authors')} | Year: {meta.get('year', 'N/A')} | DOI: {meta.get('doi', 'N/A')}"
+                f"- {meta.get('authors', 'Unknown Authors')} ({meta.get('year', 'N/A')}). \"{title}\". DOI: {meta.get('doi', 'N/A')}"
             )
         library_inventory_str = "\n".join(library_inventory_blocks) if library_inventory_blocks else "No papers in database library."
 
@@ -691,10 +691,8 @@ def query_rag(request: RAGQueryRequest):
             text = c["text"]
 
             block = (
-                f'Document [Source {idx + 1}]:\n'
+                f'--- Academic Source ({authors}, {year}) ---\n'
                 f'Title: "{title}"\n'
-                f'Authors: {authors}\n'
-                f'Year: {year}\n'
                 f'DOI: {doi}\n'
                 f'Pages: {pages}\n'
                 f'Content: {text}\n'
@@ -903,6 +901,26 @@ def download_report(filename: str):
         filename=safe_name,
         media_type="text/csv"
     )
+
+
+@app.delete("/api/reports/{filename}")
+def delete_report(filename: str):
+    safe_name = Path(filename).name
+    report_path = REPORTS_DIR / safe_name
+
+    if not report_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Report '{safe_name}' not found in output/."
+        )
+
+    try:
+        report_path.unlink()
+        logger.info(f"Deleted report: {safe_name}")
+        return {"success": True, "deleted": safe_name}
+    except Exception as e:
+        logger.error(f"Failed to delete report '{safe_name}': {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete report: {e}")
 
 
 if __name__ == "__main__":

@@ -215,21 +215,24 @@ class ManifestManagerService:
             "abstract": ""
         }
 
-        # Step 1: Direct lookup if existing_doi is provided
-        if existing_doi and existing_doi != "N/A":
-            try:
-                cand = discovery_service.get_paper_details(existing_doi)
-                if cand:
-                    resolved["title"] = cand.get("title") or title_guess
-                    resolved["authors"] = _format_authors_helper(cand.get("authors", []))
-                    resolved["year"] = str(cand.get("year") or "N/A")
-                    resolved["doi"] = (cand.get("externalIds") or {}).get("DOI") or existing_doi
-                    resolved["abstract"] = cand.get("abstract") or ""
-                    return resolved
-            except Exception as e:
-                logger.warning(f"Metadata lookup failed for DOI '{existing_doi}': {e}")
+        # ── Inline helper: fill abstract from PDF text if S2 didn't return one ──
+        def _fill_abstract(r: dict, text: str) -> None:
+            """Populate r['abstract'] from the first meaningful paragraph in text."""
+            if r.get("abstract") or not text:
+                return
+            paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+            for p in paragraphs[:5]:
+                if len(p) > 100 and not any(
+                    x in p.lower() for x in ['http', 'downloaded', 'vol.', 'issn', '@', 'page', 'journal']
+                ):
+                    r["abstract"] = p[:600] + ("..." if len(p) > 600 else "")
+                    return
+            if paragraphs:
+                r["abstract"] = paragraphs[0][:400] + "..."
 
-        # Step 2: Try to extract DOI from PDF text on disk
+        # ── Pre-step: Always extract first-page text & DOI from PDF before S2 lookups ──
+        # Having first_page_text available at every lookup path means we can always
+        # use it as an abstract fallback, even when S2 returns metadata without one.
         first_page_text = ""
         extracted_doi = None
         if pdf_path.exists():
@@ -244,7 +247,24 @@ class ManifestManagerService:
             except Exception as pdf_err:
                 logger.warning(f"Failed to extract text from PDF '{pdf_path.name}' for DOI lookup: {pdf_err}")
 
-        # Step 3: If DOI extracted, do a direct lookup
+        # Step 1: Direct lookup if existing_doi is provided
+        if existing_doi and existing_doi != "N/A":
+            try:
+                cand = discovery_service.get_paper_details(existing_doi)
+                if cand:
+                    resolved["title"] = cand.get("title") or title_guess
+                    resolved["authors"] = _format_authors_helper(cand.get("authors", []))
+                    resolved["year"] = str(cand.get("year") or "N/A")
+                    resolved["doi"] = (cand.get("externalIds") or {}).get("DOI") or existing_doi
+                    resolved["abstract"] = cand.get("abstract") or ""
+                    _fill_abstract(resolved, first_page_text)  # use PDF text if S2 gave no abstract
+                    return resolved
+            except Exception as e:
+                logger.warning(f"Metadata lookup failed for DOI '{existing_doi}': {e}")
+
+        # Step 2: DOI already extracted in pre-step above — skip to Step 3
+
+        # Step 3: If DOI extracted from PDF text, do a direct S2 lookup
         if extracted_doi:
             try:
                 cand = discovery_service.get_paper_details(extracted_doi)
@@ -254,6 +274,7 @@ class ManifestManagerService:
                     resolved["year"] = str(cand.get("year") or "N/A")
                     resolved["doi"] = (cand.get("externalIds") or {}).get("DOI") or extracted_doi
                     resolved["abstract"] = cand.get("abstract") or ""
+                    _fill_abstract(resolved, first_page_text)  # use PDF text if S2 gave no abstract
                     return resolved
             except Exception as doi_err:
                 logger.warning(f"Direct S2 DOI lookup failed for '{extracted_doi}': {doi_err}")
@@ -303,6 +324,7 @@ class ManifestManagerService:
                     resolved["year"] = str(cand.get("year") or "N/A")
                     resolved["doi"] = (cand.get("externalIds") or {}).get("DOI") or resolved["doi"]
                     resolved["abstract"] = cand.get("abstract") or ""
+                    _fill_abstract(resolved, first_page_text)  # use PDF text if S2 gave no abstract
                     return resolved
         except Exception as search_err:
             logger.warning(f"S2 search failed for '{search_title}': {search_err}")

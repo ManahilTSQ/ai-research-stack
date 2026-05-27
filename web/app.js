@@ -18,6 +18,9 @@ document.addEventListener("DOMContentLoaded", () => {
     let allFetchedPapers = [];    // All papers fetched (grows with Load More)
     let hasMorePapers = true;     // Whether more pages exist
 
+    // Ingested papers cache — populated by fetchLocalPDFs(), used for duplicate detection
+    let ingestedPapers = [];      // Array of {title, doi, authors, year} for all 'success' entries
+
     // Initialize SPA tabs routing
     initTabs();
 
@@ -177,8 +180,12 @@ document.addEventListener("DOMContentLoaded", () => {
             const pane = document.getElementById(targetTab);
             if (pane) pane.classList.add("active");
 
-            // Persist choice
+            // Persist choice in both localStorage AND URL hash (survives refresh + allows bookmarking)
             try { localStorage.setItem("cite_active_tab", targetTab); } catch (_) {}
+            try {
+                // Update hash without triggering a page scroll
+                history.replaceState(null, "", `#${targetTab}`);
+            } catch (_) {}
 
             // Refresh relevant data when switching tabs
             if (targetTab === "tab-rag") fetchLocalPDFs();
@@ -189,7 +196,16 @@ document.addEventListener("DOMContentLoaded", () => {
             btn.addEventListener("click", () => activateTab(btn.getAttribute("data-tab")));
         });
 
-        // Restore last active tab from localStorage
+        // Priority 1: URL hash (most reliable — survives hard refresh, supports bookmarks)
+        try {
+            const hash = window.location.hash.replace("#", "");
+            if (hash && document.getElementById(hash)) {
+                activateTab(hash);
+                return;
+            }
+        } catch (_) {}
+
+        // Priority 2: localStorage fallback
         try {
             const saved = localStorage.getItem("cite_active_tab");
             if (saved && document.getElementById(saved)) {
@@ -197,7 +213,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 return;
             }
         } catch (_) {}
-        // Default: first tab
+
+        // Default: Paper Discovery
         activateTab("tab-discovery");
     }
 
@@ -387,6 +404,25 @@ document.addEventListener("DOMContentLoaded", () => {
         // Generate a unique DOM ID for the abstract toggle (prevents ID collisions in long result lists)
         const absId = `abs-${Math.random().toString(36).substring(2, 9)}`;
 
+        // --- Duplicate ingest detection ---
+        // Check if this paper is already in the local knowledge base (by DOI or normalised title)
+        const normTitle = (s) => (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        const paperNormTitle = normTitle(paper.title);
+        const alreadyIngested = ingestedPapers.some(ip => {
+            if (paper.doi && paper.doi !== "N/A" && ip.doi && ip.doi !== "N/A") {
+                return ip.doi.toLowerCase() === paper.doi.toLowerCase();
+            }
+            return normTitle(ip.title) === paperNormTitle;
+        });
+
+        const ingestButtonHtml = alreadyIngested
+            ? `<button class="btn btn-secondary btn-download-ingest" disabled style="opacity:0.65; cursor:default;">
+                <i class="fa-solid fa-circle-check text-emerald"></i> Already in Knowledge Base
+               </button>`
+            : `<button class="btn btn-primary btn-download-ingest" id="btn-ingest-${paper.paperId}">
+                <i class="fa-solid fa-cloud-arrow-down"></i> ${paper.has_pdf ? 'Download & Ingest PDF' : 'Ingest Abstract Only'}
+               </button>`;
+
         card.innerHTML = `
             <div class="paper-card-header">
                 <div>
@@ -414,15 +450,15 @@ document.addEventListener("DOMContentLoaded", () => {
 
             <div class="paper-footer">
                 <span class="report-meta">DOI: ${doiLabel} | arXiv: ${paper.arxiv}</span>
-                <button class=\"btn btn-primary btn-download-ingest\" id=\"btn-ingest-${paper.paperId}\">
-                    <i class=\"fa-solid fa-cloud-arrow-down\"></i> ${paper.has_pdf ? 'Download & Ingest PDF' : 'Ingest Abstract Only'}
-                </button>
+                ${ingestButtonHtml}
             </div>
         `;
 
-        // Wire up the ingestion button click handler
-        const btn = card.querySelector(`.btn-download-ingest`);
-        btn.addEventListener("click", () => triggerIngestion(paper, btn));
+        // Wire up the ingestion button click handler (only if not already ingested)
+        if (!alreadyIngested) {
+            const btn = card.querySelector(`.btn-download-ingest`);
+            if (btn) btn.addEventListener("click", () => triggerIngestion(paper, btn));
+        }
 
         return card;
     }
@@ -509,6 +545,12 @@ document.addEventListener("DOMContentLoaded", () => {
         try {
             const resp = await fetch(`${API_BASE}/api/pdfs`);
             const files = await resp.json();
+
+            // Update the global ingested-papers cache used for duplicate detection in Paper Discovery
+            ingestedPapers = files.filter(f => f.status === "success").map(f => ({
+                title: f.title || "",
+                doi:   f.doi   || "N/A",
+            }));
 
             // Always refresh the paper filter dropdown whenever the manifest is loaded
             populatePaperFilter(files);
@@ -1208,11 +1250,31 @@ document.addEventListener("DOMContentLoaded", () => {
                         <span class="report-name" title="${r.filename}">${r.filename}</span>
                         <span class="report-meta">${formatBytes(r.size_bytes)} | Created: ${createdDate}</span>
                     </div>
-                    <a class="btn btn-secondary btn-icon" href="${API_BASE}/api/reports/download/${r.filename}" download>
-                        <i class="fa-solid fa-download"></i>
-                    </a>
+                    <div style="display:flex; gap:6px; align-items:center; flex-shrink:0;">
+                        <a class="btn btn-secondary btn-icon" href="${API_BASE}/api/reports/download/${r.filename}" download title="Download CSV">
+                            <i class="fa-solid fa-download"></i>
+                        </a>
+                        <button class="btn-delete-report btn-icon" data-filename="${r.filename}" title="Delete Report" style="padding:6px 8px; border-radius:6px; color:var(--accent-crimson); opacity:0.75; transition:opacity 0.2s, transform 0.2s;">
+                            <i class="fa-solid fa-trash-can"></i>
+                        </button>
+                    </div>
                 `;
                 grid.appendChild(card);
+            });
+
+            // Wire up delete buttons for each report card
+            grid.querySelectorAll(".btn-delete-report").forEach(btn => {
+                btn.addEventListener("click", async (e) => {
+                    e.stopPropagation();
+                    const filename = btn.getAttribute("data-filename");
+                    btn.disabled = true;
+                    btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i>`;
+                    try {
+                        await fetch(`${API_BASE}/api/reports/${encodeURIComponent(filename)}`, { method: "DELETE" });
+                    } catch (_) { /* ignore network errors — refresh either way */ } finally {
+                        await fetchReports(); // Refresh the report list
+                    }
+                });
             });
 
         } catch (err) {

@@ -160,7 +160,7 @@ class RAGService:
         library_inventory_blocks = []
         for i, (title, meta) in enumerate(papers_metadata.items()):
             library_inventory_blocks.append(
-                f"- Paper {i+1}: \"{title}\" | Authors: {meta.get('authors', 'Unknown Authors')} | Year: {meta.get('year', 'N/A')} | DOI: {meta.get('doi', 'N/A')}"
+                f"- {meta.get('authors', 'Unknown Authors')} ({meta.get('year', 'N/A')}). \"{title}\". DOI: {meta.get('doi', 'N/A')}"
             )
         library_inventory_str = "\n".join(library_inventory_blocks) if library_inventory_blocks else "No papers in database library."
 
@@ -177,10 +177,8 @@ class RAGService:
 
             # Detailed structured metadata format for LLM reference
             block = (
-                f'Document [Source {idx + 1}]:\n'
+                f'--- Academic Source ({authors}, {year}) ---\n'
                 f'Title: "{title}"\n'
-                f'Authors: {authors}\n'
-                f'Year: {year}\n'
                 f'DOI: {doi}\n'
                 f'Pages: {pages}\n'
                 f'Content: {text}\n'
@@ -204,14 +202,20 @@ class RAGService:
             "You are a professional, self-hosted academic AI research assistant.\n"
             "Your task is to answer the researcher's query based strictly on the provided Document context blocks and the Ingested Paper Library Inventory.\n\n"
             f"{scope_note}"
-            "Rules:\n"
-            "1. Use ONLY facts stated in the provided Document context blocks or the Ingested Paper Library Inventory. Do NOT use your pre-trained knowledge or make up any details.\n"
-            "2. Cite your sources inline using APA7 style, for example: (Hassan, 2020) or (Smith & Jones, 2018, p. 12). If citing specific pages, use the Pages metadata from the Document block (e.g. p. 45).\n"
-            "3. Do NOT use bracketed source numbers like '[Source 1]' or 'Source 1' in your inline citations. Convert them to proper (Author, Year) citations using the Authors and Year metadata provided in each Document block.\n"
-            "4. At the end of your response, you MUST compile a 'References' section containing all the papers you cited in your answer. Format each reference in proper APA7 bibliography style, using the Authors, Year, Title, and DOI/URL if available in the metadata.\n"
-            "5. If a query asks about a named author or paper that does not appear in the context blocks or Library Inventory, respond with EXACTLY: 'I could not find any relevant papers or context in the local database to answer your question. Please ingest papers first.'\n"
-            "6. If the context blocks are on the right general topic but lack sufficient detail for the specific question, honestly state that the available ingested papers do not contain enough detail on that aspect, then summarise what the context DOES say on the topic.\n"
-            "7. Maintain a formal, neutral, and academic tone throughout."
+            "STRICT CITATION AND WRITING RULES — you MUST follow ALL of these:\n"
+            "1. ONLY use facts from the provided Document context blocks or Library Inventory. No pre-trained knowledge or invented details.\n"
+            "2. INLINE CITATIONS: Always use APA7 parenthetical format: (Author, Year) or (Author & Author, Year) or (Author et al., Year). \n"
+            "   If citing a specific passage, add the page: (Author, Year, p. X).\n"
+            "3. NEVER use bracketed source numbers like '(Source 1)', '[Source 2]', 'Document Source 1', 'Document 1' etc. in the text. These are internal labels only.\n"
+            "   ALWAYS convert internal source labels to proper (Author, Year) citations using the Authors and Year in each Document block.\n"
+            "4. NEVER refer to papers as 'Paper A', 'Paper B', 'Study 1', 'Study 2', or any similar generic label. \n"
+            "   Always identify papers by: their EXACT title in quotes, or using (Author, Year) notation.\n"
+            "5. REFERENCES SECTION: End your response with a 'References' section listing all cited papers in full APA7 bibliography format:\n"
+            "   Author, A. A., & Author, B. B. (Year). Title of article. Journal Name, volume(issue), pages. https://doi.org/xxxxx\n"
+            "6. If asked about an author or paper not in the context or Inventory, respond EXACTLY: \n"
+            "   'I could not find any relevant papers or context in the local database to answer your question. Please ingest papers first.'\n"
+            "7. If context lacks sufficient detail, state that clearly, then summarise what the context does say.\n"
+            "8. Maintain a formal, neutral, and academic tone throughout."
         )
 
         # User prompt: the context blocks + library inventory + the actual research query

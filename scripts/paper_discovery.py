@@ -191,13 +191,14 @@ class PaperDiscoveryService:
     # PUBLIC: Paper Search
     # ──────────────────────────────────────────────────────────────────────────
 
-    def search_papers(self, query: str, limit: int = 5) -> list[dict]:
+    def search_papers(self, query: str, limit: int = 5, offset: int = 0) -> list[dict]:
         """
         Search for academic papers on Semantic Scholar.
 
         Args:
             query: Free-text search query (keywords, title, author name, etc.).
             limit: Maximum number of results to return (default: 5, max: 100).
+            offset: Offset of the first result to return (default: 0).
 
         Returns:
             List of paper metadata dicts, each including title, authors, year,
@@ -208,10 +209,11 @@ class PaperDiscoveryService:
         params = {
             "query": query,
             "limit": limit,
+            "offset": offset,
             # Request only the fields we actually use — keeps response small
             "fields": "title,authors,venue,year,externalIds,abstract,citationCount,referenceCount"
         }
-        logger.info(f"Searching Semantic Scholar: '{query}' (limit={limit})")
+        logger.info(f"Searching Semantic Scholar: '{query}' (limit={limit}, offset={offset})")
         data = self._get_request(url, params=params)
 
         # S2 returns results nested under a "data" key
