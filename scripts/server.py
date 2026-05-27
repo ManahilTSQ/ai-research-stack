@@ -147,6 +147,10 @@ class CitationAnalysisRequest(BaseModel):
     limit: Optional[int] = 5
 
 
+class DeleteReportRequest(BaseModel):
+    filename: str
+
+
 def sanitize_filename(title: str) -> str:
     clean = re.sub(r"[^a-zA-Z0-9_\-\s]", "", title)
     clean = clean.replace(" ", "_")
@@ -917,6 +921,26 @@ def delete_report(filename: str):
     try:
         report_path.unlink()
         logger.info(f"Deleted report: {safe_name}")
+        return {"success": True, "deleted": safe_name}
+    except Exception as e:
+        logger.error(f"Failed to delete report '{safe_name}': {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete report: {e}")
+
+
+@app.post("/api/reports/delete")
+def delete_report_post(req: DeleteReportRequest):
+    safe_name = Path(req.filename).name
+    report_path = REPORTS_DIR / safe_name
+
+    if not report_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Report '{safe_name}' not found in output/."
+        )
+
+    try:
+        report_path.unlink()
+        logger.info(f"Deleted report via POST: {safe_name}")
         return {"success": True, "deleted": safe_name}
     except Exception as e:
         logger.error(f"Failed to delete report '{safe_name}': {e}")

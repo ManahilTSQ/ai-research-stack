@@ -1290,13 +1290,16 @@ document.addEventListener("DOMContentLoaded", () => {
                 btn.addEventListener("click", async (e) => {
                     e.stopPropagation();
                     const filename = btn.getAttribute("data-filename");
-                    if (!confirm(`Are you sure you want to delete the report "${filename}"?`)) {
-                        return;
-                    }
                     btn.disabled = true;
                     btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i>`;
                     try {
-                        const response = await fetch(`${API_BASE}/api/reports/${encodeURIComponent(filename)}`, { method: "DELETE" });
+                        const response = await fetch(`${API_BASE}/api/reports/delete`, {
+                            method: "POST",
+                            headers: {
+                                "Content-Type": "application/json"
+                            },
+                            body: JSON.stringify({ filename: filename })
+                        });
                         if (!response.ok) {
                             const errData = await response.json().catch(() => ({}));
                             alert(`Failed to delete report: ${errData.detail || response.statusText || 'Unknown error'}`);
