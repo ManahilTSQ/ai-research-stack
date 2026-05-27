@@ -20,6 +20,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Ingested papers cache — populated by fetchLocalPDFs(), used for duplicate detection
     let ingestedPapers = [];      // Array of {title, doi, authors, year} for all 'success' entries
+    let localManifestFiles = [];  // Raw list of all manifest files (includes pending, failed, success)
 
     // Initialize SPA tabs routing
     initTabs();
@@ -547,6 +548,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const files = await resp.json();
 
             // Update the global ingested-papers cache used for duplicate detection in Paper Discovery
+            localManifestFiles = files;
             ingestedPapers = files.filter(f => f.status === "success").map(f => ({
                 title: f.title || "",
                 doi:   f.doi   || "N/A",
@@ -803,12 +805,33 @@ document.addEventListener("DOMContentLoaded", () => {
      * After all uploads finish, refreshes the manifest and stats counters.
      */
     async function handleUploadPDFs(e) {
-        const files = Array.from(e.target.files);
+        let files = Array.from(e.target.files);
         if (!files.length) return;
 
         const statusList = document.getElementById("upload-status-list");
         const subfolder = document.getElementById("upload-subfolder").value.trim();
         const uploadBtn = document.getElementById("btn-upload-pdfs");
+
+        // --- Check for duplicates ---
+        if (localManifestFiles && localManifestFiles.length > 0) {
+            const existingNames = new Set(localManifestFiles.map(f => {
+                const parts = f.filename.split(/[\/\\]/);
+                return parts[parts.length - 1].toLowerCase();
+            }));
+            const duplicates = files.filter(file => existingNames.has(file.name.toLowerCase()));
+            if (duplicates.length > 0) {
+                const dupNames = duplicates.map(file => file.name).join(", ");
+                const proceed = confirm(`The following PDF(s) already exist in your Knowledge Base:\n\n${dupNames}\n\nDo you want to re-upload and re-ingest them? Click Cancel to skip these duplicates.`);
+                if (!proceed) {
+                    const dupSet = new Set(duplicates.map(f => f.name));
+                    files = files.filter(file => !dupSet.has(file.name));
+                    if (files.length === 0) {
+                        e.target.value = "";
+                        return;
+                    }
+                }
+            }
+        }
 
         uploadBtn.disabled = true;
         uploadBtn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i> Uploading...`;
@@ -1267,11 +1290,20 @@ document.addEventListener("DOMContentLoaded", () => {
                 btn.addEventListener("click", async (e) => {
                     e.stopPropagation();
                     const filename = btn.getAttribute("data-filename");
+                    if (!confirm(`Are you sure you want to delete the report "${filename}"?`)) {
+                        return;
+                    }
                     btn.disabled = true;
                     btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i>`;
                     try {
-                        await fetch(`${API_BASE}/api/reports/${encodeURIComponent(filename)}`, { method: "DELETE" });
-                    } catch (_) { /* ignore network errors — refresh either way */ } finally {
+                        const response = await fetch(`${API_BASE}/api/reports/${encodeURIComponent(filename)}`, { method: "DELETE" });
+                        if (!response.ok) {
+                            const errData = await response.json().catch(() => ({}));
+                            alert(`Failed to delete report: ${errData.detail || response.statusText || 'Unknown error'}`);
+                        }
+                    } catch (err) {
+                        alert(`Network error deleting report: ${err.message}`);
+                    } finally {
                         await fetchReports(); // Refresh the report list
                     }
                 });

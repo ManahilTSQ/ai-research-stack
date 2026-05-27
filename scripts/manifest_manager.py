@@ -199,6 +199,15 @@ class ManifestManagerService:
         discovery_service = PaperDiscoveryService()
         pdf_service = PDFProcessorService()
 
+        # Clean up title_guess (strip subfolder prefix and leading dates/digits)
+        title_guess = Path(title_guess).name
+        # Match YYYY-MM-DD- or YYYY_MM_DD_ or space-separated equivalents
+        title_guess = re.sub(r'^\d{4}[-_]\d{2}[-_]\d{2}[-_]?', '', title_guess)
+        title_guess = re.sub(r'^\d{4}\s+\d{2}\s+\d{2}\s+', '', title_guess)
+        title_guess = re.sub(r'^\d{4}[-_]?', '', title_guess)
+        title_guess = re.sub(r'^\d{4}\s+', '', title_guess)
+        title_guess = title_guess.replace("_", " ").replace("-", " ").strip()
+
         def _format_authors_helper(authors: list) -> str:
             if not authors:
                 return "Unknown Authors"
@@ -208,7 +217,7 @@ class ManifestManagerService:
             return ", ".join(names)
 
         resolved = {
-            "title": title_guess,
+            "title": title_guess.title(),
             "authors": "Unknown Authors",
             "year": "N/A",
             "doi": existing_doi or "N/A",
@@ -435,8 +444,12 @@ class ManifestManagerService:
                 filename = str(pdf_path.relative_to(pdf_dir))
 
                 if filename not in manifest:
-                    # Derive a human-readable title from the filename as a best guess
-                    title = filename.replace("_", " ").replace(".pdf", "").title()
+                    # Derive a clean human-readable title from the filename as a best guess
+                    import re
+                    stem_clean = pdf_path.stem
+                    stem_clean = re.sub(r'^\d{4}[-_]\d{2}[-_]\d{2}[-_]?', '', stem_clean)
+                    stem_clean = re.sub(r'^\d{4}[-_]?', '', stem_clean)
+                    title = stem_clean.replace("_", " ").replace("-", " ").strip().title()
 
                     # Check if this file's title is already in the ChromaDB collection
                     # by looking for a close substring match (handles minor title variations)
