@@ -434,7 +434,8 @@ def list_pdfs():
             "ingested_at": meta_ingested_at,
             "size_bytes":  size_bytes,
             "authors":     meta.get("authors", "Unknown Authors"),
-            "year":        meta.get("year", "N/A")
+            "year":        meta.get("year", "N/A"),
+            "abstract":    meta.get("abstract", "")
         })
 
     return file_list

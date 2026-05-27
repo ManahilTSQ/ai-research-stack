@@ -623,7 +623,12 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         const abstractText = document.getElementById("modal-abstract-text");
-        if (file.abstract && file.abstract.trim()) {
+        if (file.status === "pending") {
+            abstractText.innerHTML = `<span style="font-style: italic; color: #fbbf24;"><i class="fa-solid fa-spinner fa-spin"></i> Ingestion Pending... The server has not finished extracting text and resolving metadata for this file yet. Please click 'Scan & Ingest Folder' above or wait for the upload queue to finish.</span>`;
+        } else if (file.status === "failed") {
+            const errDetail = file.error || "Unknown extraction error.";
+            abstractText.innerHTML = `<span style="font-style: italic; color: var(--accent-crimson);"><i class="fa-solid fa-triangle-exclamation"></i> Ingestion Failed. Error details: ${errDetail}</span>`;
+        } else if (file.abstract && file.abstract.trim()) {
             abstractText.textContent = file.abstract;
         } else {
             abstractText.innerHTML = `<span style="font-style: italic; opacity: 0.6;">No abstract stored in manifest. You can RAG query this document to see extract details.</span>`;
