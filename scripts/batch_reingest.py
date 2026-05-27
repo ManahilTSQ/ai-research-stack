@@ -35,8 +35,9 @@ def run():
     success = 0
     failed  = 0
 
-    for pdf_path in sorted(pdf_dir.glob("*.pdf")):
-        filename = pdf_path.name
+    pdf_files = sorted([p for p in pdf_dir.rglob("*") if p.is_file() and p.suffix.lower() == ".pdf"], key=lambda p: str(p.relative_to(pdf_dir)))
+    for pdf_path in pdf_files:
+        filename = str(pdf_path.relative_to(pdf_dir))
         meta     = manifest.get(filename, {})
         title    = meta.get("title", filename.replace("_", " ").replace(".pdf", "").title())
         doi      = meta.get("doi")

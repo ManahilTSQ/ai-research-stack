@@ -163,7 +163,10 @@ def format_authors(authors: list) -> str:
 
 @app.get("/", response_class=FileResponse, include_in_schema=False)
 def serve_ui():
-    return FileResponse(str(WEB_DIR / "index.html"))
+    return FileResponse(
+        str(WEB_DIR / "index.html"),
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
+    )
 
 @app.websocket("/")
 async def websocket_root(websocket: WebSocket):

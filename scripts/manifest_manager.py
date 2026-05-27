@@ -201,8 +201,8 @@ class ManifestManagerService:
         """
         with self.manifest_lock:
             pdf_dir = settings.PDF_DOWNLOAD_DIR  # papers/ directory
-            # Recursively glob all PDF files in papers/ and all subfolders
-            pdf_files = list(pdf_dir.rglob("*.pdf"))
+            # Recursively collect all PDF files in papers/ and subfolders (case-insensitive)
+            pdf_files = [p for p in pdf_dir.rglob("*") if p.is_file() and p.suffix.lower() == ".pdf"]
 
             manifest = self._load_manifest()
 

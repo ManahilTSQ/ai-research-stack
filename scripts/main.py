@@ -375,7 +375,7 @@ def run_batch_ingestion(
     pdf_dir = settings.PDF_DOWNLOAD_DIR  # papers/ directory
     print(f"\nScanning papers/ directory: {pdf_dir}")
 
-    pdf_files = list(pdf_dir.glob("*.pdf"))
+    pdf_files = [p for p in pdf_dir.rglob("*") if p.is_file() and p.suffix.lower() == ".pdf"]
     if not pdf_files:
         print("[-] No PDF files found. Drop PDFs into papers/ and try again.")
         return
