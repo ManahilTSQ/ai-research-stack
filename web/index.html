@@ -84,6 +84,8 @@
                                 <option value="5">5 Results</option>
                                 <option value="10" selected>10 Results</option>
                                 <option value="20">20 Results</option>
+                                <option value="50">50 Results</option>
+                                <option value="100">100 Results</option>
                             </select>
                         </div>
                         <button type="submit" class="btn btn-primary glow-button">
@@ -92,10 +94,41 @@
                     </form>
                 </div>
 
+                <!-- Filter & Sort Bar -->
+                <div id="filter-sort-bar" class="filter-sort-bar glass-card hidden" style="margin-top: 15px; padding: 12px 20px; display: flex; flex-wrap: wrap; gap: 15px; align-items: center; justify-content: space-between; font-size: 13px;">
+                    <div class="filters-group" style="display: flex; flex-wrap: wrap; gap: 12px; align-items: center;">
+                        <span style="font-weight: 600; color: var(--text-secondary);"><i class="fa-solid fa-filter"></i> Filters:</span>
+                        <div class="filter-item">
+                            <label for="filter-author" style="margin-right: 4px; color: var(--text-muted);">Author:</label>
+                            <input type="text" id="filter-author" placeholder="Filter by author..." style="background: rgba(0,0,0,0.25); border: 1px solid var(--border-glass); border-radius: 6px; padding: 4px 8px; color: #fff; font-size: 12px; width: 140px;" autocomplete="off">
+                        </div>
+                        <div class="filter-item">
+                            <label for="filter-venue" style="margin-right: 4px; color: var(--text-muted);">Journal/Venue:</label>
+                            <input type="text" id="filter-venue" placeholder="Filter by journal..." style="background: rgba(0,0,0,0.25); border: 1px solid var(--border-glass); border-radius: 6px; padding: 4px 8px; color: #fff; font-size: 12px; width: 140px;" autocomplete="off">
+                        </div>
+                        <div class="filter-item">
+                            <label for="filter-year-min" style="margin-right: 4px; color: var(--text-muted);">Years:</label>
+                            <input type="number" id="filter-year-min" placeholder="Min" style="background: rgba(0,0,0,0.25); border: 1px solid var(--border-glass); border-radius: 6px; padding: 4px 8px; color: #fff; font-size: 12px; width: 60px;" min="1900" max="2100">
+                            <span style="color: var(--text-muted);">-</span>
+                            <input type="number" id="filter-year-max" placeholder="Max" style="background: rgba(0,0,0,0.25); border: 1px solid var(--border-glass); border-radius: 6px; padding: 4px 8px; color: #fff; font-size: 12px; width: 60px;" min="1900" max="2100">
+                        </div>
+                    </div>
+                    
+                    <div class="sorts-group" style="display: flex; gap: 8px; align-items: center;">
+                        <label for="sort-results" style="font-weight: 600; color: var(--text-secondary);"><i class="fa-solid fa-arrow-down-wide-short"></i> Sort By:</label>
+                        <select id="sort-results" style="background: rgba(0,0,0,0.25); border: 1px solid var(--border-glass); border-radius: 6px; padding: 4px 8px; color: #fff; font-size: 12px; cursor: pointer;">
+                            <option value="relevance">Relevance (Default)</option>
+                            <option value="citations">Citations (Highest First)</option>
+                            <option value="year-desc">Year (Newest First)</option>
+                            <option value="year-asc">Year (Oldest First)</option>
+                        </select>
+                    </div>
+                </div>
+
                 <!-- Search Results Area -->
-                <div class="results-layout">
+                <div class="results-layout" style="display: flex; flex-direction: column; gap: 15px;">
                     <div id="search-status-message" class="status-msg hidden">
-                        <i class="fa-solid fa-circle-notch fa-spin"></i> Querying Academic Index...
+                        <i class="fa-solid fa-circle-notch fa-spin"></i> Querying Semantic Scholar...
                     </div>
                     <div id="search-results-list" class="cards-grid">
                         <div class="placeholder-card glass-card">
@@ -103,6 +136,11 @@
                             <h3>No Active Search</h3>
                             <p>Enter research keywords in the search bar above to fetch metadata, citation counts, and open-access PDFs.</p>
                         </div>
+                    </div>
+                    <div id="load-more-container" class="load-more-container hidden" style="text-align: center; margin-top: 15px; margin-bottom: 20px; width: 100%;">
+                        <button id="btn-load-more" class="btn btn-secondary glow-button" style="padding: 10px 24px; min-width: 180px; margin: 0 auto;">
+                            <span>Load More Papers</span>
+                        </button>
                     </div>
                 </div>
             </section>
@@ -338,6 +376,29 @@
             <p>Standalone Deployment Phase 2-5</p>
         </footer>
 
+    </div>
+
+    <!-- Abstract Viewer Modal -->
+    <div id="abstract-modal" class="modal-overlay hidden">
+        <div class="modal-box glass-card">
+            <div class="modal-header">
+                <h3 id="modal-title">Paper Abstract</h3>
+                <button id="btn-close-modal" class="btn-icon" title="Close Modal"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body">
+                <div class="modal-meta-row">
+                    <span id="modal-authors" class="modal-authors">Unknown Authors</span>
+                    <span id="modal-year" class="modal-year">N/A</span>
+                </div>
+                <div id="modal-doi-row" class="modal-doi-row">
+                    <strong>DOI:</strong> <a id="modal-doi-link" href="#" target="_blank">N/A</a>
+                </div>
+                <div class="modal-abstract-content">
+                    <h4>Abstract / Ingested Metadata:</h4>
+                    <p id="modal-abstract-text" class="modal-abstract-text">Loading...</p>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- UI Scripts -->

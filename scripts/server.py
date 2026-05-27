@@ -222,11 +222,11 @@ def health_check():
 
 
 @app.get("/api/search")
-def search_papers(q: str, limit: int = 10):
+def search_papers(q: str, limit: int = 10, offset: int = 0):
     if not q or not q.strip():
         raise HTTPException(status_code=400, detail="Query string 'q' is required.")
 
-    results = discover_service.search_papers(q.strip(), limit=limit)
+    results = discover_service.search_papers(q.strip(), limit=limit, offset=offset)
     formatted = []
 
     for paper in results:
@@ -305,7 +305,7 @@ def download_paper(request: DownloadRequest, background_tasks: BackgroundTasks):
             )
             manifest_service.mark_as_ingested(
                 sanitize_filename(title), title, doi, status="success",
-                authors=authors_str, year=year
+                authors=authors_str, year=year, abstract=abstract
             )
             return
 
@@ -319,7 +319,7 @@ def download_paper(request: DownloadRequest, background_tasks: BackgroundTasks):
             manifest_service.mark_as_ingested(
                 filename, title, doi,
                 status="success" if success else "failed",
-                authors=authors_str, year=year
+                authors=authors_str, year=year, abstract=request.abstract
             )
             logger.info(
                 f"BG Ingest complete for '{title}': "
@@ -329,12 +329,26 @@ def download_paper(request: DownloadRequest, background_tasks: BackgroundTasks):
             manifest_service.mark_as_ingested(
                 sanitize_filename(title), title, doi, status="failed",
                 error="No PDF and no abstract available.",
-                authors=authors_str, year=year
+                authors=authors_str, year=year, abstract=request.abstract
             )
             logger.warning(f"Ingestion failed for '{title}': no content could be obtained.")
 
     background_tasks.add_task(_ingest)
     return {"success": True, "message": f"Ingestion started for: {title}", "mode": "pdf" if request.externalIds else "abstract"}
+
+
+@app.get("/api/papers/{filename:path}")
+def get_paper_file(filename: str):
+    """
+    Serve a physical PDF file from the papers/ directory.
+    """
+    pdf_path = settings.PDF_DOWNLOAD_DIR / filename
+    if not pdf_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Paper file '{filename}' not found."
+        )
+    return FileResponse(str(pdf_path), media_type="application/pdf")
 
 
 @app.delete("/api/papers/{filename:path}")
@@ -496,25 +510,38 @@ async def upload_pdfs(
                 try:
                     manifest = manifest_service.get_all_entries()
                     meta = manifest.get(rel, {})
-                    title = meta.get("title", pdf_path.stem.replace("_", " ").title())
+                    title_guess = meta.get("title", pdf_path.stem.replace("_", " ").title())
+                    
+                    # Resolve metadata
+                    resolved = manifest_service.resolve_metadata(pdf_path, title_guess)
+                    title = resolved["title"]
+                    authors = resolved["authors"]
+                    year_str = resolved["year"]
+                    doi = resolved["doi"]
+                    abstract = resolved.get("abstract", "")
+                    
+                    year = int(year_str) if year_str.isdigit() else None
+                    
                     pages = pdf_service.extract_text_by_page(pdf_path)
                     chunks = pdf_service.chunk_text(pages, chunk_size=1000, chunk_overlap=200)
                     if chunks:
                         success = vector_store.add_paper_chunks(
-                            paper_title=title, doi=None, chunks=chunks,
-                            authors="Unknown Authors", year=None
+                            paper_title=title, doi=doi if doi != "N/A" else None, chunks=chunks,
+                            authors=authors, year=year
                         )
                         manifest_service.mark_as_ingested(
-                            rel, title, doi=None,
+                            rel, title, doi=doi if doi != "N/A" else None,
                             status="success" if success else "failed",
-                            authors="Unknown Authors", year=None
+                            authors=authors, year=year,
+                            abstract=abstract
                         )
                         logger.info(f"Auto-ingested '{rel}': {len(chunks)} chunks, success={success}")
                     else:
                         manifest_service.mark_as_ingested(
-                            rel, title, doi=None, status="failed",
+                            rel, title, doi=doi if doi != "N/A" else None, status="failed",
                             error="No text extracted — may be a scanned/image PDF.",
-                            authors="Unknown Authors", year=None
+                            authors=authors, year=year,
+                            abstract=abstract
                         )
                         logger.warning(f"No text extracted from uploaded PDF '{rel}'")
                 except Exception as e:
@@ -553,23 +580,32 @@ def ingest_pending(background_tasks: BackgroundTasks):
 
             logger.info(f"Ingesting pending PDF: {filename}")
             try:
+                title_guess = meta.get("title", pdf_path.stem.replace("_", " ").title())
+                doi_guess = meta.get("doi")
+                
+                # Resolve metadata
+                resolved = manifest_service.resolve_metadata(pdf_path, title_guess, doi_guess)
+                title = resolved["title"]
+                authors = resolved["authors"]
+                year_str = resolved["year"]
+                doi = resolved["doi"]
+                abstract = resolved.get("abstract", "")
+                
+                year = int(year_str) if year_str.isdigit() else None
+                
                 pages  = pdf_service.extract_text_by_page(pdf_path)
                 chunks = pdf_service.chunk_text(pages, chunk_size=1000, chunk_overlap=200)
-                title  = meta.get("title", pdf_path.stem.replace("_", " ").title())
-                doi    = meta.get("doi")
-                authors = meta.get("authors", "Unknown Authors")
-                year_str = meta.get("year", "N/A")
-                year = int(year_str) if year_str.isdigit() else None
 
                 success = vector_store.add_paper_chunks(
-                    paper_title=title, doi=doi, chunks=chunks,
+                    paper_title=title, doi=doi if doi != "N/A" else None, chunks=chunks,
                     authors=authors, year=year
                 )
 
                 manifest_service.mark_as_ingested(
-                    filename, title, doi,
+                    filename, title, doi if doi != "N/A" else None,
                     status="success" if success else "failed",
-                    authors=authors, year=year
+                    authors=authors, year=year,
+                    abstract=abstract
                 )
                 processed += 1
                 if success:
@@ -578,9 +614,10 @@ def ingest_pending(background_tasks: BackgroundTasks):
             except Exception as e:
                 logger.error(f"Failed to ingest '{filename}': {e}")
                 manifest_service.mark_as_ingested(
-                    filename, meta.get("title", filename), None,
+                    filename, meta.get("title", filename), meta.get("doi"),
                     status="failed", error=str(e),
-                    authors=meta.get("authors"), year=None
+                    authors=meta.get("authors", "Unknown Authors"), year=meta.get("year"),
+                    abstract=meta.get("abstract")
                 )
                 processed += 1
         logger.info(f"Background bulk ingestion complete. Processed: {processed}, Succeeded: {succeeded}")

@@ -143,7 +143,8 @@ class ManifestManagerService:
         status: str = "success",
         error: str = "",
         authors: str | None = None,
-        year: int | str | None = None
+        year: int | str | None = None,
+        abstract: str | None = None
     ) -> None:
         """
         Record the ingestion result for a PDF file in the manifest.
@@ -159,8 +160,12 @@ class ManifestManagerService:
             error: Error message string if status is "failed", else empty string.
             authors: Authors string.
             year: Year of publication.
+            abstract: Paper abstract text.
         """
         manifest = self._load_manifest()
+
+        existing_abstract = manifest.get(filename, {}).get("abstract")
+        final_abstract = abstract or existing_abstract or ""
 
         # Overwrite or create the entry for this filename
         manifest[filename] = {
@@ -170,12 +175,166 @@ class ManifestManagerService:
             "error": error,
             "authors": authors or "Unknown Authors",
             "year": str(year) if year else "N/A",
+            "abstract": final_abstract,
             # ISO-format timestamp for human-readable audit trail
             "ingested_at": datetime.now().isoformat()
         }
 
         self._save_manifest(manifest)
         logger.info(f"Manifest updated: '{filename}' → status={status}")
+
+    def resolve_metadata(self, pdf_path: Path, title_guess: str, existing_doi: str | None = None) -> dict:
+        """
+        Attempt to resolve academic metadata (title, authors, year, doi, abstract) for a PDF file.
+        Tries:
+          1. Direct lookup if existing_doi is provided.
+          2. Extract DOI from PDF text, then direct lookup.
+          3. Search Semantic Scholar by clean title guess.
+          4. Extract internal PDF metadata using PyMuPDF (fitz) as fallback.
+        """
+        import re
+        from paper_discovery import PaperDiscoveryService
+        from pdf_processor import PDFProcessorService
+
+        discovery_service = PaperDiscoveryService()
+        pdf_service = PDFProcessorService()
+
+        def _format_authors_helper(authors: list) -> str:
+            if not authors:
+                return "Unknown Authors"
+            names = [a.get("name", "") for a in authors if a.get("name")]
+            if len(names) > 3:
+                return ", ".join(names[:3]) + " et al."
+            return ", ".join(names)
+
+        resolved = {
+            "title": title_guess,
+            "authors": "Unknown Authors",
+            "year": "N/A",
+            "doi": existing_doi or "N/A",
+            "abstract": ""
+        }
+
+        # Step 1: Direct lookup if existing_doi is provided
+        if existing_doi and existing_doi != "N/A":
+            try:
+                cand = discovery_service.get_paper_details(existing_doi)
+                if cand:
+                    resolved["title"] = cand.get("title") or title_guess
+                    resolved["authors"] = _format_authors_helper(cand.get("authors", []))
+                    resolved["year"] = str(cand.get("year") or "N/A")
+                    resolved["doi"] = (cand.get("externalIds") or {}).get("DOI") or existing_doi
+                    resolved["abstract"] = cand.get("abstract") or ""
+                    return resolved
+            except Exception as e:
+                logger.warning(f"Metadata lookup failed for DOI '{existing_doi}': {e}")
+
+        # Step 2: Try to extract DOI from PDF text on disk
+        first_page_text = ""
+        extracted_doi = None
+        if pdf_path.exists():
+            try:
+                pages = pdf_service.extract_text_by_page(pdf_path)
+                if pages:
+                    first_page_text = pages[0].get("text", "")
+                    doi_match = re.search(r"\b(10\.\d{4,9}/[^\s]+)\b", first_page_text, re.IGNORECASE)
+                    if doi_match:
+                        extracted_doi = doi_match.group(1).rstrip(".,;()[]{}")
+                        logger.info(f"Extracted DOI '{extracted_doi}' from PDF text for '{pdf_path.name}'")
+            except Exception as pdf_err:
+                logger.warning(f"Failed to extract text from PDF '{pdf_path.name}' for DOI lookup: {pdf_err}")
+
+        # Step 3: If DOI extracted, do a direct lookup
+        if extracted_doi:
+            try:
+                cand = discovery_service.get_paper_details(extracted_doi)
+                if cand:
+                    resolved["title"] = cand.get("title") or title_guess
+                    resolved["authors"] = _format_authors_helper(cand.get("authors", []))
+                    resolved["year"] = str(cand.get("year") or "N/A")
+                    resolved["doi"] = (cand.get("externalIds") or {}).get("DOI") or extracted_doi
+                    resolved["abstract"] = cand.get("abstract") or ""
+                    return resolved
+            except Exception as doi_err:
+                logger.warning(f"Direct S2 DOI lookup failed for '{extracted_doi}': {doi_err}")
+
+        # Step 4: Search Semantic Scholar by clean title guess
+        search_title = title_guess.replace("+", " ").replace("_", " ").replace("-", " ").strip(".")
+        is_short_code = (
+            len(search_title) < 15 or 
+            search_title.isdigit() or 
+            re.match(r'^[a-zA-Z0-9_\-\s\.]+$', search_title) and any(x in search_title.lower() for x in ['vol', 'no', 'issue', 'page', 'gjcs'])
+        )
+        if is_short_code and first_page_text:
+            lines = [l.strip() for l in first_page_text.split("\n") if l.strip()]
+            clean_lines = []
+            for l in lines[:8]:
+                if any(x in l.lower() for x in ['http', 'doi:', 'vol.', 'no.', 'issn', '@', 'page', 'journal']):
+                    continue
+                clean_lines.append(l)
+                if len(clean_lines) >= 2:
+                    break
+            if clean_lines:
+                search_title = " ".join(clean_lines)[:150].strip()
+
+        logger.info(f"Querying Semantic Scholar to resolve metadata for: '{search_title}'")
+        try:
+            results = discovery_service.search_papers(search_title, limit=5)
+            for cand in results:
+                c_title = (cand.get("title") or "").lower().strip()
+                t_clean = search_title.lower().strip()
+                c_title_norm = re.sub(r'[^a-z0-9\s]', '', c_title)
+                t_clean_norm = re.sub(r'[^a-z0-9\s]', '', t_clean)
+                
+                matched = False
+                if c_title_norm == t_clean_norm or t_clean_norm in c_title_norm or c_title_norm in t_clean_norm:
+                    matched = True
+                else:
+                    t_words = set(t_clean_norm.split())
+                    c_words = set(c_title_norm.split())
+                    if t_words and c_words:
+                        overlap = len(t_words & c_words) / max(len(t_words), 1)
+                        if overlap >= 0.7:
+                            matched = True
+                
+                if matched:
+                    resolved["title"] = cand.get("title") or title_guess
+                    resolved["authors"] = _format_authors_helper(cand.get("authors", []))
+                    resolved["year"] = str(cand.get("year") or "N/A")
+                    resolved["doi"] = (cand.get("externalIds") or {}).get("DOI") or resolved["doi"]
+                    resolved["abstract"] = cand.get("abstract") or ""
+                    return resolved
+        except Exception as search_err:
+            logger.warning(f"S2 search failed for '{search_title}': {search_err}")
+
+        # Step 5: Fallback to internal PDF metadata via fitz
+        if pdf_path.exists():
+            try:
+                import fitz
+                with fitz.open(pdf_path) as doc:
+                    meta = doc.metadata or {}
+                    internal_title = meta.get("title")
+                    internal_author = meta.get("author")
+                    
+                    internal_year = None
+                    for date_field in ["creationDate", "modDate"]:
+                        date_val = meta.get(date_field)
+                        if date_val:
+                            match = re.search(r"\b(19|20)\d{2}\b", date_val)
+                            if match:
+                                internal_year = match.group(0)
+                                break
+                    
+                    if internal_author and internal_author.strip() and internal_author.lower() not in ["unknown", "none", "null"]:
+                        resolved["authors"] = internal_author.strip()
+                    if internal_year:
+                        resolved["year"] = str(internal_year)
+                    if internal_title and internal_title.strip() and len(internal_title.strip()) > 5 and internal_title.lower() not in ["unknown", "none", "null", "untitled"]:
+                        resolved["title"] = internal_title.strip()
+            except Exception as e:
+                logger.warning(f"Failed to extract internal metadata from '{pdf_path.name}': {e}")
+
+        return resolved
 
     # ──────────────────────────────────────────────────────────────────────────
     # PUBLIC: Sync Manifest with Filesystem + Vector Store
@@ -327,136 +486,40 @@ class ManifestManagerService:
 
                 def _bg_resolve_metadata():
                     try:
-                        import re
-                        from paper_discovery import PaperDiscoveryService
-                        from pdf_processor import PDFProcessorService
-                        
-                        discovery_service = PaperDiscoveryService()
-                        pdf_service = PDFProcessorService()
-
-                        def _format_authors_helper(authors: list) -> str:
-                            if not authors:
-                                return "Unknown Authors"
-                            names = [a.get("name", "") for a in authors if a.get("name")]
-                            if len(names) > 3:
-                                return ", ".join(names[:3]) + " et al."
-                            return ", ".join(names)
-
                         logger.info(f"Background thread starting to resolve metadata for {len(entries_to_resolve)} papers...")
                         for filename, matched_title, title, existing_doi in entries_to_resolve:
                             pdf_path = settings.PDF_DOWNLOAD_DIR / filename
-                            extracted_doi = None
-                            first_page_text = ""
                             
-                            # 1. Try to extract DOI from PDF text on disk
-                            if pdf_path.exists():
-                                try:
-                                    pages = pdf_service.extract_text_by_page(pdf_path)
-                                    if pages:
-                                        first_page_text = pages[0]
-                                        # Search for DOI pattern
-                                        doi_match = re.search(r"\b(10\.\d{4,9}/[^\s]+)\b", first_page_text, re.IGNORECASE)
-                                        if doi_match:
-                                            extracted_doi = doi_match.group(1).rstrip(".,;()[]{}")
-                                            logger.info(f"Extracted DOI '{extracted_doi}' from PDF text for '{filename}'")
-                                except Exception as pdf_err:
-                                    logger.warning(f"Failed to extract text from PDF '{filename}' for DOI lookup: {pdf_err}")
-                            
-                            best_match = None
-                            
-                            # 2. If DOI extracted, do a direct high-priority lookup
-                            if extracted_doi:
-                                try:
-                                    logger.info(f"Performing direct S2 lookup for DOI: '{extracted_doi}'")
-                                    best_match = discovery_service.get_paper_details(extracted_doi)
-                                except Exception as doi_err:
-                                    logger.warning(f"Direct S2 DOI lookup failed for '{extracted_doi}': {doi_err}")
-                            
-                            # 3. If direct lookup failed or no DOI was extracted, perform search
-                            if not best_match:
-                                # Clean up title for search: replace '+', '_', '-' with space, remove trailing dots
-                                search_title = title.replace("+", " ").replace("_", " ").replace("-", " ").strip(".")
-                                
-                                # Heuristic: if title is a short code or digit sequence, extract a better search query from PDF text
-                                is_short_code = (
-                                    len(search_title) < 15 or 
-                                    search_title.isdigit() or 
-                                    re.match(r'^[a-zA-Z0-9_\-\s\.]+$', search_title) and any(x in search_title.lower() for x in ['vol', 'no', 'issue', 'page', 'gjcs'])
-                                )
-                                
-                                if is_short_code and first_page_text:
-                                    lines = [l.strip() for l in first_page_text.split("\n") if l.strip()]
-                                    clean_lines = []
-                                    for l in lines[:8]:
-                                        if any(x in l.lower() for x in ['http', 'doi:', 'vol.', 'no.', 'issn', '@', 'page', 'journal']):
-                                            continue
-                                        clean_lines.append(l)
-                                        if len(clean_lines) >= 2:
-                                            break
-                                    if clean_lines:
-                                        search_title = " ".join(clean_lines)[:150].strip()
-                                        logger.info(f"Extracted search title query from PDF text for '{filename}': '{search_title}'")
-                                
-                                logger.info(f"Querying Semantic Scholar to resolve metadata for: '{search_title}' (original: '{title}')")
-                                try:
-                                    results = discovery_service.search_papers(search_title, limit=5)
-                                    for cand in results:
-                                        c_title = (cand.get("title") or "").lower().strip()
-                                        t_clean = search_title.lower().strip()
-                                        
-                                        # Normalize both titles by removing non-alphanumeric characters
-                                        c_title_norm = re.sub(r'[^a-z0-9\s]', '', c_title)
-                                        t_clean_norm = re.sub(r'[^a-z0-9\s]', '', t_clean)
-                                        
-                                        # A. Exact or substring match after normalization
-                                        if (c_title_norm == t_clean_norm or 
-                                            t_clean_norm in c_title_norm or 
-                                            c_title_norm in t_clean_norm):
-                                            best_match = cand
-                                            break
-                                        
-                                        # B. Or >= 70% word overlap match
-                                        t_words = set(t_clean_norm.split())
-                                        c_words = set(c_title_norm.split())
-                                        if t_words and c_words:
-                                            overlap = len(t_words & c_words) / max(len(t_words), 1)
-                                            if overlap >= 0.7:
-                                                best_match = cand
-                                                break
-                                except Exception as search_err:
-                                    logger.warning(f"S2 search failed for '{search_title}': {search_err}")
-                            
-                            # 4. If we successfully found a match, backfill it
                             try:
-                                if best_match:
-                                    s2_title = best_match.get("title", title)
-                                    s2_authors = _format_authors_helper(best_match.get("authors", []))
-                                    s2_year = best_match.get("year", "N/A")
-                                    s2_doi = (best_match.get("externalIds") or {}).get("DOI", "N/A")
-                                    
-                                    logger.info(f"Resolved S2 Metadata for '{title}': title='{s2_title}', authors='{s2_authors}', year={s2_year}")
-                                    
-                                    # Update chunks in ChromaDB (updating both metadata fields AND the title)
-                                    vector_store_service.update_paper_metadata(
-                                        title=matched_title,
-                                        authors=s2_authors,
-                                        year=str(s2_year),
-                                        doi=s2_doi if s2_doi != "N/A" else existing_doi,
-                                        new_title=s2_title
-                                    )
+                                resolved = self.resolve_metadata(pdf_path, title, existing_doi)
+                                s2_title = resolved["title"]
+                                s2_authors = resolved["authors"]
+                                s2_year = resolved["year"]
+                                s2_doi = resolved["doi"]
+                                s2_abstract = resolved.get("abstract", "")
 
-                                    # Load latest manifest, write the metadata, and save
-                                    with self.manifest_lock:
-                                        current_manifest = self._load_manifest()
-                                        if filename in current_manifest:
-                                            current_manifest[filename]["title"] = s2_title
-                                            current_manifest[filename]["authors"] = s2_authors
-                                            current_manifest[filename]["year"] = str(s2_year)
-                                            if s2_doi and s2_doi != "N/A":
-                                                current_manifest[filename]["doi"] = s2_doi
-                                            self._save_manifest(current_manifest)
-                                else:
-                                    logger.warning(f"Could not resolve metadata for '{filename}' (title: '{title}') via direct DOI or search.")
+                                logger.info(f"Resolved S2 Metadata for '{title}': title='{s2_title}', authors='{s2_authors}', year={s2_year}")
+
+                                # Update chunks in ChromaDB (updating both metadata fields AND the title)
+                                vector_store_service.update_paper_metadata(
+                                    title=matched_title,
+                                    authors=s2_authors,
+                                    year=str(s2_year),
+                                    doi=s2_doi if s2_doi != "N/A" else existing_doi,
+                                    new_title=s2_title
+                                )
+
+                                # Load latest manifest, write the metadata, and save
+                                with self.manifest_lock:
+                                    current_manifest = self._load_manifest()
+                                    if filename in current_manifest:
+                                        current_manifest[filename]["title"] = s2_title
+                                        current_manifest[filename]["authors"] = s2_authors
+                                        current_manifest[filename]["year"] = str(s2_year)
+                                        current_manifest[filename]["abstract"] = s2_abstract
+                                        if s2_doi and s2_doi != "N/A":
+                                            current_manifest[filename]["doi"] = s2_doi
+                                        self._save_manifest(current_manifest)
                             except Exception as save_err:
                                 logger.error(f"Failed to save resolved metadata for '{filename}': {save_err}")
                             finally:

@@ -11,6 +11,13 @@ document.addEventListener("DOMContentLoaded", () => {
     let citationPollInterval = null;
     let activeChatSources = [];
 
+    // Paginated search state
+    let currentSearchQuery = "";
+    let currentSearchLimit = 10;
+    let currentSearchOffset = 0;
+    let allFetchedPapers = [];    // All papers fetched (grows with Load More)
+    let hasMorePapers = true;     // Whether more pages exist
+
     // Initialize SPA tabs routing
     initTabs();
 
@@ -33,6 +40,19 @@ document.addEventListener("DOMContentLoaded", () => {
         document.getElementById("retrieved-sources-panel").classList.add("hidden");
     });
 
+    // Abstract modal closing logic
+    const abstractModal = document.getElementById("abstract-modal");
+    if (abstractModal) {
+        document.getElementById("btn-close-modal").addEventListener("click", () => {
+            abstractModal.classList.add("hidden");
+        });
+        abstractModal.addEventListener("click", (e) => {
+            if (e.target === abstractModal) {
+                abstractModal.classList.add("hidden");
+            }
+        });
+    }
+
     // Sync the RAG context-limit slider label with the slider value in real time
     const limitSlider = document.getElementById("rag-limit-slider");
     const limitLabel = document.getElementById("lbl-rag-limit");
@@ -46,6 +66,15 @@ document.addEventListener("DOMContentLoaded", () => {
     });
     // When files are selected, start uploading immediately
     document.getElementById("pdf-file-input").addEventListener("change", handleUploadPDFs);
+
+    // Load More button
+    document.getElementById("btn-load-more").addEventListener("click", handleLoadMore);
+
+    // Real-time filter and sort bindings
+    ["filter-author", "filter-venue", "filter-year-min", "filter-year-max", "sort-results"].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener("input", renderFilteredAndSortedPapers);
+    });
 
 
     /* ==========================================================================
@@ -138,26 +167,38 @@ document.addEventListener("DOMContentLoaded", () => {
         const navButtons = document.querySelectorAll(".nav-btn");
         const panes = document.querySelectorAll(".tab-pane");
 
+        function activateTab(targetTab) {
+            navButtons.forEach(b => b.classList.remove("active"));
+            panes.forEach(p => p.classList.remove("active"));
+
+            const matchingBtn = [...navButtons].find(b => b.getAttribute("data-tab") === targetTab);
+            if (matchingBtn) matchingBtn.classList.add("active");
+
+            const pane = document.getElementById(targetTab);
+            if (pane) pane.classList.add("active");
+
+            // Persist choice
+            try { localStorage.setItem("cite_active_tab", targetTab); } catch (_) {}
+
+            // Refresh relevant data when switching tabs
+            if (targetTab === "tab-rag") fetchLocalPDFs();
+            else if (targetTab === "tab-citations") fetchReports();
+        }
+
         navButtons.forEach(btn => {
-            btn.addEventListener("click", () => {
-                const targetTab = btn.getAttribute("data-tab");
-
-                // Deactivate all tabs and nav buttons
-                navButtons.forEach(b => b.classList.remove("active"));
-                panes.forEach(p => p.classList.remove("active"));
-
-                // Activate the selected tab
-                btn.classList.add("active");
-                document.getElementById(targetTab).classList.add("active");
-
-                // Refresh relevant data when switching tabs
-                if (targetTab === "tab-rag") {
-                    fetchLocalPDFs();  // Keep manifest fresh when entering KnowledgeBase tab
-                } else if (targetTab === "tab-citations") {
-                    fetchReports();    // Refresh report history when entering Citation Analysis tab
-                }
-            });
+            btn.addEventListener("click", () => activateTab(btn.getAttribute("data-tab")));
         });
+
+        // Restore last active tab from localStorage
+        try {
+            const saved = localStorage.getItem("cite_active_tab");
+            if (saved && document.getElementById(saved)) {
+                activateTab(saved);
+                return;
+            }
+        } catch (_) {}
+        // Default: first tab
+        activateTab("tab-discovery");
     }
 
     /* ==========================================================================
@@ -171,36 +212,62 @@ document.addEventListener("DOMContentLoaded", () => {
     async function handlePaperSearch(e) {
         e.preventDefault();
         const query = document.getElementById("search-input").value.trim();
-        const limit = document.getElementById("search-limit").value;
+        const limit = parseInt(document.getElementById("search-limit").value) || 10;
         const statusBox = document.getElementById("search-status-message");
         const resultsList = document.getElementById("search-results-list");
+        const loadMoreContainer = document.getElementById("load-more-container");
+        const filterBar = document.getElementById("filter-sort-bar");
 
         if (!query) return;
+
+        // Reset pagination state for a fresh search
+        currentSearchQuery = query;
+        currentSearchLimit = limit;
+        currentSearchOffset = 0;
+        allFetchedPapers = [];
+        hasMorePapers = true;
+
+        // Reset filter inputs
+        ["filter-author", "filter-venue", "filter-year-min", "filter-year-max"].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.value = "";
+        });
+        const sortEl = document.getElementById("sort-results");
+        if (sortEl) sortEl.value = "relevance";
 
         // Show loading spinner while waiting for results
         statusBox.classList.remove("hidden");
         resultsList.innerHTML = "";
+        loadMoreContainer.classList.add("hidden");
+        filterBar.classList.add("hidden");
 
         try {
-            const resp = await fetch(`${API_BASE}/api/search?q=${encodeURIComponent(query)}&limit=${limit}`);
+            const resp = await fetch(
+                `${API_BASE}/api/search?q=${encodeURIComponent(query)}&limit=${limit}&offset=0`
+            );
             const papers = await resp.json();
             statusBox.classList.add("hidden");
 
-            if (papers.length === 0) {
+            if (!papers || papers.length === 0) {
                 resultsList.innerHTML = `
                     <div class="placeholder-card glass-card">
                         <i class="fa-solid fa-face-frown placeholder-icon"></i>
                         <h3>No Papers Found</h3>
-                        <p>We couldn't find any papers matching your search query. Try broadening your keywords.</p>
+                        <p>No papers found for that query on Semantic Scholar. Try different keywords.</p>
                     </div>
                 `;
                 return;
             }
 
-            // Render a card for each paper result
-            papers.forEach(paper => {
-                resultsList.appendChild(createPaperCard(paper));
-            });
+            allFetchedPapers = papers;
+            currentSearchOffset = papers.length;
+            hasMorePapers = papers.length >= limit;
+
+            renderFilteredAndSortedPapers();
+
+            // Show filter bar and Load More button
+            filterBar.classList.remove("hidden");
+            if (hasMorePapers) loadMoreContainer.classList.remove("hidden");
 
         } catch (err) {
             statusBox.classList.add("hidden");
@@ -212,6 +279,95 @@ document.addEventListener("DOMContentLoaded", () => {
                 </div>
             `;
         }
+    }
+
+    /**
+     * Fetch the next page of results and append to allFetchedPapers.
+     */
+    async function handleLoadMore() {
+        const btn = document.getElementById("btn-load-more");
+        const statusBox = document.getElementById("search-status-message");
+        if (!currentSearchQuery) return;
+
+        btn.disabled = true;
+        btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i> Loading...`;
+        statusBox.classList.remove("hidden");
+
+        try {
+            const resp = await fetch(
+                `${API_BASE}/api/search?q=${encodeURIComponent(currentSearchQuery)}&limit=${currentSearchLimit}&offset=${currentSearchOffset}`
+            );
+            const papers = await resp.json();
+            statusBox.classList.add("hidden");
+
+            if (papers && papers.length > 0) {
+                allFetchedPapers = allFetchedPapers.concat(papers);
+                currentSearchOffset += papers.length;
+                hasMorePapers = papers.length >= currentSearchLimit;
+                renderFilteredAndSortedPapers();
+            } else {
+                hasMorePapers = false;
+            }
+
+            btn.disabled = false;
+            btn.innerHTML = `<span>Load More Papers</span>`;
+            if (!hasMorePapers) {
+                document.getElementById("load-more-container").classList.add("hidden");
+            }
+        } catch (err) {
+            statusBox.classList.add("hidden");
+            btn.disabled = false;
+            btn.innerHTML = `<span>Load More Papers</span>`;
+        }
+    }
+
+    /**
+     * Re-render the search results grid based on current filter inputs and sort selection.
+     * Operates purely on allFetchedPapers — no network call needed.
+     */
+    function renderFilteredAndSortedPapers() {
+        const resultsList = document.getElementById("search-results-list");
+        const authorFilter = (document.getElementById("filter-author")?.value || "").trim().toLowerCase();
+        const venueFilter  = (document.getElementById("filter-venue")?.value  || "").trim().toLowerCase();
+        const yearMin = parseInt(document.getElementById("filter-year-min")?.value) || 0;
+        const yearMax = parseInt(document.getElementById("filter-year-max")?.value) || 9999;
+        const sortBy  = document.getElementById("sort-results")?.value || "relevance";
+
+        let filtered = allFetchedPapers.filter(paper => {
+            const authors  = formatAuthors(paper.authors).toLowerCase();
+            const venue    = (paper.venue || "").toLowerCase();
+            const year     = parseInt(paper.year) || 0;
+
+            if (authorFilter && !authors.includes(authorFilter)) return false;
+            if (venueFilter  && !venue.includes(venueFilter))   return false;
+            if (year && (year < yearMin || year > yearMax))       return false;
+            return true;
+        });
+
+        // Sort
+        if (sortBy === "citations") {
+            filtered.sort((a, b) => (b.citationCount || 0) - (a.citationCount || 0));
+        } else if (sortBy === "year-desc") {
+            filtered.sort((a, b) => (parseInt(b.year) || 0) - (parseInt(a.year) || 0));
+        } else if (sortBy === "year-asc") {
+            filtered.sort((a, b) => (parseInt(a.year) || 0) - (parseInt(b.year) || 0));
+        }
+        // "relevance" keeps original API order
+
+        resultsList.innerHTML = "";
+
+        if (filtered.length === 0) {
+            resultsList.innerHTML = `
+                <div class="placeholder-card glass-card">
+                    <i class="fa-solid fa-filter-circle-xmark placeholder-icon"></i>
+                    <h3>No Matching Papers</h3>
+                    <p>No papers match the current filter criteria. Try adjusting the filters or loading more results.</p>
+                </div>
+            `;
+            return;
+        }
+
+        filtered.forEach(paper => resultsList.appendChild(createPaperCard(paper)));
     }
 
     /**
@@ -386,16 +542,36 @@ document.addEventListener("DOMContentLoaded", () => {
 
                 item.innerHTML = `
                     <div class="file-item-main" title="${file.title}">
-                        <div class="file-name-row">${sidebarLabel}</div>
+                        <div class="file-name-row">
+                            ${file.status === "success" 
+                                ? `<a class="sidebar-paper-link" href="${API_BASE}/api/papers/${encodeURIComponent(file.filename)}" target="_blank" title="Open PDF in new tab">${sidebarLabel}</a>`
+                                : `<span class="sidebar-paper-inactive" style="opacity: 0.6;">${sidebarLabel}</span>`
+                            }
+                        </div>
                         <div class="file-meta-row">
                             <span>${formatBytes(file.size_bytes)}</span>
                             ${statusBadge}
                         </div>
                     </div>
-                    <button class="btn-delete-file btn-icon" data-filename="${file.filename}" title="Delete Paper">
-                        <i class="fa-solid fa-trash-can text-crimson"></i>
-                    </button>
+                    <div class="file-item-actions" style="display: flex; gap: 4px; align-items: center; flex-shrink: 0;">
+                        <button class="btn-view-abstract btn-icon" title="View Ingested Abstract" style="padding: 6px; border-radius: 6px; color: var(--accent-indigo) !important; opacity: 0.7; transition: opacity 0.2s, transform 0.2s;">
+                            <i class="fa-solid fa-file-lines"></i>
+                        </button>
+                        <button class="btn-delete-file btn-icon" data-filename="${file.filename}" title="Delete Paper">
+                            <i class="fa-solid fa-trash-can text-crimson"></i>
+                        </button>
+                    </div>
                 `;
+
+                // Wire up view abstract button
+                const viewBtn = item.querySelector(".btn-view-abstract");
+                if (viewBtn) {
+                    viewBtn.addEventListener("click", (e) => {
+                        e.stopPropagation();
+                        showAbstractModal(file);
+                    });
+                }
+
                 listDiv.appendChild(item);
             });
 
@@ -423,6 +599,37 @@ document.addEventListener("DOMContentLoaded", () => {
         } catch (err) {
             listDiv.innerHTML = `<div class="list-empty text-crimson">Failed to load manifest.</div>`;
         }
+    }
+
+    /**
+     * Display the abstract viewer modal for a given local paper entry.
+     * @param {Object} file - The file object from the manifest.
+     */
+    function showAbstractModal(file) {
+        const modal = document.getElementById("abstract-modal");
+        if (!modal) return;
+        document.getElementById("modal-title").textContent = file.title || "Paper Abstract";
+        document.getElementById("modal-authors").textContent = file.authors || "Unknown Authors";
+        document.getElementById("modal-year").textContent = file.year && file.year !== "None" && file.year !== "N/A" ? file.year : "N/A";
+        
+        const doiRow = document.getElementById("modal-doi-row");
+        const doiLink = document.getElementById("modal-doi-link");
+        if (file.doi && file.doi !== "N/A" && file.doi !== "None") {
+            doiLink.href = `https://doi.org/${file.doi}`;
+            doiLink.textContent = file.doi;
+            doiRow.style.display = "block";
+        } else {
+            doiRow.style.display = "none";
+        }
+
+        const abstractText = document.getElementById("modal-abstract-text");
+        if (file.abstract && file.abstract.trim()) {
+            abstractText.textContent = file.abstract;
+        } else {
+            abstractText.innerHTML = `<span style="font-style: italic; opacity: 0.6;">No abstract stored in manifest. You can RAG query this document to see extract details.</span>`;
+        }
+
+        modal.classList.remove("hidden");
     }
 
     /**

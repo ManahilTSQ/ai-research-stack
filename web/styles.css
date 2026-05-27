@@ -709,6 +709,19 @@ select:focus {
     overflow: hidden;
 }
 
+.sidebar-paper-link {
+    color: #ffffff;
+    text-decoration: none;
+    transition: color 0.15s ease, text-shadow 0.15s ease;
+    cursor: pointer;
+}
+
+.sidebar-paper-link:hover {
+    color: var(--accent-blue) !important;
+    text-shadow: 0 0 8px rgba(0, 242, 254, 0.4);
+    text-decoration: underline;
+}
+
 .file-meta-row {
     display: flex;
     justify-content: space-between;
@@ -1446,6 +1459,157 @@ select:focus {
     margin-top: 40px;
     font-size: 12px;
     color: var(--text-muted);
+}
+
+/* ==========================================================================
+   ABSTRACT VIEWER MODAL
+   ========================================================================== */
+
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(10, 10, 20, 0.65);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 2000;
+    transition: opacity 0.3s ease, visibility 0.3s ease;
+}
+
+.modal-overlay.hidden {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+}
+
+.modal-box {
+    width: 90%;
+    max-width: 650px;
+    background: rgba(30, 30, 45, 0.85);
+    border: 1px solid var(--border-glass);
+    border-radius: 16px;
+    padding: 24px 30px;
+    box-shadow: var(--shadow-premium);
+    transform: scale(0.95);
+    transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+    animation: modalFadeIn 0.3s forwards cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.modal-overlay.hidden .modal-box {
+    transform: scale(0.9);
+}
+
+@keyframes modalFadeIn {
+    to {
+        transform: scale(1);
+    }
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    padding-bottom: 14px;
+    margin-bottom: 16px;
+}
+
+.modal-header h3 {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 700;
+    font-family: 'Outfit', sans-serif;
+    background: linear-gradient(135deg, #00f2fe, #4facfe);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.modal-meta-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+    font-size: 13px;
+}
+
+.modal-authors {
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+
+.modal-year {
+    background: rgba(99, 102, 241, 0.2);
+    border: 1px solid rgba(99, 102, 241, 0.4);
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #a5b4fc;
+}
+
+.modal-doi-row {
+    margin-bottom: 20px;
+    font-size: 13px;
+    color: var(--text-muted);
+}
+
+.modal-doi-row a {
+    color: var(--accent-blue);
+    text-decoration: none;
+    transition: color 0.15s ease;
+}
+
+.modal-doi-row a:hover {
+    color: #4facfe;
+    text-decoration: underline;
+}
+
+.modal-abstract-content {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 10px;
+    padding: 16px;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.modal-abstract-content h4 {
+    margin-top: 0;
+    margin-bottom: 10px;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+
+.modal-abstract-text {
+    margin: 0;
+    font-size: 13.5px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+    max-height: 300px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    padding-right: 8px;
+}
+
+/* Custom scrollbar for abstract */
+.modal-abstract-text::-webkit-scrollbar {
+    width: 6px;
+}
+.modal-abstract-text::-webkit-scrollbar-track {
+    background: transparent;
+}
+.modal-abstract-text::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.15);
+    border-radius: 3px;
+}
+.modal-abstract-text::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.3);
 }
 
 /* ==========================================================================
