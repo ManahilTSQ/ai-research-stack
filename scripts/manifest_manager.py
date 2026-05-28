@@ -400,6 +400,69 @@ class ManifestManagerService:
 
         return resolved
 
+    def refresh_metadata_sync(self, vector_store_service, max_entries: int = 15) -> int:
+        """
+        Synchronously resolve missing author/year for manifest rows (bounded batch).
+        Called when the UI loads the paper list so sidebar labels show Author, Year
+        instead of long titles while background resolution catches up.
+        """
+        from paper_labels import UNKNOWN_AUTHORS
+
+        manifest = self._load_manifest()
+        pdf_dir = settings.PDF_DOWNLOAD_DIR
+        updated = 0
+
+        for filename, meta in list(manifest.items()):
+            if updated >= max_entries:
+                break
+            if meta.get("authors") not in (None, "", UNKNOWN_AUTHORS):
+                continue
+            if meta.get("status") not in ("success", "pending"):
+                continue
+
+            pdf_path = pdf_dir / filename
+            if not pdf_path.exists():
+                continue
+
+            try:
+                resolved = self.resolve_metadata(
+                    pdf_path,
+                    meta.get("title", pdf_path.stem),
+                    meta.get("doi") if meta.get("doi") not in ("N/A", None) else None,
+                )
+                new_authors = resolved.get("authors") or UNKNOWN_AUTHORS
+                new_year = resolved.get("year") or "N/A"
+                new_title = resolved.get("title") or meta.get("title", filename)
+
+                if new_authors == UNKNOWN_AUTHORS and new_year in ("N/A", "", None):
+                    continue
+
+                self.mark_as_ingested(
+                    filename,
+                    new_title,
+                    doi=resolved.get("doi"),
+                    status=meta.get("status", "success"),
+                    authors=new_authors,
+                    year=new_year,
+                    abstract=resolved.get("abstract") or meta.get("abstract"),
+                    paper_id=meta.get("paper_id"),
+                )
+
+                if meta.get("status") == "success" and new_authors != UNKNOWN_AUTHORS:
+                    vector_store_service.update_paper_metadata(
+                        title=meta.get("title", new_title),
+                        authors=new_authors,
+                        year=str(new_year),
+                        doi=resolved.get("doi"),
+                        new_title=new_title if new_title != meta.get("title") else None,
+                    )
+
+                updated += 1
+            except Exception as e:
+                logger.warning("Sync metadata refresh failed for '%s': %s", filename, e)
+
+        return updated
+
     # ──────────────────────────────────────────────────────────────────────────
     # PUBLIC: Sync Manifest with Filesystem + Vector Store
     # ──────────────────────────────────────────────────────────────────────────

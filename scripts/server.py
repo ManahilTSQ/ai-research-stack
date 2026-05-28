@@ -55,6 +55,7 @@ from search_utils import (
     build_api_query_string,
     is_likely_author_query,
 )
+from paper_labels import format_sidebar_label
 
 logging.basicConfig(
     level=logging.INFO,
@@ -642,6 +643,9 @@ def delete_paper(filename: str):
 @app.get("/api/pdfs")
 def list_pdfs():
     manifest = manifest_service.sync_with_vector_store(vector_store)
+    # Resolve a bounded batch of missing author/year labels before rendering the sidebar.
+    manifest_service.refresh_metadata_sync(vector_store, max_entries=15)
+    manifest = manifest_service.get_all_entries()
     pdf_dir  = settings.PDF_DOWNLOAD_DIR
 
     db_stats = vector_store.get_collection_stats()
@@ -707,6 +711,8 @@ def list_pdfs():
             "year":        year,
             "abstract":    meta.get("abstract", ""),
             "paper_id":    meta.get("paper_id", ""),
+            # Author, Year label for UI — never a long paper title.
+            "sidebar_label": format_sidebar_label(authors, year, title, filename),
         })
 
     return file_list

@@ -629,7 +629,8 @@ document.addEventListener("DOMContentLoaded", () => {
                     statusBadge = `<span class="badge badge-failed" style="font-size: 9px;"><i class="fa-solid fa-triangle-exclamation"></i> Error</span>`;
                 }
 
-                const sidebarLabel = formatSidebarLabel(file.authors, file.year, file.title);
+                // Prefer server-computed Author, Year label (never a long title).
+                const sidebarLabel = file.sidebar_label || formatSidebarLabel(file.authors, file.year, file.title, file.filename);
 
                 item.innerHTML = `
                     <div class="file-item-main" title="${file.title}">
@@ -748,7 +749,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 : "";
             const ingested = files.filter(f => f.status === "success");
             ingested.forEach(f => {
-                const label = formatSidebarLabel(f.authors, f.year, f.title);
+                const label = f.sidebar_label || formatSidebarLabel(f.authors, f.year, f.title, f.filename);
                 const opt = document.createElement("option");
                 opt.value = f.title;
                 opt.textContent = label;
@@ -822,7 +823,7 @@ document.addEventListener("DOMContentLoaded", () => {
      * @param {string} title - Full paper title (used as fallback).
      * @returns {string} Formatted label.
      */
-    function formatSidebarLabel(authorsStr, year, title) {
+    function formatSidebarLabel(authorsStr, year, title, filename = "") {
         const hasYear = year && year !== "N/A" && year !== "None";
         let hasAuthors = authorsStr && authorsStr !== "Unknown Authors";
 
@@ -836,14 +837,20 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         }
 
+        // Try filename-based Author, Year before any title fallback.
+        if (!hasAuthors && filename) {
+            const stem = filename.replace(/\\/g, "/").split("/").pop().replace(/\.pdf$/i, "");
+            const yearFromFn = (stem.match(/\b(19[5-9]\d|20[0-2]\d)\b/) || [])[1];
+            const parts = stem.split(/[_\-\s]+/).filter(p => p && !/^(19|20)\d{2}$/.test(p));
+            if (parts.length && yearFromFn) {
+                const surname = parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
+                return `${surname}, ${yearFromFn}`;
+            }
+            if (yearFromFn) return `Unknown, ${yearFromFn}`;
+        }
+
         if (!hasAuthors && !hasYear) {
-            // Pure fallback: humanise technical filenames into readable labels.
-            const pretty = (title || "Unknown Paper")
-                .replace(/[_-]+/g, " ")
-                .replace(/\s+/g, " ")
-                .replace(/\.pdf$/i, "")
-                .trim();
-            return pretty.length > 35 ? pretty.slice(0, 33) + "…" : pretty;
+            return "Pending metadata…";
         }
 
         // Extract last names from a formatted authors string.
@@ -885,7 +892,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
         if (namePart && yearPart) return `${namePart}, ${yearPart}`;
         if (namePart) return namePart;
-        return yearPart || title;
+        if (yearPart) return `Unknown, ${yearPart}`;
+        return "Pending metadata…";
     }
 
     /**
