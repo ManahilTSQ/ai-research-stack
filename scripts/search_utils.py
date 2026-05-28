@@ -15,7 +15,10 @@ from typing import Any
 
 
 # Matches double-quoted strings; supports escaped quotes inside (rare in author names).
-_QUOTED_PHRASE_RE = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"')
+# Support both straight quotes and smart quotes pasted from rich text sources.
+_QUOTED_PHRASE_RE = re.compile(
+    r'(?:"([^"\\]*(?:\\.[^"\\]*)*)"|“([^”\\]*(?:\\.[^”\\]*)*)”)'
+)
 
 
 def extract_quoted_phrases(query: str) -> tuple[str, list[str]]:
@@ -29,7 +32,10 @@ def extract_quoted_phrases(query: str) -> tuple[str, list[str]]:
     phrases: list[str] = []
 
     def _collect(match: re.Match) -> str:
-        phrases.append(match.group(1).strip())
+        # group(1)=straight-quote capture, group(2)=smart-quote capture
+        phrase = (match.group(1) or match.group(2) or "").strip()
+        if phrase:
+            phrases.append(phrase)
         return " "
 
     remainder = _QUOTED_PHRASE_RE.sub(_collect, query).strip()
@@ -44,7 +50,9 @@ def _author_tokens(name: str) -> list[str]:
 
 def author_name_exact_match(author_name: str, required: str) -> bool:
     """True when the full author string equals the required name (case-insensitive)."""
-    return author_name.strip().lower() == required.strip().lower()
+    clean_author = re.sub(r"\s+", " ", author_name.strip().lower())
+    clean_required = re.sub(r"\s+", " ", required.strip().lower())
+    return clean_author == clean_required
 
 
 def author_name_has_all_tokens_as_words(author_name: str, tokens: list[str]) -> bool:

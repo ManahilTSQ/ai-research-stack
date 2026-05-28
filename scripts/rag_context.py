@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from config import settings
+import re
 
 
 # Standard refusal when vector search finds nothing sufficiently similar.
@@ -86,7 +87,42 @@ def retrieve_relevant_chunks(
 ) -> list[dict[str, Any]]:
     """Query ChromaDB and apply the configured relevance distance threshold."""
     raw = vector_store.query_similar_chunks(query, limit=limit, filter_title=filter_title)
-    return filter_chunks_by_relevance(raw)
+    chunks = filter_chunks_by_relevance(raw)
+    if settings.RAG_REQUIRE_QUERY_TERM_MATCH:
+        chunks = _filter_chunks_by_query_term_presence(chunks, query)
+    return chunks
+
+
+def _filter_chunks_by_query_term_presence(chunks: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
+    """
+    Keep only chunks containing at least one significant query token.
+    This is a lexical safety gate on top of embeddings to reduce hallucinations.
+    """
+    tokens = _significant_query_tokens(query)
+    if not tokens or not chunks:
+        return chunks
+
+    kept: list[dict[str, Any]] = []
+    for chunk in chunks:
+        haystack = f"{chunk.get('text', '')} {(chunk.get('metadata') or {}).get('title', '')}".lower()
+        if any(t in haystack for t in tokens):
+            kept.append(chunk)
+    return kept
+
+
+def _significant_query_tokens(query: str) -> list[str]:
+    """Extract lowercased meaningful tokens from user query."""
+    stop = {
+        "what", "which", "when", "where", "does", "about", "from", "with",
+        "that", "this", "have", "into", "your", "their", "paper", "papers",
+        "author", "authors", "nik", "hassan", "rushdi", "say", "says",
+    }
+    raw = re.findall(r"[a-z0-9]+", (query or "").lower())
+    tokens = [t for t in raw if len(t) >= 5 and t not in stop]
+    # Fallback: if query is short, still keep medium tokens.
+    if not tokens:
+        tokens = [t for t in raw if len(t) >= 4 and t not in stop]
+    return tokens
 
 
 def chunk_citation_label(chunk: dict[str, Any], index: int) -> str:

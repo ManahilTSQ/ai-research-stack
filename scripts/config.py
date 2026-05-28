@@ -84,12 +84,17 @@ class Settings:
     # ── HTTP Basic Authentication ─────────────────────────────────────────────
     # Credentials for the web UI and API (set strong values in production .env).
     BASIC_AUTH_USER: str = os.getenv("BASIC_AUTH_USER", "admin")
-    BASIC_AUTH_PASS: str = os.getenv("BASIC_AUTH_PASS", "aitawfiq2026")
+    BASIC_AUTH_PASS: str = os.getenv("BASIC_AUTH_PASS", "Aitawfiq26!!!")
 
     # ── RAG Relevance Threshold ───────────────────────────────────────────────
     # Maximum ChromaDB cosine distance for a chunk to count as "relevant".
     # Lower = stricter (fewer off-topic chunks sent to the LLM). Typical good matches: < 0.85.
     RAG_MAX_DISTANCE: float = float(os.getenv("RAG_MAX_DISTANCE", "0.85"))
+
+    # ── RAG Query Term Guard ──────────────────────────────────────────────────
+    # If True, retrieved chunks must include at least one significant query term.
+    # Helps block off-topic answers when vectors are weakly similar.
+    RAG_REQUIRE_QUERY_TERM_MATCH: bool = os.getenv("RAG_REQUIRE_QUERY_TERM_MATCH", "true").lower() == "true"
 
     # ── Citation Report Retention ───────────────────────────────────────────────
     # Auto-delete CSV reports older than this many days on list/load (0 = keep forever).

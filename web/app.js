@@ -22,6 +22,7 @@ document.addEventListener("DOMContentLoaded", () => {
     let ingestedPapers = [];      // {title, doi, authors, year, paper_id} for 'success' entries
     let editingPromptName = null; // When set, prompt editor is updating an existing template
     let localManifestFiles = [];  // Raw list of all manifest files (includes pending, failed, success)
+    const CHAT_STORAGE_KEY = "cite_rag_chat_history_v1";
 
     // Initialize SPA tabs routing
     initTabs();
@@ -34,6 +35,7 @@ document.addEventListener("DOMContentLoaded", () => {
     fetchLocalPDFs();
     fetchPrompts();
     fetchReports();
+    restoreChatHistory();
 
     // Register all event listeners for forms and buttons
     document.getElementById("paper-search-form").addEventListener("submit", handlePaperSearch);
@@ -810,8 +812,13 @@ document.addEventListener("DOMContentLoaded", () => {
         const hasAuthors = authorsStr && authorsStr !== "Unknown Authors";
 
         if (!hasAuthors && !hasYear) {
-            // Pure fallback: truncate the title
-            return title && title.length > 35 ? title.slice(0, 33) + "…" : (title || "Unknown Paper");
+            // Pure fallback: humanise technical filenames into readable labels.
+            const pretty = (title || "Unknown Paper")
+                .replace(/[_-]+/g, " ")
+                .replace(/\s+/g, " ")
+                .replace(/\.pdf$/i, "")
+                .trim();
+            return pretty.length > 35 ? pretty.slice(0, 33) + "…" : pretty;
         }
 
         // Extract last names from a formatted authors string
@@ -1110,6 +1117,8 @@ document.addEventListener("DOMContentLoaded", () => {
             });
         }
 
+        persistChatHistory();
+
         // Wire up in-text citation reference links (e.g. [Source 1])
         bubble.querySelectorAll(".citation-ref").forEach(ref => {
             ref.addEventListener("click", (e) => {
@@ -1135,7 +1144,8 @@ document.addEventListener("DOMContentLoaded", () => {
         panel.classList.remove("hidden");
         list.innerHTML = "";
 
-        sources.forEach((c, idx) => {
+        const filteredSources = sources.filter(c => !isLikelyNonEnglishText(c?.text || ""));
+        filteredSources.forEach((c, idx) => {
             const item = document.createElement("div");
             item.className = "source-chunk-item";
             // Highlight the clicked source with a blue border + tint
@@ -1158,6 +1168,56 @@ document.addEventListener("DOMContentLoaded", () => {
                 item.scrollIntoView({ behavior: "smooth", block: "nearest" });
             }
         });
+
+        if (filteredSources.length < sources.length) {
+            const note = document.createElement("div");
+            note.className = "source-chunk-item";
+            note.style.borderStyle = "dashed";
+            note.style.opacity = "0.75";
+            note.innerHTML = `<div class="source-chunk-title">Filtered non-English chunks</div>
+                <div class="source-chunk-text">Some retrieved passages were hidden because they were detected as mostly non-English text.</div>`;
+            list.prepend(note);
+        }
+    }
+
+    /**
+     * Heuristic language filter for the chunks panel: hide text dominated by Arabic/Urdu script.
+     */
+    function isLikelyNonEnglishText(text) {
+        if (!text) return false;
+        const sample = text.slice(0, 1200);
+        const arabicChars = (sample.match(/[\u0600-\u06FF]/g) || []).length;
+        const latinChars = (sample.match(/[A-Za-z]/g) || []).length;
+        // If Arabic/Urdu script clearly dominates Latin script, hide in UI panel.
+        return arabicChars > 30 && arabicChars > (latinChars * 1.2);
+    }
+
+    function persistChatHistory() {
+        try {
+            const messagesDiv = document.getElementById("chat-messages");
+            if (!messagesDiv) return;
+            const payload = { html: messagesDiv.innerHTML };
+            localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(payload));
+        } catch (_) {}
+    }
+
+    function restoreChatHistory() {
+        try {
+            const raw = localStorage.getItem(CHAT_STORAGE_KEY);
+            if (!raw) return;
+            const parsed = JSON.parse(raw);
+            const messagesDiv = document.getElementById("chat-messages");
+            if (!messagesDiv || !parsed?.html) return;
+            messagesDiv.innerHTML = parsed.html;
+            // Re-bind source buttons in restored history.
+            messagesDiv.querySelectorAll("[id^='btn-show-src-']").forEach(btn => {
+                btn.addEventListener("click", () => {
+                    if (activeChatSources.length > 0) {
+                        showRetrievedSourcesPanel(activeChatSources);
+                    }
+                });
+            });
+        } catch (_) {}
     }
 
     /**
@@ -1356,7 +1416,7 @@ document.addEventListener("DOMContentLoaded", () => {
     async function fetchReports() {
         const grid = document.getElementById("reports-grid-list");
         try {
-            const resp = await fetch(`${API_BASE}/api/reports`);
+            const resp = await fetch(`${API_BASE}/api/reports?ts=${Date.now()}`);
             const reports = await resp.json();
 
             if (reports.length === 0) {
@@ -1407,6 +1467,9 @@ document.addEventListener("DOMContentLoaded", () => {
                         if (!response.ok) {
                             const errData = await response.json().catch(() => ({}));
                             alert(`Failed to delete report: ${errData.detail || response.statusText || 'Unknown error'}`);
+                        } else {
+                            // Optimistic UI remove so deletion is immediately visible.
+                            card.remove();
                         }
                     } catch (err) {
                         alert(`Network error deleting report: ${err.message}`);

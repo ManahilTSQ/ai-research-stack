@@ -338,6 +338,24 @@ def _execute_template_rag(request: RAGQueryRequest) -> dict:
     }
 
 
+def _should_fallback_to_standard_rag(request: RAGQueryRequest) -> bool:
+    """
+    Guardrail for accidental template use on factual QA prompts.
+    If the Hassan-style drafting template is selected but the user asks
+    a direct question (instead of requesting a draft), run standard RAG.
+    """
+    if request.prompt_template != "hassanian_article":
+        return False
+    q = (request.query or "").strip().lower()
+    if not q:
+        return False
+    draft_verbs = ("draft", "write an article", "manuscript", "paper section", "problematisation")
+    if any(v in q for v in draft_verbs):
+        return False
+    # Typical factual question forms should not trigger long-form article drafting.
+    return q.endswith("?") or q.startswith(("what ", "who ", "where ", "when ", "why ", "how "))
+
+
 def sanitize_filename(title: str) -> str:
     clean = re.sub(r"[^a-zA-Z0-9_\-\s]", "", title)
     clean = clean.replace(" ", "_")
@@ -426,7 +444,8 @@ def search_papers(
     if not q or not q.strip():
         raise HTTPException(status_code=400, detail="Query string 'q' is required.")
 
-    raw_query = q.strip()
+    # Normalise smart quotes so exact-name filters work for pasted queries.
+    raw_query = q.strip().replace("“", '"').replace("”", '"')
     remainder, quoted_phrases = extract_quoted_phrases(raw_query)
     api_query = build_api_query_string(raw_query) or remainder or raw_query
 
@@ -859,7 +878,7 @@ def query_rag(request: RAGQueryRequest):
             detail="Ollama LLM server is not running. Start with: ollama serve"
         )
 
-    if request.prompt_template:
+    if request.prompt_template and not _should_fallback_to_standard_rag(request):
         return _execute_template_rag(request)
 
     rag_service = RAGService()
@@ -870,7 +889,11 @@ def query_rag(request: RAGQueryRequest):
     )
 
     if not result["success"]:
-        raise HTTPException(status_code=500, detail=result.get("error", "RAG failed."))
+        error_msg = result.get("error", "RAG failed.")
+        # Surface relevance/coverage misses as user-facing 404 instead of generic 500.
+        if "No relevant chunks" in error_msg or "No matching papers" in error_msg:
+            raise HTTPException(status_code=404, detail=result.get("answer", error_msg))
+        raise HTTPException(status_code=500, detail=error_msg)
 
     return {"answer": result["answer"], "sources": result["sources"]}
 
