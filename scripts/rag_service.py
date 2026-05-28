@@ -14,6 +14,7 @@ is not running before any expensive work is initiated.
 
 import sys
 import logging
+import re
 import requests
 from config import settings            # Flat import — scripts/ is on sys.path
 from vector_store import VectorStoreService  # Local ChromaDB interface
@@ -117,7 +118,61 @@ class RAGService:
 
         logger.info("RAG Service initialised successfully.")
 
-    def generate_answer(self, query: str, limit: int = 4, filter_title: str | None = None) -> dict:
+    def _build_safe_references(self, chunks: list[dict]) -> str:
+        """
+        Build a deterministic References section from retrieved chunk metadata only.
+        This prevents the model from inventing bibliography entries that were never retrieved.
+        """
+        refs = []
+        seen = set()
+        for chunk in chunks:
+            meta = chunk.get("metadata", {}) or {}
+            title = (meta.get("title") or "Untitled").strip()
+            authors = (meta.get("authors") or "Unknown Authors").strip()
+            year = str(meta.get("year") or "N/A").strip()
+            doi = (meta.get("doi") or "N/A").strip()
+            key = (title.lower(), authors.lower(), year, doi.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            doi_suffix = f" https://doi.org/{doi}" if doi and doi != "N/A" else ""
+            refs.append(f"- {authors} ({year}). {title}.{doi_suffix}")
+        if not refs:
+            return ""
+        return "References:\n" + "\n".join(refs)
+
+    def _strip_model_references(self, answer: str) -> str:
+        """
+        Remove any model-generated References section so we can append verified references.
+        """
+        if not answer:
+            return ""
+        stripped = re.split(r"\n\s*references\s*:\s*\n", answer, maxsplit=1, flags=re.IGNORECASE)[0]
+        return stripped.strip()
+
+    def _is_unverifiable_sensitive_claim(self, query: str, chunks: list[dict]) -> bool:
+        """
+        Detect high-risk stance/position questions where retrieved context contains
+        no lexical evidence for the sensitive topic, and force a safe refusal.
+        """
+        q = (query or "").lower()
+        sensitive_terms = [
+            "abortion", "reproductive rights", "pro-choice", "pro life",
+            "supports", "opposes", "stance", "position", "views on",
+        ]
+        if not any(term in q for term in sensitive_terms):
+            return False
+        combined = " ".join((c.get("text") or "").lower() for c in chunks)
+        topic_present = any(term in combined for term in ["abortion", "reproductive", "pro-choice", "pro life"])
+        return not topic_present
+
+    def generate_answer(
+        self,
+        query: str,
+        limit: int = 4,
+        filter_title: str | None = None,
+        conversation_history: list[dict] | None = None,
+    ) -> dict:
         """
         Execute the complete RAG pipeline for a researcher's query.
 
@@ -202,7 +257,9 @@ class RAGService:
             "6. If asked about an author or paper not in the context or Inventory, respond EXACTLY: \n"
             "   'I could not find any relevant papers or context in the local database to answer your question. Please ingest papers first.'\n"
             "7. If context lacks sufficient detail, state that clearly, then summarise what the context does say.\n"
-            "8. Maintain a formal, neutral, and academic tone throughout."
+            "8. Maintain a formal, neutral, and academic tone throughout.\n"
+            "9. Do NOT infer personal stances (politics, religion, abortion, legal or moral views) unless directly stated in retrieved context.\n"
+            "10. Never fabricate citations, references, or source details."
         )
 
         # User prompt: the context blocks + library inventory + the actual research query
@@ -221,12 +278,20 @@ class RAGService:
 
         # ── Step 4: Send to Ollama /api/chat ──────────────────────────────────
         url = f"{settings.OLLAMA_BASE_URL}/api/chat"
+        # Build a multi-turn message array so the model can preserve chat memory
+        # across browser refreshes when conversation history is provided by the UI.
+        messages = [{"role": "system", "content": system_prompt}]
+        if conversation_history:
+            for turn in conversation_history[-12:]:
+                role = (turn.get("role") or "").strip().lower()
+                content = (turn.get("content") or "").strip()
+                if role in {"user", "assistant"} and content:
+                    messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": user_prompt})
+
         payload = {
             "model": settings.OLLAMA_MODEL,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user",   "content": user_prompt}
-            ],
+            "messages": messages,
             "stream": False,   # Wait for the complete response (not a streaming response)
             "options": {
                 "temperature": 0.2,  # Low temperature = more deterministic, less creative
@@ -242,6 +307,18 @@ class RAGService:
             if response.status_code == 200:
                 data = response.json()
                 answer = data["message"]["content"]
+                # Global guardrail against unsupported sensitive-topic stance claims.
+                if self._is_unverifiable_sensitive_claim(query, chunks):
+                    answer = (
+                        "I cannot confirm or deny that claim from the retrieved context. "
+                        "The current sources do not provide direct evidence on this topic."
+                    )
+                else:
+                    # Keep model narrative, but replace free-form references with deterministic ones.
+                    answer = self._strip_model_references(answer)
+                    safe_refs = self._build_safe_references(chunks)
+                    if safe_refs:
+                        answer = f"{answer}\n\n{safe_refs}"
                 logger.info("Successfully received answer from Ollama.")
                 return {
                     "query": query,

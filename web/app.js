@@ -10,6 +10,10 @@ document.addEventListener("DOMContentLoaded", () => {
     let activeCitationRunId = null;
     let citationPollInterval = null;
     let activeChatSources = [];
+    // Persisted conversational memory used for server-side multi-turn RAG context.
+    let chatHistoryTurns = []; // [{role: "user"|"assistant", content: "..."}]
+    // Persisted per-message source payload so restored "Show retrieved chunks" keeps working after refresh.
+    let sourcesByBubbleId = {}; // { [bubbleId]: Array<sourceChunk> }
 
     // Paginated search state
     let currentSearchQuery = "";
@@ -22,7 +26,7 @@ document.addEventListener("DOMContentLoaded", () => {
     let ingestedPapers = [];      // {title, doi, authors, year, paper_id} for 'success' entries
     let editingPromptName = null; // When set, prompt editor is updating an existing template
     let localManifestFiles = [];  // Raw list of all manifest files (includes pending, failed, success)
-    const CHAT_STORAGE_KEY = "cite_rag_chat_history_v1";
+    const CHAT_STORAGE_KEY = "cite_rag_chat_history_v2";
 
     // Initialize SPA tabs routing
     initTabs();
@@ -435,9 +439,15 @@ document.addEventListener("DOMContentLoaded", () => {
             return normTitle(ip.title) === paperNormTitle;
         });
 
+        // If there is no OA PDF and no abstract snippet, ingestion cannot proceed meaningfully.
+        const canIngest = paper.has_pdf || !!(paper.abstract && paper.abstract.trim());
         const ingestButtonHtml = alreadyIngested
             ? `<button class="btn btn-secondary btn-download-ingest" disabled style="opacity:0.65; cursor:default;">
                 <i class="fa-solid fa-circle-check text-emerald"></i> Already in Knowledge Base
+               </button>`
+            : !canIngest
+            ? `<button class="btn btn-secondary btn-download-ingest" disabled title="No open-access PDF or abstract snippet was available from metadata." style="opacity:0.65; cursor:not-allowed;">
+                <i class="fa-solid fa-ban"></i> No PDF/Abstract Available
                </button>`
             : `<button class="btn btn-primary btn-download-ingest" id="btn-ingest-${paper.paperId}">
                 <i class="fa-solid fa-cloud-arrow-down"></i> ${paper.has_pdf ? 'Download & Ingest PDF' : 'Ingest Abstract Only'}
@@ -465,7 +475,7 @@ document.addEventListener("DOMContentLoaded", () => {
             </div>
 
             <div class="paper-abstract" id="${absId}">
-                <strong>Abstract summary:</strong> ${paper.abstract ? paper.abstract : "No abstract snippet indexed."}
+                <strong>Abstract summary:</strong> ${paper.abstract ? paper.abstract : "No abstract snippet indexed (cannot ingest abstract-only for this paper)."}
             </div>
 
             <div class="paper-footer">
@@ -476,7 +486,7 @@ document.addEventListener("DOMContentLoaded", () => {
         `;
 
         // Wire up the ingestion button click handler (only if not already ingested)
-        if (!alreadyIngested) {
+        if (!alreadyIngested && canIngest) {
             const btn = card.querySelector(`.btn-download-ingest`);
             if (btn) btn.addEventListener("click", () => triggerIngestion(paper, btn));
         }
@@ -506,8 +516,13 @@ document.addEventListener("DOMContentLoaded", () => {
      * @param {HTMLButtonElement} button - The ingest button element.
      */
     async function triggerIngestion(paper, button) {
+        // Guard against abstract-only ingestion when no abstract is actually available.
+        if (!paper.has_pdf && !(paper.abstract && paper.abstract.trim())) {
+            alert("This paper has no open-access PDF and no abstract snippet available to ingest.");
+            return;
+        }
         button.disabled = true;
-        button.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i> Downloading PDF...`;
+        button.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i> ${paper.has_pdf ? "Downloading PDF..." : "Ingesting abstract..."}`;
 
         try {
             const resp = await fetch(`${API_BASE}/api/download`, {
@@ -821,21 +836,26 @@ document.addEventListener("DOMContentLoaded", () => {
             return pretty.length > 35 ? pretty.slice(0, 33) + "…" : pretty;
         }
 
-        // Extract last names from a formatted authors string
-        // Handles: "First Last", "Last, First", "F. Last", combined with commas and "et al."
+        // Extract last names from a formatted authors string.
+        // Handles common patterns like:
+        // - "N. Hassan"
+        // - "Smith, John"
+        // - "Smith, J., Doe, A."
+        // - "Smith et al."
         const extractLastNames = (str) => {
-            // Strip trailing "et al." for parsing
-            const cleaned = str.replace(/\s*et al\.?$/i, "").trim();
-            // Split by comma-space patterns but NOT by "Last, First" internal commas
-            // Strategy: split on " , " or "; " to get individual author tokens
-            const parts = cleaned.split(/,\s+(?=[A-Z])/);
-            return parts.map(part => {
-                const tokens = part.trim().split(/\s+/);
-                // Last token that isn't an initial (length > 1) is the last name
-                // e.g. "John Smith" → "Smith"; "J. Smith" → "Smith"
-                const meaningful = tokens.filter(t => t.length > 1 && !/^[A-Z]\.$/.test(t));
-                return meaningful.length > 0 ? meaningful[meaningful.length - 1] : tokens[tokens.length - 1];
+            const cleaned = String(str || "").replace(/\s*et al\.?$/i, "").trim();
+            if (!cleaned) return [];
+            const semicolonSplit = cleaned.split(/\s*;\s*/).filter(Boolean);
+            const rawParts = semicolonSplit.length > 1 ? semicolonSplit : cleaned.split(/\s*,\s*/).filter(Boolean);
+            const names = rawParts.map(part => {
+                const tokenised = part.trim().split(/\s+/).filter(Boolean);
+                if (tokenised.length === 0) return "";
+                // Prefer the last non-initial token as the surname.
+                const nonInitial = tokenised.filter(t => !/^[A-Z]\.?$/i.test(t));
+                const candidate = (nonInitial[nonInitial.length - 1] || tokenised[tokenised.length - 1] || "").replace(/\./g, "");
+                return candidate;
             }).filter(Boolean);
+            return names.slice(0, 3);
         };
 
         const hasEtAl = /et al\.?/i.test(authorsStr);
@@ -1044,6 +1064,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 limit: parseInt(limit),
                 prompt_template: template ? template : null,
                 filter_title: paperFilter || null,
+                // Include recent turns so backend RAG can preserve memory after refresh.
+                conversation_history: chatHistoryTurns.slice(-12),
             };
             if (template === "comparative_analysis" && paperFilter && paperFilterB) {
                 payload.filter_title_b = paperFilterB;
@@ -1112,9 +1134,17 @@ document.addEventListener("DOMContentLoaded", () => {
 
         // Wire up the "Show retrieved chunks" button if sources exist
         if (sources.length > 0) {
+            // Persist this message's source chunks so restored chats can still open source panels.
+            sourcesByBubbleId[bubbleId] = sources;
             document.getElementById(`btn-show-src-${bubbleId}`).addEventListener("click", () => {
                 showRetrievedSourcesPanel(sources);
             });
+        }
+
+        // Persist structured turns for reliable cross-refresh chat memory.
+        if (!isHtml) {
+            const role = sender === "user" ? "user" : "assistant";
+            chatHistoryTurns.push({ role, content: String(text || "") });
         }
 
         persistChatHistory();
@@ -1181,22 +1211,29 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     /**
-     * Heuristic language filter for the chunks panel: hide text dominated by Arabic/Urdu script.
+     * Heuristic language filter for chunk display:
+     * hide chunks dominated by non-Latin scripts to keep the panel English-focused.
      */
     function isLikelyNonEnglishText(text) {
         if (!text) return false;
         const sample = text.slice(0, 1200);
-        const arabicChars = (sample.match(/[\u0600-\u06FF]/g) || []).length;
         const latinChars = (sample.match(/[A-Za-z]/g) || []).length;
-        // If Arabic/Urdu script clearly dominates Latin script, hide in UI panel.
-        return arabicChars > 30 && arabicChars > (latinChars * 1.2);
+        const nonLatinChars = (
+            sample.match(/[\u0400-\u04FF\u0590-\u05FF\u0600-\u06FF\u0900-\u097F\u0E00-\u0E7F\u3040-\u30FF\u3400-\u9FFF\uAC00-\uD7AF]/g) || []
+        ).length;
+        // Hide when non-Latin script clearly dominates and there is little Latin evidence.
+        return nonLatinChars > 24 && nonLatinChars > (latinChars * 1.1);
     }
 
     function persistChatHistory() {
         try {
             const messagesDiv = document.getElementById("chat-messages");
             if (!messagesDiv) return;
-            const payload = { html: messagesDiv.innerHTML };
+            const payload = {
+                html: messagesDiv.innerHTML,
+                turns: chatHistoryTurns,
+                sourcesByBubbleId: sourcesByBubbleId,
+            };
             localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(payload));
         } catch (_) {}
     }
@@ -1209,11 +1246,19 @@ document.addEventListener("DOMContentLoaded", () => {
             const messagesDiv = document.getElementById("chat-messages");
             if (!messagesDiv || !parsed?.html) return;
             messagesDiv.innerHTML = parsed.html;
+            // Restore structured state used for real multi-turn memory and source lookups.
+            chatHistoryTurns = Array.isArray(parsed?.turns) ? parsed.turns : [];
+            sourcesByBubbleId = parsed?.sourcesByBubbleId && typeof parsed.sourcesByBubbleId === "object"
+                ? parsed.sourcesByBubbleId
+                : {};
             // Re-bind source buttons in restored history.
             messagesDiv.querySelectorAll("[id^='btn-show-src-']").forEach(btn => {
+                const bubbleId = (btn.id || "").replace("btn-show-src-", "");
                 btn.addEventListener("click", () => {
-                    if (activeChatSources.length > 0) {
-                        showRetrievedSourcesPanel(activeChatSources);
+                    const restoredSources = sourcesByBubbleId[bubbleId] || [];
+                    if (restoredSources.length > 0) {
+                        activeChatSources = restoredSources;
+                        showRetrievedSourcesPanel(restoredSources);
                     }
                 });
             });
@@ -1454,22 +1499,19 @@ document.addEventListener("DOMContentLoaded", () => {
                 btn.addEventListener("click", async (e) => {
                     e.stopPropagation();
                     const filename = btn.getAttribute("data-filename");
+                    const reportCard = btn.closest(".report-file-card");
                     btn.disabled = true;
                     btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i>`;
                     try {
-                        const response = await fetch(`${API_BASE}/api/reports/delete`, {
-                            method: "POST",
-                            headers: {
-                                "Content-Type": "application/json"
-                            },
-                            body: JSON.stringify({ filename: filename })
+                        const response = await fetch(`${API_BASE}/api/reports/${encodeURIComponent(filename)}`, {
+                            method: "DELETE",
                         });
                         if (!response.ok) {
                             const errData = await response.json().catch(() => ({}));
                             alert(`Failed to delete report: ${errData.detail || response.statusText || 'Unknown error'}`);
                         } else {
                             // Optimistic UI remove so deletion is immediately visible.
-                            card.remove();
+                            if (reportCard) reportCard.remove();
                         }
                     } catch (err) {
                         alert(`Network error deleting report: ${err.message}`);

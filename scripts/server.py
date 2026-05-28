@@ -165,6 +165,7 @@ class RAGQueryRequest(BaseModel):
     filter_title: Optional[str] = None   # Primary paper scope (Paper A in compare mode)
     filter_title_b: Optional[str] = None  # Second paper for comparative_analysis template
     template_vars: Optional[dict] = None  # Extra placeholders, e.g. {phenomenon} for Hassan template
+    conversation_history: Optional[list[dict]] = None  # Prior user/assistant turns for chat persistence
 
 
 class CitationAnalysisRequest(BaseModel):
@@ -885,7 +886,8 @@ def query_rag(request: RAGQueryRequest):
     result      = rag_service.generate_answer(
         request.query,
         limit=request.limit,
-        filter_title=request.filter_title or None
+        filter_title=request.filter_title or None,
+        conversation_history=request.conversation_history or []
     )
 
     if not result["success"]:
@@ -1086,11 +1088,9 @@ def delete_report(filename: str):
     safe_name = Path(filename).name
     report_path = REPORTS_DIR / safe_name
 
+    # Idempotent delete: if it's already gone, return success so the UI can refresh cleanly.
     if not report_path.exists():
-        raise HTTPException(
-            status_code=404,
-            detail=f"Report '{safe_name}' not found in output/."
-        )
+        return {"success": True, "deleted": safe_name, "already_absent": True}
 
     try:
         report_path.unlink()
@@ -1106,11 +1106,9 @@ def delete_report_post(req: DeleteReportRequest):
     safe_name = Path(req.filename).name
     report_path = REPORTS_DIR / safe_name
 
+    # Idempotent delete: if it's already gone, return success so repeated clicks do not fail.
     if not report_path.exists():
-        raise HTTPException(
-            status_code=404,
-            detail=f"Report '{safe_name}' not found in output/."
-        )
+        return {"success": True, "deleted": safe_name, "already_absent": True}
 
     try:
         report_path.unlink()

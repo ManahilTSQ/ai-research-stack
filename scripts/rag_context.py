@@ -115,7 +115,7 @@ def _significant_query_tokens(query: str) -> list[str]:
     stop = {
         "what", "which", "when", "where", "does", "about", "from", "with",
         "that", "this", "have", "into", "your", "their", "paper", "papers",
-        "author", "authors", "nik", "hassan", "rushdi", "say", "says",
+        "author", "authors", "say", "says",
     }
     raw = re.findall(r"[a-z0-9]+", (query or "").lower())
     tokens = [t for t in raw if len(t) >= 5 and t not in stop]
