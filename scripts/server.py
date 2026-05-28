@@ -53,6 +53,7 @@ from search_utils import (
     extract_quoted_phrases,
     filter_papers_for_precision,
     build_api_query_string,
+    is_likely_author_query,
 )
 
 logging.basicConfig(
@@ -452,13 +453,15 @@ def search_papers(
 
     results = discover_service.search_papers(api_query, limit=limit, offset=offset)
 
-    # Post-filter: quoted phrases = exact full author name; exact_author = whole-word tokens
-    author_filter_text = remainder if exact_author and remainder else raw_query
+    # Post-filter: quoted phrases = exact full author name.
+    # Only apply strict checkbox mode if the query actually looks like a personal name.
+    exact_author_active = bool(exact_author and is_likely_author_query(remainder or raw_query))
+    author_filter_text = remainder if exact_author_active and remainder else raw_query
     results = filter_papers_for_precision(
         results,
         exact_phrases=quoted_phrases,
-        exact_author_mode=exact_author and not quoted_phrases,
-        author_query=author_filter_text if exact_author else None,
+        exact_author_mode=exact_author_active and not quoted_phrases,
+        author_query=author_filter_text if exact_author_active else None,
     )
 
     formatted = []

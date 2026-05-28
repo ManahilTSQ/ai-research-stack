@@ -133,3 +133,48 @@ def build_api_query_string(query: str) -> str:
     """
     remainder, _ = extract_quoted_phrases(query)
     return remainder if remainder else query.strip()
+
+
+def is_likely_author_query(query: str) -> bool:
+    """
+    Heuristic gate for exact-author mode.
+    Returns True only when the query resembles a personal name, e.g.:
+      - "Geoffrey Hinton"
+      - "N. Hassan"
+      - "Yoshua Bengio"
+    This prevents accidental zero-result searches for topical queries like
+    "deep learning" when the Exact Author checkbox is enabled.
+    """
+    q = (query or "").strip()
+    if not q:
+        return False
+
+    # Remove quotes to evaluate the actual tokens.
+    q = q.replace('"', " ").replace("“", " ").replace("”", " ")
+    tokens = [t for t in re.findall(r"[A-Za-z][A-Za-z\.\-']*", q) if t]
+
+    # Typical author names are 2-5 tokens.
+    if len(tokens) < 2 or len(tokens) > 5:
+        return False
+
+    # Reject obvious topical/technical query words.
+    topic_words = {
+        "learning", "deep", "model", "models", "neural", "network", "networks",
+        "survey", "review", "analysis", "method", "methods", "approach", "approaches",
+        "dataset", "benchmark", "classification", "translation", "framework",
+    }
+    lowered = {t.lower().strip(".") for t in tokens}
+    if lowered & topic_words:
+        return False
+
+    # Name-like token structure: initials or alphabetic names with modest length.
+    for t in tokens:
+        plain = t.replace(".", "").replace("-", "").replace("'", "")
+        if len(plain) == 0:
+            return False
+        if len(plain) == 1:
+            continue  # Initials like "N."
+        if len(plain) > 20:
+            return False
+
+    return True
