@@ -310,6 +310,44 @@ class VectorStoreService:
             logger.error(f"ChromaDB query failed: {e}")
             return []
 
+    def get_chunks_for_paper(self, paper_title: str, max_chunks: int = 30) -> list[dict]:
+        """
+        Fetch stored chunks for one paper by exact metadata title match.
+        Used when the user names an author/paper in the library inventory but vector
+        search + lexical filters would otherwise return nothing.
+        """
+        if not paper_title:
+            return []
+        try:
+            data = self.collection.get(
+                where={"title": paper_title},
+                include=["documents", "metadatas"],
+                limit=max_chunks,
+            )
+            ids = data.get("ids") or []
+            docs = data.get("documents") or []
+            metas = data.get("metadatas") or []
+            results = []
+            for i, doc_text in enumerate(docs):
+                if not doc_text:
+                    continue
+                results.append({
+                    "id": ids[i] if i < len(ids) else f"paper_{i}",
+                    "text": doc_text,
+                    "metadata": metas[i] if i < len(metas) else {},
+                    # Direct inventory fetch — treat as highly relevant to the named paper.
+                    "distance": 0.0,
+                })
+            logger.info(
+                "Loaded %s chunk(s) from inventory for paper '%s'.",
+                len(results),
+                paper_title[:80],
+            )
+            return results
+        except Exception as e:
+            logger.error("Failed to load chunks for paper '%s': %s", paper_title, e)
+            return []
+
     # ──────────────────────────────────────────────────────────────────────────
     # PUBLIC: Collection Statistics
     # ──────────────────────────────────────────────────────────────────────────

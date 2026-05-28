@@ -22,8 +22,11 @@ from rag_context import (
     build_library_inventory,
     chunks_to_context_string,
     retrieve_relevant_chunks,
+    resolve_matching_paper_titles,
+    query_refers_to_missing_library_paper,
     EMPTY_DB_REFUSAL,
     IRRELEVANT_REFUSAL,
+    NOT_IN_LIBRARY_REFUSAL,
 )
 
 
@@ -219,9 +222,21 @@ class RAGService:
         # Papers exist but nothing in the corpus is similar enough to the query.
         if not chunks:
             logger.warning("No chunks passed relevance threshold for query: %s", query)
+            named_in_library = resolve_matching_paper_titles(query, papers_metadata)
+            if named_in_library:
+                # Paper/author is in inventory but chunk text could not be loaded (ingest issue).
+                answer = (
+                    f"A paper matching your query appears in the library "
+                    f"({named_in_library[0][:120]}), but no readable text chunks were retrieved. "
+                    "Try re-ingesting that PDF or use the paper filter dropdown."
+                )
+            elif query_refers_to_missing_library_paper(query, papers_metadata):
+                answer = NOT_IN_LIBRARY_REFUSAL
+            else:
+                answer = IRRELEVANT_REFUSAL
             return {
                 "query": query,
-                "answer": IRRELEVANT_REFUSAL,
+                "answer": answer,
                 "sources": [],
                 "success": False,
                 "error": "No relevant chunks above similarity threshold.",

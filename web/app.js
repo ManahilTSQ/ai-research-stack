@@ -824,7 +824,17 @@ document.addEventListener("DOMContentLoaded", () => {
      */
     function formatSidebarLabel(authorsStr, year, title) {
         const hasYear = year && year !== "N/A" && year !== "None";
-        const hasAuthors = authorsStr && authorsStr !== "Unknown Authors";
+        let hasAuthors = authorsStr && authorsStr !== "Unknown Authors";
+
+        // Some manifest rows store "Alzubaidi et al., 2021" inside the title field only.
+        if (!hasAuthors && title) {
+            const embedded = title.match(/^([A-Za-z][A-Za-z\-']+(?:\s+[A-Za-z][A-Za-z\-']+)?)\s+et\s+al\.?,?\s*(\d{4})?/i);
+            if (embedded) {
+                authorsStr = embedded[1].trim() + " et al.";
+                if (!hasYear && embedded[2]) year = embedded[2];
+                hasAuthors = true;
+            }
+        }
 
         if (!hasAuthors && !hasYear) {
             // Pure fallback: humanise technical filenames into readable labels.

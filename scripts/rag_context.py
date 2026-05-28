@@ -25,6 +25,11 @@ EMPTY_DB_REFUSAL = (
     "to answer your question. Please ingest papers first."
 )
 
+NOT_IN_LIBRARY_REFUSAL = (
+    "I could not find any relevant papers in your knowledge base matching that "
+    "author or paper name. Please check the spelling or ingest the paper first."
+)
+
 
 def format_chunk_block(chunk: dict[str, Any], index: int | None = None) -> str:
     """
@@ -70,13 +75,126 @@ def chunks_to_context_string(chunks: list[dict[str, Any]], *, header: str = "Con
     return f"{header}:\n" + "\n\n".join(blocks)
 
 
-def filter_chunks_by_relevance(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def filter_chunks_by_relevance(
+    chunks: list[dict[str, Any]],
+    *,
+    max_distance: float | None = None,
+) -> list[dict[str, Any]]:
     """
     Drop chunks whose cosine distance exceeds RAG_MAX_DISTANCE in settings.
     Lower distance = more similar in ChromaDB.
     """
-    threshold = settings.RAG_MAX_DISTANCE
+    threshold = max_distance if max_distance is not None else settings.RAG_MAX_DISTANCE
     return [c for c in chunks if float(c.get("distance", 0.0)) <= threshold]
+
+
+def _query_stopwords() -> set[str]:
+    return {
+        "what", "which", "when", "where", "does", "about", "from", "with",
+        "that", "this", "have", "into", "your", "their", "paper", "papers",
+        "author", "authors", "say", "says", "line", "summarize", "summary",
+        "brief", "explain", "describe", "tell", "give", "please", "would",
+    }
+
+
+def _significant_query_tokens(query: str) -> list[str]:
+    """Extract lowercased meaningful tokens from user query (incl. author surnames)."""
+    stop = _query_stopwords()
+    raw = re.findall(r"[a-z0-9]+", (query or "").lower())
+    # Author surnames are often 4+ characters — keep them even when other tokens are short.
+    tokens = [t for t in raw if len(t) >= 4 and t not in stop]
+    if not tokens:
+        tokens = [t for t in raw if len(t) >= 3 and t not in stop]
+    return tokens
+
+
+def _chunk_search_haystack(chunk: dict[str, Any]) -> str:
+    """Text used for lexical matching — includes metadata authors/title, not just body."""
+    meta = chunk.get("metadata") or {}
+    parts = [
+        chunk.get("text") or "",
+        meta.get("title") or "",
+        meta.get("authors") or "",
+        str(meta.get("year") or ""),
+        meta.get("doi") or "",
+    ]
+    return " ".join(parts).lower()
+
+
+def _filter_chunks_by_query_term_presence(
+    chunks: list[dict[str, Any]],
+    query: str,
+    *,
+    skip_if_empty: bool = False,
+) -> list[dict[str, Any]]:
+    """
+    Keep chunks whose text OR metadata contains at least one significant query token.
+    When skip_if_empty is True and filtering would remove everything, return the
+    original chunks (used after we already matched a library author/paper).
+    """
+    tokens = _significant_query_tokens(query)
+    if not tokens or not chunks:
+        return chunks
+
+    kept: list[dict[str, Any]] = []
+    for chunk in chunks:
+        haystack = _chunk_search_haystack(chunk)
+        if any(t in haystack for t in tokens):
+            kept.append(chunk)
+
+    if not kept and skip_if_empty:
+        return chunks
+    return kept
+
+
+def query_refers_to_missing_library_paper(query: str, papers_metadata: dict) -> bool:
+    """
+    True when the query names a specific author/surname that is not in the library.
+    Used to return a clearer refusal than generic 'irrelevant context'.
+    """
+    if resolve_matching_paper_titles(query, papers_metadata):
+        return False
+    tokens = _significant_query_tokens(query)
+    return any(len(t) >= 5 for t in tokens)
+
+
+def resolve_matching_paper_titles(query: str, papers_metadata: dict) -> list[str]:
+    """
+    Map a natural-language question to paper title(s) in the local library inventory.
+    Matches author surnames and distinctive title words against ChromaDB metadata.
+    """
+    if not papers_metadata:
+        return []
+
+    tokens = _significant_query_tokens(query)
+    if not tokens:
+        return []
+
+    matched: list[str] = []
+    for title, meta in papers_metadata.items():
+        authors = (meta.get("authors") or "").lower()
+        title_l = (title or "").lower()
+        for token in tokens:
+            if len(token) < 4:
+                continue
+            if token in authors or token in title_l:
+                matched.append(title)
+                break
+
+    return matched
+
+
+def _dedupe_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge chunk lists by vector id while preserving order."""
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for chunk in chunks:
+        cid = chunk.get("id") or id(chunk)
+        if cid in seen:
+            continue
+        seen.add(cid)
+        out.append(chunk)
+    return out
 
 
 def retrieve_relevant_chunks(
@@ -85,44 +203,56 @@ def retrieve_relevant_chunks(
     limit: int,
     filter_title: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Query ChromaDB and apply the configured relevance distance threshold."""
-    raw = vector_store.query_similar_chunks(query, limit=limit, filter_title=filter_title)
-    chunks = filter_chunks_by_relevance(raw)
+    """
+    Retrieve context chunks for RAG with author/paper-aware fallbacks.
+
+    Pipeline:
+      1. Vector search (semantic similarity).
+      2. If query names an author/paper in the library, pull chunks for that paper directly.
+      3. Apply distance threshold (relaxed when a library paper was explicitly matched).
+      4. Optional lexical token gate — skipped when that would drop all matched-paper chunks.
+    """
+    stats = vector_store.get_collection_stats()
+    papers_metadata = stats.get("papers_metadata", {})
+
+    inventory_titles = resolve_matching_paper_titles(query, papers_metadata)
+    if filter_title:
+        inventory_titles = [filter_title]
+
+    # Request extra candidates so post-filters still leave enough context.
+    search_limit = max(limit * 3, limit + 8)
+    raw = vector_store.query_similar_chunks(
+        query, limit=search_limit, filter_title=filter_title
+    )
+
+    # Direct fetch for papers the user named (e.g. "Khamsani") even if embeddings miss.
+    for title in inventory_titles[:3]:
+        paper_chunks = vector_store.get_chunks_for_paper(title, max_chunks=max(limit * 2, 12))
+        raw = _dedupe_chunks(raw + paper_chunks)
+
+    relaxed_distance = settings.RAG_MAX_DISTANCE
+    if inventory_titles:
+        relaxed_distance = min(1.25, settings.RAG_MAX_DISTANCE + 0.35)
+
+    chunks = filter_chunks_by_relevance(raw, max_distance=relaxed_distance)
+
     if settings.RAG_REQUIRE_QUERY_TERM_MATCH:
-        chunks = _filter_chunks_by_query_term_presence(chunks, query)
-    return chunks
+        chunks = _filter_chunks_by_query_term_presence(
+            chunks,
+            query,
+            skip_if_empty=bool(inventory_titles),
+        )
 
+    # Last resort: user named a paper in inventory but filters removed everything.
+    if not chunks and inventory_titles:
+        fallback: list[dict[str, Any]] = []
+        for title in inventory_titles[:2]:
+            fallback.extend(
+                vector_store.get_chunks_for_paper(title, max_chunks=max(limit, 10))
+            )
+        chunks = _dedupe_chunks(fallback)[:limit]
 
-def _filter_chunks_by_query_term_presence(chunks: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
-    """
-    Keep only chunks containing at least one significant query token.
-    This is a lexical safety gate on top of embeddings to reduce hallucinations.
-    """
-    tokens = _significant_query_tokens(query)
-    if not tokens or not chunks:
-        return chunks
-
-    kept: list[dict[str, Any]] = []
-    for chunk in chunks:
-        haystack = f"{chunk.get('text', '')} {(chunk.get('metadata') or {}).get('title', '')}".lower()
-        if any(t in haystack for t in tokens):
-            kept.append(chunk)
-    return kept
-
-
-def _significant_query_tokens(query: str) -> list[str]:
-    """Extract lowercased meaningful tokens from user query."""
-    stop = {
-        "what", "which", "when", "where", "does", "about", "from", "with",
-        "that", "this", "have", "into", "your", "their", "paper", "papers",
-        "author", "authors", "say", "says",
-    }
-    raw = re.findall(r"[a-z0-9]+", (query or "").lower())
-    tokens = [t for t in raw if len(t) >= 5 and t not in stop]
-    # Fallback: if query is short, still keep medium tokens.
-    if not tokens:
-        tokens = [t for t in raw if len(t) >= 4 and t not in stop]
-    return tokens
+    return chunks[:limit]
 
 
 def chunk_citation_label(chunk: dict[str, Any], index: int) -> str:

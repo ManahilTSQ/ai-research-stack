@@ -646,6 +646,20 @@ def list_pdfs():
 
     db_stats = vector_store.get_collection_stats()
     chroma_titles = set(t.lower().strip() for t in db_stats.get("papers_list", []))
+    papers_meta = db_stats.get("papers_metadata", {})
+
+    def _chroma_meta_for_title(meta_title: str) -> dict:
+        """Resolve ChromaDB metadata when manifest title differs slightly from stored title."""
+        if not meta_title:
+            return {}
+        if meta_title in papers_meta:
+            return papers_meta[meta_title]
+        mt = meta_title.lower().strip()
+        for chroma_title, chroma_meta in papers_meta.items():
+            ct = chroma_title.lower().strip()
+            if ct == mt or ct in mt or mt in ct:
+                return chroma_meta
+        return {}
 
     def _is_in_chroma(meta_title: str) -> bool:
         if not meta_title:
@@ -669,15 +683,28 @@ def list_pdfs():
         else:
             meta_ingested_at = meta.get("ingested_at")
 
+        # Prefer ChromaDB metadata for sidebar labels when manifest still has filename guesses.
+        authors = meta.get("authors") or "Unknown Authors"
+        year = meta.get("year") or "N/A"
+        doi = meta.get("doi") or "N/A"
+        chroma_meta = _chroma_meta_for_title(title)
+        if chroma_meta:
+            if authors in ("Unknown Authors", "", None) and chroma_meta.get("authors"):
+                authors = chroma_meta["authors"]
+            if year in ("N/A", "None", "", None) and chroma_meta.get("year"):
+                year = chroma_meta["year"]
+            if doi in ("N/A", "None", "", None) and chroma_meta.get("doi"):
+                doi = chroma_meta["doi"]
+
         file_list.append({
             "filename":    filename,
             "title":       title,
-            "doi":         meta.get("doi", "N/A"),
+            "doi":         doi,
             "status":      status,
             "ingested_at": meta_ingested_at,
             "size_bytes":  size_bytes,
-            "authors":     meta.get("authors", "Unknown Authors"),
-            "year":        meta.get("year", "N/A"),
+            "authors":     authors,
+            "year":        year,
             "abstract":    meta.get("abstract", ""),
             "paper_id":    meta.get("paper_id", ""),
         })
