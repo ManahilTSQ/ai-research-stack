@@ -28,6 +28,7 @@ What question does this comparison reveal that neither paper answers? Where is t
 Rules:
 - Ground all claims in the provided context. Do not introduce external knowledge not present in the documents.
 - When papers cannot be directly compared on a dimension (e.g., different tasks), state this explicitly rather than forcing a comparison.
+- NEVER label papers as "Paper A", "Paper B", "Study 1", etc. Use the supplied titles or (Author, Year) from each context block.
 - Maintain a neutral, objective, analytical tone throughout.
 
 ---
@@ -43,7 +44,8 @@ Research Paper Context B:
 {context_b}
 ================================================================================
 
-Paper A title: {title_a}
-Paper B title: {title_b}
+Paper A (use this exact title in your analysis, never write "Paper A"): {title_a}
+Paper B (use this exact title in your analysis, never write "Paper B"): {title_b}
 
 Perform the full comparative analysis above based strictly on the provided contexts.
+Always refer to each paper by its full title or (Author, Year) — never as Paper A or Paper B.

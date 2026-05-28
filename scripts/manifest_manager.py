@@ -144,7 +144,8 @@ class ManifestManagerService:
         error: str = "",
         authors: str | None = None,
         year: int | str | None = None,
-        abstract: str | None = None
+        abstract: str | None = None,
+        paper_id: str | None = None,
     ) -> None:
         """
         Record the ingestion result for a PDF file in the manifest.
@@ -164,7 +165,8 @@ class ManifestManagerService:
         """
         manifest = self._load_manifest()
 
-        existing_abstract = manifest.get(filename, {}).get("abstract")
+        existing_entry = manifest.get(filename, {})
+        existing_abstract = existing_entry.get("abstract")
         final_abstract = abstract or existing_abstract or ""
 
         # Overwrite or create the entry for this filename
@@ -176,6 +178,8 @@ class ManifestManagerService:
             "authors": authors or "Unknown Authors",
             "year": str(year) if year else "N/A",
             "abstract": final_abstract,
+            # Semantic Scholar paper ID — used to detect duplicate discovery results
+            "paper_id": paper_id or existing_entry.get("paper_id") or "",
             # ISO-format timestamp for human-readable audit trail
             "ingested_at": datetime.now().isoformat()
         }

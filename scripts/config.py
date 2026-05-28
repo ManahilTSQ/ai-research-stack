@@ -81,6 +81,20 @@ class Settings:
     # Large models on CPU can be slow — 300 s (5 min) is a safe default.
     OLLAMA_TIMEOUT: int = int(os.getenv("OLLAMA_TIMEOUT", "300"))
 
+    # ── HTTP Basic Authentication ─────────────────────────────────────────────
+    # Credentials for the web UI and API (set strong values in production .env).
+    BASIC_AUTH_USER: str = os.getenv("BASIC_AUTH_USER", "admin")
+    BASIC_AUTH_PASS: str = os.getenv("BASIC_AUTH_PASS", "aitawfiq2026")
+
+    # ── RAG Relevance Threshold ───────────────────────────────────────────────
+    # Maximum ChromaDB cosine distance for a chunk to count as "relevant".
+    # Lower = stricter (fewer off-topic chunks sent to the LLM). Typical good matches: < 0.85.
+    RAG_MAX_DISTANCE: float = float(os.getenv("RAG_MAX_DISTANCE", "0.85"))
+
+    # ── Citation Report Retention ───────────────────────────────────────────────
+    # Auto-delete CSV reports older than this many days on list/load (0 = keep forever).
+    REPORT_RETENTION_DAYS: int = int(os.getenv("REPORT_RETENTION_DAYS", "0"))
+
     def __init__(self):
         """
         Auto-create all required storage directories on first use.

@@ -12,7 +12,7 @@
     <!-- FontAwesome for Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <!-- Custom Glassmorphic Stylesheet -->
-    <link rel="stylesheet" href="/static/styles.css?v=2.0.4">
+    <link rel="stylesheet" href="/static/styles.css?v=2.1.0">
 </head>
 <body>
 
@@ -76,8 +76,12 @@
                     <form id="paper-search-form" class="search-form">
                         <div class="input-with-icon">
                             <i class="fa-solid fa-magnifying-glass search-icon"></i>
-                            <input type="text" id="search-input" placeholder="Search by keywords, title, or authors (e.g., 'information systems theorizing')..." required autocomplete="off">
+                            <input type="text" id="search-input" placeholder='Keywords or authors. Use quotes for exact names, e.g. "Manahil Shahid"' required autocomplete="off">
                         </div>
+                        <label class="exact-author-toggle" title="Match author names as whole words only (e.g. Hammoud not Hammouda)">
+                            <input type="checkbox" id="search-exact-author">
+                            <span>Exact author match</span>
+                        </label>
                         <div class="limit-picker">
                             <label for="search-limit">Limit:</label>
                             <select id="search-limit">
@@ -228,6 +232,26 @@
                                         <!-- Populated dynamically from manifest -->
                                     </select>
                                 </div>
+                                <div class="control-item hidden" id="rag-compare-b-wrap">
+                                    <label for="rag-paper-filter-b"><i class="fa-solid fa-code-compare" style="color: var(--accent-purple)"></i> Compare with paper:</label>
+                                    <select id="rag-paper-filter-b">
+                                        <option value="">— Select second paper —</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <!-- Optional placeholders for Hassan-style and other custom templates -->
+                            <div id="rag-template-vars-panel" class="rag-template-vars hidden glass-card" style="margin-top: 12px; padding: 14px 18px;">
+                                <h4 style="font-size: 13px; margin-bottom: 10px;"><i class="fa-solid fa-sliders"></i> Template variables</h4>
+                                <div class="template-vars-grid">
+                                    <input type="text" id="tv-phenomenon" placeholder="Focal phenomenon" autocomplete="off">
+                                    <input type="text" id="tv-central-thesis" placeholder="Central thesis" autocomplete="off">
+                                    <input type="text" id="tv-generative-practice" placeholder="Generative practice (metaphor, typology…)" autocomplete="off">
+                                    <input type="text" id="tv-paradigm-level" placeholder="Paradigm level (metaphysical / sociological / artefactual)" autocomplete="off">
+                                    <input type="text" id="tv-stance" placeholder="Stance (problematising, extending…)" autocomplete="off">
+                                    <input type="text" id="tv-native-construct" placeholder="Native IS construct (optional)" autocomplete="off">
+                                    <input type="text" id="tv-target-journal" placeholder="Target journal (e.g. MIS Quarterly)" autocomplete="off">
+                                    <input type="text" id="tv-coauthors" placeholder="Co-authors / disciplinary backgrounds" autocomplete="off">
+                                </div>
                             </div>
                         </div>
 
@@ -358,7 +382,44 @@
             <section id="tab-prompts" class="tab-pane">
                 <div class="tab-pane-header">
                     <h2>Academic System Prompts Library</h2>
-                    <p>Pre-configured prompt templates tailored for typical research drafting, literature summaries, and comparative evaluations.</p>
+                    <p>Create, edit, and save prompt templates in the standard format. Templates appear instantly in the RAG Knowledge Base dropdown.</p>
+                </div>
+
+                <!-- In-app prompt editor -->
+                <div class="prompt-editor glass-card" id="prompt-editor-panel">
+                    <h3><i class="fa-solid fa-pen-to-square"></i> Add or Edit Template</h3>
+                    <p class="helper-caption" style="margin-bottom: 14px;">
+                        Use the same structure as built-in files: a <strong>system prompt</strong> (instructions for the model) and a
+                        <strong>user template</strong> with placeholders such as <code>{context}</code>, <code>{title}</code>, <code>{query}</code>.
+                    </p>
+                    <form id="prompt-save-form" class="prompt-editor-form">
+                        <div class="prompt-editor-row">
+                            <label for="pe-name">File name (slug)</label>
+                            <input type="text" id="pe-name" placeholder="my_custom_template" pattern="[a-z][a-z0-9_]*" required autocomplete="off">
+                        </div>
+                        <div class="prompt-editor-row">
+                            <label for="pe-title">Display title</label>
+                            <input type="text" id="pe-title" placeholder="My Custom Literature Review" required autocomplete="off">
+                        </div>
+                        <div class="prompt-editor-row">
+                            <label for="pe-system">System prompt body</label>
+                            <textarea id="pe-system" rows="8" placeholder="You are a senior IS scholar…" required></textarea>
+                        </div>
+                        <div class="prompt-editor-row">
+                            <label for="pe-user">User prompt template</label>
+                            <textarea id="pe-user" rows="6" placeholder="Context:&#10;{context}&#10;&#10;Question: {query}" required></textarea>
+                        </div>
+                        <label class="exact-author-toggle" style="margin-bottom: 12px;">
+                            <input type="checkbox" id="pe-overwrite" checked>
+                            <span>Overwrite if template already exists</span>
+                        </label>
+                        <div class="prompt-editor-actions">
+                            <button type="submit" class="btn btn-primary glow-button"><i class="fa-solid fa-floppy-disk"></i> Save Template</button>
+                            <button type="button" id="pe-clear" class="btn btn-secondary"><i class="fa-solid fa-eraser"></i> Clear Form</button>
+                            <button type="button" id="pe-new" class="btn btn-secondary"><i class="fa-solid fa-plus"></i> New Template</button>
+                        </div>
+                        <p id="prompt-save-status" class="prompt-save-status hidden"></p>
+                    </form>
                 </div>
 
                 <div class="prompts-grid" id="prompts-cards-container">
@@ -404,6 +465,6 @@
     </div>
 
     <!-- UI Scripts -->
-    <script src="/static/app.js?v=2.0.4"></script>
+    <script src="/static/app.js?v=2.1.0"></script>
 </body>
 </html>

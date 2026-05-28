@@ -363,8 +363,13 @@ Templates are stored in `prompts/` as `.txt` files. They appear automatically in
 | LinkedIn Post | `linkedin_draft.txt` | Professional post from research |
 | Comparative Analysis | `comparative_analysis.txt` | Comparing two papers or concepts |
 | Literature Review | `article_draft.txt` | Cohesive literature review paragraph |
+| Hassan-style IS Journal Article | `hassanian_article.txt` | Full-length MISQ/JAIS-style manuscript drafting |
 
 ### Add a New Template
+
+**In the app:** open the **Prompt Templates** tab, use **Add or Edit Template**, fill in the system prompt and user template (with `{context}` placeholders), and click **Save Template**.
+
+**Or manually:**
 
 1. Create `prompts/mytemplate.txt` on the server
 2. Follow the format of existing templates (SYSTEM PROMPT section at the top)
@@ -388,8 +393,10 @@ The application is protected with **HTTP Basic Authentication**.
 
 ```env
 BASIC_AUTH_USER=admin
-BASIC_AUTH_PASS=aitawfiq2026
+BASIC_AUTH_PASS=your-strong-password-here
 ```
+
+Auth is read from `.env` at startup (see `scripts/config.py`). Change both values before exposing the tunnel publicly.
 
 To change credentials:
 

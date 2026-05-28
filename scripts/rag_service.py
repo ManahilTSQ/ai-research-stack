@@ -17,6 +17,13 @@ import logging
 import requests
 from config import settings            # Flat import — scripts/ is on sys.path
 from vector_store import VectorStoreService  # Local ChromaDB interface
+from rag_context import (
+    build_library_inventory,
+    chunks_to_context_string,
+    retrieve_relevant_chunks,
+    EMPTY_DB_REFUSAL,
+    IRRELEVANT_REFUSAL,
+)
 
 
 # ── Logger setup ──────────────────────────────────────────────────────────────
@@ -139,54 +146,34 @@ class RAGService:
         stats = self.vector_store.get_collection_stats()
         papers_metadata = stats.get("papers_metadata", {})
 
-        # ── Step 1: Retrieve relevant context chunks from ChromaDB ─────────────
-        chunks = self.vector_store.query_similar_chunks(query, limit=limit, filter_title=filter_title)
+        # ── Step 1: Retrieve chunks and drop low-similarity (off-topic) matches ──
+        chunks = retrieve_relevant_chunks(
+            self.vector_store, query, limit=limit, filter_title=filter_title
+        )
 
-        if not chunks and not papers_metadata:
-            # No papers at all in database — return a polite refusal
-            logger.warning("No relevant chunks and no papers found in ChromaDB.")
+        if not papers_metadata:
+            logger.warning("No papers found in ChromaDB.")
             return {
                 "query": query,
-                "answer": (
-                    "I could not find any relevant papers or context in the local database "
-                    "to answer your question. Please ingest papers first."
-                ),
+                "answer": EMPTY_DB_REFUSAL,
                 "sources": [],
                 "success": False,
-                "error": "No matching papers in the vector database."
+                "error": "No matching papers in the vector database.",
             }
 
-        # Format Library Inventory string
-        library_inventory_blocks = []
-        for i, (title, meta) in enumerate(papers_metadata.items()):
-            library_inventory_blocks.append(
-                f"- {meta.get('authors', 'Unknown Authors')} ({meta.get('year', 'N/A')}). \"{title}\". DOI: {meta.get('doi', 'N/A')}"
-            )
-        library_inventory_str = "\n".join(library_inventory_blocks) if library_inventory_blocks else "No papers in database library."
+        # Papers exist but nothing in the corpus is similar enough to the query.
+        if not chunks:
+            logger.warning("No chunks passed relevance threshold for query: %s", query)
+            return {
+                "query": query,
+                "answer": IRRELEVANT_REFUSAL,
+                "sources": [],
+                "success": False,
+                "error": "No relevant chunks above similarity threshold.",
+            }
 
-        # ── Step 2: Format context blocks for the prompt ───────────────────────
-        context_blocks = []
-        for idx, chunk in enumerate(chunks):
-            meta = chunk["metadata"]
-            title = meta.get("title", "Untitled Paper")
-            authors = meta.get("authors", "Unknown Authors")
-            year = meta.get("year", "N/A")
-            doi = meta.get("doi", "N/A")
-            pages = meta.get("pages", "N/A")
-            text = chunk["text"]
-
-            # Detailed structured metadata format for LLM reference
-            block = (
-                f'--- Academic Source ({authors}, {year}) ---\n'
-                f'Title: "{title}"\n'
-                f'DOI: {doi}\n'
-                f'Pages: {pages}\n'
-                f'Content: {text}\n'
-            )
-            context_blocks.append(block)
-
-        # Join all blocks into one context string for the prompt
-        context_str = "\n".join(context_blocks) if context_blocks else "No relevant text passage chunks found for this query."
+        library_inventory_str = build_library_inventory(papers_metadata)
+        context_str = chunks_to_context_string(chunks)
 
         # ── Step 3: Build structured prompts ──────────────────────────────────
         # Note if the query is scoped to a specific paper

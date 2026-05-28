@@ -33,6 +33,27 @@ from vector_store import VectorStoreService
 from rag_service import RAGService, check_ollama_health
 from manifest_manager import ManifestManagerService
 from citation_analyzer import CitationAnalyzerService
+from prompt_manager import (
+    PromptValidationError,
+    load_prompt_metadata,
+    list_prompt_files,
+    parse_prompt_file,
+    save_prompt,
+    delete_prompt,
+    substitute_placeholders,
+)
+from rag_context import (
+    build_library_inventory,
+    chunks_to_context_string,
+    retrieve_relevant_chunks,
+    EMPTY_DB_REFUSAL,
+    IRRELEVANT_REFUSAL,
+)
+from search_utils import (
+    extract_quoted_phrases,
+    filter_papers_for_precision,
+    build_api_query_string,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -105,7 +126,8 @@ async def basic_auth_middleware(request: Request, call_next):
         payload = auth_header.split(" ")[1]
         decoded = base64.b64decode(payload).decode("utf-8")
         username, password = decoded.split(":", 1)
-        if username == "admin" and password == "aitawfiq2026":
+        # Credentials loaded from .env via config.Settings (see BASIC_AUTH_USER / BASIC_AUTH_PASS)
+        if username == settings.BASIC_AUTH_USER and password == settings.BASIC_AUTH_PASS:
             return await call_next(request)
     except Exception:
         pass
@@ -133,13 +155,16 @@ class DownloadRequest(BaseModel):
     externalIds: Optional[dict] = {}
     abstract: Optional[str] = None
     citationCount: Optional[int] = 0
+    paperId: Optional[str] = None  # Semantic Scholar ID for duplicate detection in discovery UI
 
 
 class RAGQueryRequest(BaseModel):
     query: str
-    limit: Optional[int] = 5
+    limit: Optional[int] = 15
     prompt_template: Optional[str] = None
-    filter_title: Optional[str] = None  # If set, restrict RAG to chunks from this paper only
+    filter_title: Optional[str] = None   # Primary paper scope (Paper A in compare mode)
+    filter_title_b: Optional[str] = None  # Second paper for comparative_analysis template
+    template_vars: Optional[dict] = None  # Extra placeholders, e.g. {phenomenon} for Hassan template
 
 
 class CitationAnalysisRequest(BaseModel):
@@ -149,6 +174,168 @@ class CitationAnalysisRequest(BaseModel):
 
 class DeleteReportRequest(BaseModel):
     filename: str
+
+
+class PromptSaveRequest(BaseModel):
+    """Body for creating or updating a prompt template via the Prompts tab UI."""
+    name: str
+    display_title: str
+    system_body: str
+    user_template: str
+    overwrite: bool = True  # If False, reject when file already exists
+
+
+def _purge_old_reports() -> None:
+    """Delete CSV reports older than REPORT_RETENTION_DAYS when configured (> 0)."""
+    days = settings.REPORT_RETENTION_DAYS
+    if days <= 0:
+        return
+    cutoff = time.time() - (days * 86400)
+    for csv_file in REPORTS_DIR.glob("*.csv"):
+        try:
+            if csv_file.stat().st_mtime < cutoff:
+                csv_file.unlink()
+                logger.info("Auto-deleted old report: %s", csv_file.name)
+        except OSError as e:
+            logger.warning("Could not delete old report %s: %s", csv_file.name, e)
+
+
+def _ollama_chat(system_prompt: str, user_prompt: str, temperature: float = 0.25) -> str:
+    """Send a single system+user exchange to Ollama and return the assistant text."""
+    url = f"{settings.OLLAMA_BASE_URL}/api/chat"
+    payload = {
+        "model": settings.OLLAMA_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "stream": False,
+        "options": {"temperature": temperature},
+    }
+    resp = _req.post(url, json=payload, timeout=settings.OLLAMA_TIMEOUT)
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Ollama error {resp.status_code}: {resp.text[:200]}",
+        )
+    return resp.json()["message"]["content"].strip()
+
+
+def _semantic_scholar_paper_url(paper_id: str) -> str:
+    """Public HTTPS link to a paper on semanticscholar.org (avoids API 405 errors)."""
+    if not paper_id:
+        return ""
+    pid = str(paper_id).strip()
+    if pid.startswith("http"):
+        return pid
+    return f"https://www.semanticscholar.org/paper/{pid}"
+
+
+def _execute_template_rag(request: RAGQueryRequest) -> dict:
+    """
+    Run RAG with a custom prompt template file.
+    Supports two-paper compare when filter_title and filter_title_b are both set.
+    """
+    prompt_path = PROMPTS_DIR / f"{request.prompt_template}.txt"
+    if not prompt_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Prompt template '{request.prompt_template}' not found in prompts/.",
+        )
+
+    raw_template = prompt_path.read_text(encoding="utf-8").strip()
+    try:
+        _, system_prompt, user_template = parse_prompt_file(raw_template)
+    except PromptValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    stats = vector_store.get_collection_stats()
+    papers_metadata = stats.get("papers_metadata", {})
+
+    if not papers_metadata:
+        raise HTTPException(status_code=404, detail=EMPTY_DB_REFUSAL)
+
+    is_compare = bool(
+        request.filter_title
+        and request.filter_title_b
+        and request.filter_title != request.filter_title_b
+    )
+
+    limit = request.limit or 15
+    if is_compare:
+        half_a = max(1, limit // 2)
+        half_b = max(1, limit - half_a)
+        chunks_a = retrieve_relevant_chunks(
+            vector_store, request.query, limit=half_a, filter_title=request.filter_title
+        )
+        chunks_b = retrieve_relevant_chunks(
+            vector_store, request.query, limit=half_b, filter_title=request.filter_title_b
+        )
+        chunks = chunks_a + chunks_b
+        context_a = chunks_to_context_string(chunks_a, header="Research Paper Context A")
+        context_b = chunks_to_context_string(chunks_b, header="Research Paper Context B")
+        title_a = request.filter_title
+        title_b = request.filter_title_b
+    else:
+        chunks = retrieve_relevant_chunks(
+            vector_store,
+            request.query,
+            limit=limit,
+            filter_title=request.filter_title or None,
+        )
+        context_a = context_b = ""
+        title_a = title_b = ""
+
+    if not chunks:
+        raise HTTPException(status_code=404, detail=IRRELEVANT_REFUSAL)
+
+    library_inventory_str = build_library_inventory(papers_metadata)
+    context_str = chunks_to_context_string(chunks)
+
+    if is_compare:
+        combined_context = (
+            f"Ingested Paper Library Inventory:\n{library_inventory_str}\n\n"
+            f"{context_a}\n\n{context_b}"
+        )
+    else:
+        combined_context = (
+            f"Ingested Paper Library Inventory:\n{library_inventory_str}\n\n"
+            f"{context_str}"
+        )
+
+    titles = {c["metadata"].get("title", "") for c in chunks}
+    title_str = " | ".join(sorted(t for t in titles if t)) or "None"
+    authors_list = [c["metadata"].get("authors", "Unknown Authors") for c in chunks]
+    authors_str = " | ".join(sorted(set(authors_list))) if authors_list else "None"
+    years_list = [str(c["metadata"].get("year", "N/A")) for c in chunks]
+    years_str = " | ".join(sorted(set(years_list))) if years_list else "None"
+
+    variables = {
+        "context": combined_context,
+        "context_a": context_a if is_compare else combined_context,
+        "context_b": context_b if is_compare else combined_context,
+        "title": title_str,
+        "title_a": title_a if is_compare else title_str,
+        "title_b": title_b if is_compare else title_str,
+        "authors": authors_str,
+        "year": years_str,
+        "venue": "Various",
+    }
+    variables["query"] = request.query.strip()
+
+    if request.template_vars:
+        for key, val in request.template_vars.items():
+            variables[key] = str(val) if val is not None else ""
+
+    user_prompt = substitute_placeholders(user_template, variables)
+    answer = _ollama_chat(system_prompt, user_prompt, temperature=0.3)
+
+    return {
+        "answer": answer,
+        "sources": chunks,
+        "template_used": request.prompt_template,
+        "compare_mode": is_compare,
+    }
 
 
 def sanitize_filename(title: str) -> str:
@@ -226,11 +413,34 @@ def health_check():
 
 
 @app.get("/api/search")
-def search_papers(q: str, limit: int = 10, offset: int = 0):
+def search_papers(
+    q: str,
+    limit: int = 10,
+    offset: int = 0,
+    exact_author: bool = False,
+):
+    """
+    Search Semantic Scholar. Use exact_author=true or quoted names ("Manahil Shahid")
+    for strict author matching (post-filtered — the API itself is not Boolean).
+    """
     if not q or not q.strip():
         raise HTTPException(status_code=400, detail="Query string 'q' is required.")
 
-    results = discover_service.search_papers(q.strip(), limit=limit, offset=offset)
+    raw_query = q.strip()
+    remainder, quoted_phrases = extract_quoted_phrases(raw_query)
+    api_query = build_api_query_string(raw_query) or remainder or raw_query
+
+    results = discover_service.search_papers(api_query, limit=limit, offset=offset)
+
+    # Post-filter: quoted phrases = exact full author name; exact_author = whole-word tokens
+    author_filter_text = remainder if exact_author and remainder else raw_query
+    results = filter_papers_for_precision(
+        results,
+        exact_phrases=quoted_phrases,
+        exact_author_mode=exact_author and not quoted_phrases,
+        author_query=author_filter_text if exact_author else None,
+    )
+
     formatted = []
 
     for paper in results:
@@ -244,8 +454,9 @@ def search_papers(q: str, limit: int = 10, offset: int = 0):
             pdf_url = discover_service.fetch_open_access_pdf_url(doi)
             has_pdf = pdf_url is not None
 
+        pid = paper.get("paperId", "")
         formatted.append({
-            "paperId":       paper.get("paperId", ""),
+            "paperId":       pid,
             "title":         paper.get("title", "Untitled"),
             "authors":       paper.get("authors", []),
             "year":          paper.get("year", "N/A"),
@@ -254,7 +465,9 @@ def search_papers(q: str, limit: int = 10, offset: int = 0):
             "arxiv":         arxiv,
             "abstract":      (paper.get("abstract") or "")[:500],
             "citationCount": paper.get("citationCount", 0),
-            "has_pdf":       has_pdf
+            "has_pdf":       has_pdf,
+            # External link — opens Semantic Scholar in browser (not an API route; avoids 405)
+            "article_url":   _semantic_scholar_paper_url(pid),
         })
 
     return formatted
@@ -309,7 +522,8 @@ def download_paper(request: DownloadRequest, background_tasks: BackgroundTasks):
             )
             manifest_service.mark_as_ingested(
                 sanitize_filename(title), title, doi, status="success",
-                authors=authors_str, year=year, abstract=abstract
+                authors=authors_str, year=year, abstract=abstract,
+                paper_id=request.paperId,
             )
             return
 
@@ -323,7 +537,8 @@ def download_paper(request: DownloadRequest, background_tasks: BackgroundTasks):
             manifest_service.mark_as_ingested(
                 filename, title, doi,
                 status="success" if success else "failed",
-                authors=authors_str, year=year, abstract=request.abstract
+                authors=authors_str, year=year, abstract=request.abstract,
+                paper_id=request.paperId,
             )
             logger.info(
                 f"BG Ingest complete for '{title}': "
@@ -333,7 +548,8 @@ def download_paper(request: DownloadRequest, background_tasks: BackgroundTasks):
             manifest_service.mark_as_ingested(
                 sanitize_filename(title), title, doi, status="failed",
                 error="No PDF and no abstract available.",
-                authors=authors_str, year=year, abstract=request.abstract
+                authors=authors_str, year=year, abstract=request.abstract,
+                paper_id=request.paperId,
             )
             logger.warning(f"Ingestion failed for '{title}': no content could be obtained.")
 
@@ -439,7 +655,8 @@ def list_pdfs():
             "size_bytes":  size_bytes,
             "authors":     meta.get("authors", "Unknown Authors"),
             "year":        meta.get("year", "N/A"),
-            "abstract":    meta.get("abstract", "")
+            "abstract":    meta.get("abstract", ""),
+            "paper_id":    meta.get("paper_id", ""),
         })
 
     return file_list
@@ -643,116 +860,7 @@ def query_rag(request: RAGQueryRequest):
         )
 
     if request.prompt_template:
-        prompt_path = PROMPTS_DIR / f"{request.prompt_template}.txt"
-        if not prompt_path.exists():
-            raise HTTPException(
-                status_code=404,
-                detail=f"Prompt template '{request.prompt_template}' not found in prompts/."
-            )
-
-        raw_template = prompt_path.read_text(encoding="utf-8").strip()
-        divider      = "## USER PROMPT TEMPLATE"
-
-        if divider in raw_template:
-            parts         = raw_template.split(divider, 1)
-            system_prompt = parts[0].replace("## SYSTEM PROMPT", "").strip()
-            user_template = parts[1].strip()
-        else:
-            system_prompt = raw_template
-            user_template = "{context}"
-
-        # Fetch library index to support meta-queries
-        stats = vector_store.get_collection_stats()
-        papers_metadata = stats.get("papers_metadata", {})
-
-        chunks = vector_store.query_similar_chunks(
-            request.query,
-            limit=request.limit,
-            filter_title=request.filter_title or None
-        )
-        if not chunks and not papers_metadata:
-            raise HTTPException(
-                status_code=404,
-                detail="No relevant papers found in the database. Ingest papers first."
-            )
-
-        # Format Library Inventory string
-        library_inventory_blocks = []
-        for i, (title, meta) in enumerate(papers_metadata.items()):
-            library_inventory_blocks.append(
-                f"- {meta.get('authors', 'Unknown Authors')} ({meta.get('year', 'N/A')}). \"{title}\". DOI: {meta.get('doi', 'N/A')}"
-            )
-        library_inventory_str = "\n".join(library_inventory_blocks) if library_inventory_blocks else "No papers in database library."
-
-        context_blocks = []
-        for idx, c in enumerate(chunks):
-            meta = c["metadata"]
-            title = meta.get("title", "Untitled Paper")
-            authors = meta.get("authors", "Unknown Authors")
-            year = meta.get("year", "N/A")
-            doi = meta.get("doi", "N/A")
-            pages = meta.get("pages", "N/A")
-            text = c["text"]
-
-            block = (
-                f'--- Academic Source ({authors}, {year}) ---\n'
-                f'Title: "{title}"\n'
-                f'DOI: {doi}\n'
-                f'Pages: {pages}\n'
-                f'Content: {text}\n'
-            )
-            context_blocks.append(block)
-
-        # Combine library inventory with passage chunks context
-        context_str = f"Ingested Paper Library Inventory:\n{library_inventory_str}\n\n"
-        if context_blocks:
-            context_str += "Context Chunks:\n" + "\n\n".join(context_blocks)
-        else:
-            context_str += "No relevant text passage chunks found for this query."
-
-        titles       = {c["metadata"].get("title", "") for c in chunks}
-        title_str    = " | ".join(sorted(titles)) if titles else "None"
-        authors_list = [c["metadata"].get("authors", "Unknown Authors") for c in chunks]
-        authors_str  = " | ".join(sorted(set(authors_list))) if authors_list else "None"
-        years_list   = [str(c["metadata"].get("year", "N/A")) for c in chunks]
-        years_str    = " | ".join(sorted(set(years_list))) if years_list else "None"
-
-        user_prompt = (
-            user_template
-            .replace("{context}",  context_str)
-            .replace("{context_a}", context_str)
-            .replace("{context_b}", context_str)
-            .replace("{title}",   title_str)
-            .replace("{title_a}", title_str)
-            .replace("{title_b}", title_str)
-            .replace("{authors}", authors_str)
-            .replace("{year}",    years_str)
-            .replace("{venue}",   "Various")
-        )
-
-        url     = f"{settings.OLLAMA_BASE_URL}/api/chat"
-        payload = {
-            "model": settings.OLLAMA_MODEL,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user",   "content": user_prompt}
-            ],
-            "stream":  False,
-            "options": {"temperature": 0.3}
-        }
-        resp = _req.post(url, json=payload, timeout=settings.OLLAMA_TIMEOUT)
-        if resp.status_code != 200:
-            raise HTTPException(
-                status_code=503,
-                detail=f"Ollama error {resp.status_code}: {resp.text[:200]}"
-            )
-
-        answer = resp.json()["message"]["content"].strip()
-        return {
-            "answer":  answer,
-            "sources": chunks,
-            "template_used": request.prompt_template
-        }
+        return _execute_template_rag(request)
 
     rag_service = RAGService()
     result      = rag_service.generate_answer(
@@ -769,32 +877,74 @@ def query_rag(request: RAGQueryRequest):
 
 @app.get("/api/prompts")
 def list_prompts():
-    prompts = []
+    """List all .txt templates in prompts/ with metadata for the UI library."""
     if not PROMPTS_DIR.exists():
-        return []
+        PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
+    return [load_prompt_metadata(p) for p in list_prompt_files(PROMPTS_DIR)]
 
-    for prompt_file in sorted(PROMPTS_DIR.glob("*.txt")):
-        content = prompt_file.read_text(encoding="utf-8").strip()
-        lines   = [l for l in content.split("\n") if l.strip()]
 
-        raw_title = lines[0] if lines else prompt_file.stem
-        title = re.sub(r"^#+\s*", "", raw_title).strip()
-        title = re.sub(r"^SYSTEM PROMPT\s*[—\-:]*\s*", "", title, flags=re.IGNORECASE).strip()
+@app.get("/api/prompts/{name}")
+def get_prompt(name: str):
+    """Return one template's full content for editing in the Prompts tab."""
+    from prompt_manager import validate_prompt_name
 
-        desc_lines = [
-            l for l in lines[1:]
-            if l.strip() and not l.startswith("#") and not l.startswith("---")
-        ]
-        description = desc_lines[0].strip() if desc_lines else f"Prompt template: {prompt_file.stem}"
+    try:
+        stem = validate_prompt_name(name)
+    except PromptValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    path = PROMPTS_DIR / f"{stem}.txt"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Template '{stem}' not found.")
+    meta = load_prompt_metadata(path)
+    _, system_body, user_template = parse_prompt_file(meta["content"])
+    meta["system_body"] = system_body
+    meta["user_template"] = user_template
+    return meta
 
-        prompts.append({
-            "name":        prompt_file.stem,
-            "title":       title,
-            "description": description[:200],
-            "content":     content
-        })
 
-    return prompts
+@app.post("/api/prompts")
+def create_or_update_prompt(body: PromptSaveRequest):
+    """
+    Create or update a prompt template from the in-app editor.
+    Files are saved in the canonical ## SYSTEM PROMPT / ## USER PROMPT TEMPLATE format.
+    """
+    from prompt_manager import validate_prompt_name
+
+    try:
+        stem = validate_prompt_name(body.name)
+    except PromptValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    target = PROMPTS_DIR / f"{stem}.txt"
+    if target.exists() and not body.overwrite:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Template '{stem}' already exists. Enable overwrite to update.",
+        )
+
+    try:
+        save_prompt(
+            PROMPTS_DIR,
+            body.name,
+            body.display_title,
+            body.system_body,
+            body.user_template,
+        )
+    except PromptValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    logger.info("Saved prompt template: %s.txt", stem)
+    return {"success": True, "name": stem, "message": f"Template '{stem}' saved."}
+
+
+@app.delete("/api/prompts/{name}")
+def remove_prompt(name: str):
+    """Delete a user-created template (built-in templates are protected)."""
+    try:
+        delete_prompt(PROMPTS_DIR, name)
+    except PromptValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"success": True, "deleted": name}
 
 
 @app.post("/api/analyze-citations")
@@ -878,6 +1028,7 @@ def get_citation_status(run_id: str):
 
 @app.get("/api/reports")
 def list_reports():
+    _purge_old_reports()
     reports = []
     for csv_file in sorted(REPORTS_DIR.glob("*.csv"), reverse=True):
         stat = csv_file.stat()

@@ -19,7 +19,8 @@ document.addEventListener("DOMContentLoaded", () => {
     let hasMorePapers = true;     // Whether more pages exist
 
     // Ingested papers cache — populated by fetchLocalPDFs(), used for duplicate detection
-    let ingestedPapers = [];      // Array of {title, doi, authors, year} for all 'success' entries
+    let ingestedPapers = [];      // {title, doi, authors, year, paper_id} for 'success' entries
+    let editingPromptName = null; // When set, prompt editor is updating an existing template
     let localManifestFiles = [];  // Raw list of all manifest files (includes pending, failed, success)
 
     // Initialize SPA tabs routing
@@ -62,6 +63,19 @@ document.addEventListener("DOMContentLoaded", () => {
     const limitLabel = document.getElementById("lbl-rag-limit");
     limitSlider.addEventListener("input", (e) => {
         limitLabel.textContent = `Context: ${e.target.value} chunks`;
+    });
+
+    // Show compare / Hassan variable panels when the RAG template dropdown changes
+    const ragTemplateSelect = document.getElementById("rag-template-select");
+    if (ragTemplateSelect) {
+        ragTemplateSelect.addEventListener("change", updateRagTemplateUi);
+    }
+
+    document.getElementById("prompt-save-form")?.addEventListener("submit", handlePromptSave);
+    document.getElementById("pe-clear")?.addEventListener("click", clearPromptEditorForm);
+    document.getElementById("pe-new")?.addEventListener("click", () => {
+        editingPromptName = null;
+        clearPromptEditorForm();
     });
 
     // Upload button opens the native file picker
@@ -260,8 +274,9 @@ document.addEventListener("DOMContentLoaded", () => {
         filterBar.classList.add("hidden");
 
         try {
+            const exactAuthor = document.getElementById("search-exact-author")?.checked ? "true" : "false";
             const resp = await fetch(
-                `${API_BASE}/api/search?q=${encodeURIComponent(query)}&limit=${limit}&offset=0`
+                `${API_BASE}/api/search?q=${encodeURIComponent(query)}&limit=${limit}&offset=0&exact_author=${exactAuthor}`
             );
             const papers = await resp.json();
             statusBox.classList.add("hidden");
@@ -312,8 +327,9 @@ document.addEventListener("DOMContentLoaded", () => {
         statusBox.classList.remove("hidden");
 
         try {
+            const exactAuthor = document.getElementById("search-exact-author")?.checked ? "true" : "false";
             const resp = await fetch(
-                `${API_BASE}/api/search?q=${encodeURIComponent(currentSearchQuery)}&limit=${currentSearchLimit}&offset=${currentSearchOffset}`
+                `${API_BASE}/api/search?q=${encodeURIComponent(currentSearchQuery)}&limit=${currentSearchLimit}&offset=${currentSearchOffset}&exact_author=${exactAuthor}`
             );
             const papers = await resp.json();
             statusBox.classList.add("hidden");
@@ -410,6 +426,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const normTitle = (s) => (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
         const paperNormTitle = normTitle(paper.title);
         const alreadyIngested = ingestedPapers.some(ip => {
+            if (paper.paperId && ip.paper_id && ip.paper_id === paper.paperId) return true;
             if (paper.doi && paper.doi !== "N/A" && ip.doi && ip.doi !== "N/A") {
                 return ip.doi.toLowerCase() === paper.doi.toLowerCase();
             }
@@ -451,6 +468,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
             <div class="paper-footer">
                 <span class="report-meta">DOI: ${doiLabel} | arXiv: ${paper.arxiv}</span>
+                ${paper.article_url ? `<a class="btn btn-secondary btn-icon paper-article-link" href="${paper.article_url}" target="_blank" rel="noopener noreferrer" title="Open on Semantic Scholar"><i class="fa-solid fa-arrow-up-right-from-square"></i> View on Semantic Scholar</a>` : ""}
                 ${ingestButtonHtml}
             </div>
         `;
@@ -503,9 +521,18 @@ document.addEventListener("DOMContentLoaded", () => {
                         ArXiv: paper.arxiv !== "N/A" ? paper.arxiv : null
                     },
                     abstract: paper.abstract,
-                    citationCount: paper.citationCount
+                    citationCount: paper.citationCount,
+                    paperId: paper.paperId || null
                 })
             });
+            // Refresh duplicate-detection cache immediately after ingest starts
+            if (paper.paperId) {
+                ingestedPapers.push({
+                    title: paper.title,
+                    doi: paper.doi,
+                    paper_id: paper.paperId
+                });
+            }
 
             const result = await resp.json();
 
@@ -551,7 +578,10 @@ document.addEventListener("DOMContentLoaded", () => {
             localManifestFiles = files;
             ingestedPapers = files.filter(f => f.status === "success").map(f => ({
                 title: f.title || "",
-                doi:   f.doi   || "N/A",
+                doi: f.doi || "N/A",
+                authors: f.authors,
+                year: f.year,
+                paper_id: f.paper_id || "",
             }));
 
             // Always refresh the paper filter dropdown whenever the manifest is loaded
@@ -688,21 +718,82 @@ document.addEventListener("DOMContentLoaded", () => {
      */
     function populatePaperFilter(files) {
         const sel = document.getElementById("rag-paper-filter");
+        const selB = document.getElementById("rag-paper-filter-b");
         if (!sel) return;
+
         const prevVal = sel.value;
-        sel.innerHTML = `<option value="">All Papers in Knowledge Base</option>`;
-        // Only show papers that are successfully ingested
-        const ingested = files.filter(f => f.status === "success");
-        ingested.forEach(f => {
-            const label = formatSidebarLabel(f.authors, f.year, f.title);
-            const opt = document.createElement("option");
-            opt.value = f.title;  // use the canonical title as the filter key
-            opt.textContent = label;
-            opt.title = f.title;  // tooltip with full title
-            sel.appendChild(opt);
-        });
-        // Restore previous selection if still available
+        const prevValB = selB ? selB.value : "";
+
+        const fillSelect = (selectEl, includeEmpty, emptyLabel) => {
+            if (!selectEl) return;
+            selectEl.innerHTML = includeEmpty
+                ? `<option value="">${emptyLabel}</option>`
+                : "";
+            const ingested = files.filter(f => f.status === "success");
+            ingested.forEach(f => {
+                const label = formatSidebarLabel(f.authors, f.year, f.title);
+                const opt = document.createElement("option");
+                opt.value = f.title;
+                opt.textContent = label;
+                opt.title = f.title;
+                selectEl.appendChild(opt);
+            });
+        };
+
+        fillSelect(sel, true, "All Papers in Knowledge Base");
+        fillSelect(selB, true, "— Select second paper —");
+
         if ([...sel.options].some(o => o.value === prevVal)) sel.value = prevVal;
+        if (selB && [...selB.options].some(o => o.value === prevValB)) selB.value = prevValB;
+    }
+
+    /**
+     * Show/hide comparative second-paper selector and Hassan template variable fields.
+     */
+    function updateRagTemplateUi() {
+        const template = document.getElementById("rag-template-select")?.value || "";
+        const compareWrap = document.getElementById("rag-compare-b-wrap");
+        const varsPanel = document.getElementById("rag-template-vars-panel");
+
+        if (compareWrap) {
+            compareWrap.classList.toggle("hidden", template !== "comparative_analysis");
+        }
+        if (varsPanel) {
+            varsPanel.classList.toggle("hidden", template !== "hassanian_article");
+        }
+    }
+
+    /**
+     * Collect optional template variable fields for custom prompts (Hassan-style, etc.).
+     */
+    function collectTemplateVars() {
+        const map = {
+            phenomenon: document.getElementById("tv-phenomenon")?.value?.trim() || "",
+            central_thesis: document.getElementById("tv-central-thesis")?.value?.trim() || "",
+            generative_practice: document.getElementById("tv-generative-practice")?.value?.trim() || "",
+            paradigm_level: document.getElementById("tv-paradigm-level")?.value?.trim() || "",
+            stance: document.getElementById("tv-stance")?.value?.trim() || "",
+            native_construct: document.getElementById("tv-native-construct")?.value?.trim() || "",
+            target_journal: document.getElementById("tv-target-journal")?.value?.trim() || "",
+            coauthors: document.getElementById("tv-coauthors")?.value?.trim() || "",
+        };
+        const out = {};
+        Object.entries(map).forEach(([k, v]) => { if (v) out[k] = v; });
+        return Object.keys(out).length ? out : null;
+    }
+
+    /**
+     * APA-style label for a retrieved chunk in the sources panel (not "Source N").
+     */
+    function formatChunkCitationLabel(meta, index) {
+        const authors = meta.authors || "Unknown Authors";
+        const year = meta.year || "N/A";
+        let pages = meta.pages;
+        let pagePart = "";
+        if (pages && pages !== "N/A") {
+            pagePart = `, p. ${pages}`;
+        }
+        return `(${authors}, ${year}${pagePart})`;
     }
 
     /**
@@ -939,15 +1030,23 @@ document.addEventListener("DOMContentLoaded", () => {
         try {
             // Get optional paper filter — empty string means query all papers
             const paperFilter = document.getElementById("rag-paper-filter")?.value || "";
+            const paperFilterB = document.getElementById("rag-paper-filter-b")?.value || "";
+            const templateVars = collectTemplateVars();
+            const payload = {
+                query: query,
+                limit: parseInt(limit),
+                prompt_template: template ? template : null,
+                filter_title: paperFilter || null,
+            };
+            if (template === "comparative_analysis" && paperFilter && paperFilterB) {
+                payload.filter_title_b = paperFilterB;
+            }
+            if (templateVars) payload.template_vars = templateVars;
+
             const resp = await fetch(`${API_BASE}/api/query-rag`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    query: query,
-                    limit: parseInt(limit),
-                    prompt_template: template ? template : null,
-                    filter_title: paperFilter || null
-                })
+                body: JSON.stringify(payload),
             });
 
             if (!resp.ok) {
@@ -1049,7 +1148,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const pages = meta.pages ? `Pages: ${meta.pages}` : "Abstract snippet";
 
             item.innerHTML = `
-                <div class="source-chunk-title">[Source ${idx + 1}] "${meta.title}" (${pages})</div>
+                <div class="source-chunk-title">${formatChunkCitationLabel(meta, idx)} — "${escapeHTML(meta.title || "Untitled")}"</div>
                 <div class="source-chunk-text">"${escapeHTML(c.text)}"</div>
             `;
             list.appendChild(item);
@@ -1109,9 +1208,14 @@ document.addEventListener("DOMContentLoaded", () => {
         // Blockquotes: > text → <blockquote>
         html = html.replace(/^&gt;\s+(.*?)$/gm, "<blockquote>$1</blockquote>");
 
-        // Citation reference links: [Source N] → clickable anchor
+        // Legacy [Source N] links → scroll to chunk; label shows APA-style text when available
         html = html.replace(/\[Source\s+(\d+)\]/gi, (match, num) => {
-            return `<a class="citation-ref" href="#" data-source-index="${num}">Source ${num}</a>`;
+            const idx = parseInt(num, 10) - 1;
+            let label = `Source ${num}`;
+            if (activeChatSources[idx]?.metadata) {
+                label = formatChunkCitationLabel(activeChatSources[idx].metadata, idx);
+            }
+            return `<a class="citation-ref" href="#" data-source-index="${num}">${escapeHTML(label)}</a>`;
         });
 
         // Paragraph breaks: double newlines → </p><p>
@@ -1344,41 +1448,46 @@ document.addEventListener("DOMContentLoaded", () => {
             select.innerHTML = `<option value="">Standard Chat RAG</option>`;
 
             prompts.forEach(p => {
-                // Add option to the RAG template dropdown
                 const opt = document.createElement("option");
                 opt.value = p.name;
                 opt.textContent = p.title;
                 select.appendChild(opt);
 
-                // Build the prompt card in the Prompts tab grid
                 const card = document.createElement("div");
                 card.className = "prompt-card glass-card";
+                const deleteBtn = p.protected
+                    ? ""
+                    : `<button class="btn btn-secondary btn-delete-prompt" data-name="${p.name}" title="Delete template"><i class="fa-solid fa-trash"></i></button>`;
 
                 card.innerHTML = `
                     <div class="prompt-card-top">
-                        <span class="prompt-tag">System Prompt</span>
-                        <h3>${p.title}</h3>
-                        <p class="prompt-desc">${p.description}</p>
+                        <span class="prompt-tag">${p.protected ? "Built-in" : "Custom"}</span>
+                        <h3>${escapeHTML(p.title)}</h3>
+                        <p class="prompt-desc">${escapeHTML(p.description)}</p>
+                        <code class="prompt-filename">${p.name}.txt</code>
                     </div>
                     <div class="prompt-actions">
                         <button class="btn btn-secondary btn-view-prompt" data-name="${p.name}"><i class="fa-solid fa-eye"></i> View</button>
-                        <button class="btn btn-primary btn-use-prompt" data-name="${p.name}"><i class="fa-solid fa-comments"></i> Use Template</button>
+                        <button class="btn btn-secondary btn-edit-prompt" data-name="${p.name}"><i class="fa-solid fa-pen"></i> Edit</button>
+                        <button class="btn btn-primary btn-use-prompt" data-name="${p.name}"><i class="fa-solid fa-comments"></i> Use</button>
+                        ${deleteBtn}
                     </div>
                 `;
 
-                // "View" opens a modal with the full raw prompt content
-                card.querySelector(".btn-view-prompt").addEventListener("click", () => {
-                    showPromptModal(p);
-                });
-
-                // "Use Template" sets the dropdown and switches to the RAG tab
+                card.querySelector(".btn-view-prompt").addEventListener("click", () => showPromptModal(p));
+                card.querySelector(".btn-edit-prompt").addEventListener("click", () => loadPromptIntoEditor(p.name));
                 card.querySelector(".btn-use-prompt").addEventListener("click", () => {
                     select.value = p.name;
+                    updateRagTemplateUi();
                     document.getElementById("nav-rag-btn").click();
                 });
+                const del = card.querySelector(".btn-delete-prompt");
+                if (del) del.addEventListener("click", () => deletePromptTemplate(p.name));
 
                 container.appendChild(card);
             });
+
+            updateRagTemplateUi();
 
         } catch (err) {
             container.innerHTML = `<div class="placeholder-card glass-card text-crimson"><h3>Failed to load prompts</h3></div>`;
@@ -1390,6 +1499,91 @@ document.addEventListener("DOMContentLoaded", () => {
      * The modal closes when clicking the X button or anywhere outside the dialog.
      * @param {Object} prompt - Prompt object with title and content fields.
      */
+    /**
+     * Load a template from the API into the in-app editor for viewing or editing.
+     */
+    async function loadPromptIntoEditor(name) {
+        try {
+            const resp = await fetch(`${API_BASE}/api/prompts/${encodeURIComponent(name)}`);
+            if (!resp.ok) throw new Error("Could not load template");
+            const data = await resp.json();
+            editingPromptName = data.name;
+            document.getElementById("pe-name").value = data.name;
+            document.getElementById("pe-name").disabled = true;
+            document.getElementById("pe-title").value = data.title;
+            document.getElementById("pe-system").value = data.system_body || "";
+            document.getElementById("pe-user").value = data.user_template || "{context}";
+            document.getElementById("pe-overwrite").checked = true;
+            document.getElementById("prompt-editor-panel")?.scrollIntoView({ behavior: "smooth" });
+        } catch (err) {
+            alert("Failed to load template: " + err.message);
+        }
+    }
+
+    function clearPromptEditorForm() {
+        editingPromptName = null;
+        document.getElementById("pe-name").disabled = false;
+        document.getElementById("pe-name").value = "";
+        document.getElementById("pe-title").value = "";
+        document.getElementById("pe-system").value = "";
+        document.getElementById("pe-user").value = "{context}\n\nResearcher query: {query}";
+        document.getElementById("pe-overwrite").checked = true;
+        const status = document.getElementById("prompt-save-status");
+        if (status) status.classList.add("hidden");
+    }
+
+    /**
+     * Save a new or updated prompt template via POST /api/prompts.
+     */
+    async function handlePromptSave(e) {
+        e.preventDefault();
+        const statusEl = document.getElementById("prompt-save-status");
+        const body = {
+            name: document.getElementById("pe-name").value.trim(),
+            display_title: document.getElementById("pe-title").value.trim(),
+            system_body: document.getElementById("pe-system").value.trim(),
+            user_template: document.getElementById("pe-user").value.trim(),
+            overwrite: document.getElementById("pe-overwrite").checked,
+        };
+
+        try {
+            const resp = await fetch(`${API_BASE}/api/prompts`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body),
+            });
+            const data = await resp.json();
+            if (!resp.ok) throw new Error(data.detail || "Save failed");
+
+            statusEl.textContent = data.message || "Template saved.";
+            statusEl.className = "prompt-save-status success";
+            statusEl.classList.remove("hidden");
+            await fetchPrompts();
+            if (!editingPromptName) clearPromptEditorForm();
+        } catch (err) {
+            statusEl.textContent = err.message;
+            statusEl.className = "prompt-save-status error";
+            statusEl.classList.remove("hidden");
+        }
+    }
+
+    /**
+     * Delete a custom prompt template (built-in templates cannot be deleted).
+     */
+    async function deletePromptTemplate(name) {
+        if (!confirm(`Delete prompt template "${name}"? This cannot be undone.`)) return;
+        try {
+            const resp = await fetch(`${API_BASE}/api/prompts/${encodeURIComponent(name)}`, {
+                method: "DELETE",
+            });
+            const data = await resp.json();
+            if (!resp.ok) throw new Error(data.detail || "Delete failed");
+            await fetchPrompts();
+        } catch (err) {
+            alert("Delete failed: " + err.message);
+        }
+    }
+
     function showPromptModal(prompt) {
         const modal = document.createElement("div");
         modal.className = "prompt-modal";
