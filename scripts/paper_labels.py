@@ -161,13 +161,25 @@ def format_sidebar_label(
             return f"{fn_author}, {fn_year}"
         if fn_year:
             return f"Unknown, {fn_year}"
-        # Do not show a lone filename token as if it were an author surname.
+        # If we have filename but couldn't extract author/year, use first token as author
+        stem = Path(filename).stem
+        tokens = [t for t in re.split(r"[_\-\s]+", stem) if t and len(t) > 1]
+        if tokens:
+            first_token = tokens[0][:1].upper() + tokens[0][1:]
+            if year_str:
+                return f"{first_token}, {year_str}"
+            return f"{first_token}, N/A"
 
     if year_str:
         return f"Unknown, {year_str}"
 
     # Pending ingest — short status, not a long title string.
     if filename:
-        return "Pending metadata…"
+        stem = Path(filename).stem
+        tokens = [t for t in re.split(r"[_\-\s]+", stem) if t and len(t) > 1]
+        if tokens:
+            first_token = tokens[0][:1].upper() + tokens[0][1:]
+            return f"{first_token}, N/A"
+        return "Unknown, N/A"
 
-    return "Unknown paper"
+    return "Unknown, N/A"

@@ -850,7 +850,16 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         if (!hasAuthors && !hasYear) {
-            return "Pending metadata…";
+            // Use filename as fallback to ensure Author, Year format
+            if (filename) {
+                const stem = filename.replace(/\\/g, "/").split("/").pop().replace(/\.pdf$/i, "");
+                const parts = stem.split(/[_\-\s]+/).filter(p => p && p.length > 1);
+                if (parts.length) {
+                    const surname = parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
+                    return `${surname}, N/A`;
+                }
+            }
+            return "Unknown, N/A";
         }
 
         // Extract last names from a formatted authors string.
@@ -891,9 +900,18 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         if (namePart && yearPart) return `${namePart}, ${yearPart}`;
-        if (namePart) return namePart;
+        if (namePart) return `${namePart}, N/A`;
         if (yearPart) return `Unknown, ${yearPart}`;
-        return "Pending metadata…";
+        // Final fallback - use filename or return Unknown, N/A
+        if (filename) {
+            const stem = filename.replace(/\\/g, "/").split("/").pop().replace(/\.pdf$/i, "");
+            const parts = stem.split(/[_\-\s]+/).filter(p => p && p.length > 1);
+            if (parts.length) {
+                const surname = parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
+                return `${surname}, N/A`;
+            }
+        }
+        return "Unknown, N/A";
     }
 
     /**
