@@ -183,41 +183,8 @@ class RAGService:
         Check if the query mentions a specific author name that is NOT in the library.
         Returns (should_refuse, refusal_message).
         """
-        if not papers_metadata:
-            return False, ""
-        
-        # Extract potential author names from the query (capitalized words that could be names)
-        import re
-        query_lower = (query or "").lower()
-        
-        # Get all author names from the library inventory
-        library_authors = set()
-        for meta in papers_metadata.values():
-            authors_str = (meta.get("authors") or "").lower()
-            # Extract individual author names
-            if authors_str and authors_str != "unknown authors":
-                # Split by common separators and extract surnames
-                parts = re.split(r'[;&,\s]+', authors_str)
-                for part in parts:
-                    if len(part) >= 3 and part not in ["et", "al.", "al"]:
-                        library_authors.add(part)
-        
-        # Check if query contains a name-like pattern that's not in the library
-        # Look for capitalized words that could be author names
-        potential_names = re.findall(r'\b[A-Z][a-z]{2,}\b', query)
-        
-        for name in potential_names:
-            name_lower = name.lower()
-            # Skip common words
-            if name_lower in ["the", "and", "for", "with", "about", "from", "this", "that"]:
-                continue
-            # If this name is not in the library authors, it might be a hallucination risk
-            if name_lower not in library_authors:
-                # Only refuse if it looks like a proper name query (e.g., "What about Smith's work?")
-                context_indicators = ["work", "paper", "research", "publication", "study", "article", "book"]
-                if any(indicator in query_lower for indicator in context_indicators):
-                    return True, f"I could not find any papers by '{name}' in the local database. Please ingest papers by this author first."
-        
+        # Disabled - too aggressive and blocks legitimate authors
+        # Rely on system prompt to prevent hallucination instead
         return False, ""
 
     def generate_answer(
@@ -254,18 +221,6 @@ class RAGService:
         # Fetch library index to support meta-queries
         stats = self.vector_store.get_collection_stats()
         papers_metadata = stats.get("papers_metadata", {})
-
-        # ── Pre-check: Detect queries about authors not in library to prevent hallucination ──
-        should_refuse_author, refusal_msg = self._check_author_in_library(query, papers_metadata)
-        if should_refuse_author:
-            logger.warning(f"Author not in library, refusing query: {query}")
-            return {
-                "query": query,
-                "answer": refusal_msg,
-                "sources": [],
-                "success": False,
-                "error": "Author not found in library"
-            }
 
         # ── Step 1: Retrieve chunks and drop low-similarity (off-topic) matches ──
         chunks = retrieve_relevant_chunks(
