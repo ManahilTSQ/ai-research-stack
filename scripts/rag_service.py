@@ -178,6 +178,48 @@ class RAGService:
         topic_present = any(term in combined for term in ["abortion", "reproductive", "pro-choice", "pro life"])
         return not topic_present
 
+    def _check_author_in_library(self, query: str, papers_metadata: dict) -> tuple[bool, str]:
+        """
+        Check if the query mentions a specific author name that is NOT in the library.
+        Returns (should_refuse, refusal_message).
+        """
+        if not papers_metadata:
+            return False, ""
+        
+        # Extract potential author names from the query (capitalized words that could be names)
+        import re
+        query_lower = (query or "").lower()
+        
+        # Get all author names from the library inventory
+        library_authors = set()
+        for meta in papers_metadata.values():
+            authors_str = (meta.get("authors") or "").lower()
+            # Extract individual author names
+            if authors_str and authors_str != "unknown authors":
+                # Split by common separators and extract surnames
+                parts = re.split(r'[;&,\s]+', authors_str)
+                for part in parts:
+                    if len(part) >= 3 and part not in ["et", "al.", "al"]:
+                        library_authors.add(part)
+        
+        # Check if query contains a name-like pattern that's not in the library
+        # Look for capitalized words that could be author names
+        potential_names = re.findall(r'\b[A-Z][a-z]{2,}\b', query)
+        
+        for name in potential_names:
+            name_lower = name.lower()
+            # Skip common words
+            if name_lower in ["the", "and", "for", "with", "about", "from", "this", "that"]:
+                continue
+            # If this name is not in the library authors, it might be a hallucination risk
+            if name_lower not in library_authors:
+                # Only refuse if it looks like a proper name query (e.g., "What about Smith's work?")
+                context_indicators = ["work", "paper", "research", "publication", "study", "article", "book"]
+                if any(indicator in query_lower for indicator in context_indicators):
+                    return True, f"I could not find any papers by '{name}' in the local database. Please ingest papers by this author first."
+        
+        return False, ""
+
     def generate_answer(
         self,
         query: str,
@@ -212,6 +254,18 @@ class RAGService:
         # Fetch library index to support meta-queries
         stats = self.vector_store.get_collection_stats()
         papers_metadata = stats.get("papers_metadata", {})
+
+        # ── Pre-check: Detect queries about authors not in library to prevent hallucination ──
+        should_refuse_author, refusal_msg = self._check_author_in_library(query, papers_metadata)
+        if should_refuse_author:
+            logger.warning(f"Author not in library, refusing query: {query}")
+            return {
+                "query": query,
+                "answer": refusal_msg,
+                "sources": [],
+                "success": False,
+                "error": "Author not found in library"
+            }
 
         # ── Step 1: Retrieve chunks and drop low-similarity (off-topic) matches ──
         chunks = retrieve_relevant_chunks(
@@ -270,20 +324,22 @@ class RAGService:
             f"{scope_note}"
             "STRICT CITATION AND WRITING RULES — you MUST follow ALL of these:\n"
             "1. ONLY use facts from the provided Document context blocks or Library Inventory. No pre-trained knowledge or invented details.\n"
-            "2. INLINE CITATIONS: Always use APA7 parenthetical format: (Author, Year) or (Author & Author, Year) or (Author et al., Year). \n"
+            "2. NEVER invent, fabricate, or hallucinate author names, paper titles, or any bibliographic information. If an author name is not in the Library Inventory, you MUST state they are not found.\n"
+            "3. INLINE CITATIONS: Always use APA7 parenthetical format: (Author, Year) or (Author & Author, Year) or (Author et al., Year). \n"
             "   If citing a specific passage, add the page: (Author, Year, p. X).\n"
-            "3. NEVER use bracketed source numbers like '(Source 1)', '[Source 2]', 'Document Source 1', 'Document 1' etc. in the text. These are internal labels only.\n"
+            "4. NEVER use bracketed source numbers like '(Source 1)', '[Source 2]', 'Document Source 1', 'Document 1' etc. in the text. These are internal labels only.\n"
             "   ALWAYS convert internal source labels to proper (Author, Year) citations using the Authors and Year in each Document block.\n"
-            "4. NEVER refer to papers as 'Paper A', 'Paper B', 'Study 1', 'Study 2', or any similar generic label. \n"
+            "5. NEVER refer to papers as 'Paper A', 'Paper B', 'Study 1', 'Study 2', or any similar generic label. \n"
             "   Always identify papers by: their EXACT title in quotes, or using (Author, Year) notation.\n"
-            "5. REFERENCES SECTION: End your response with a 'References' section listing all cited papers in full APA7 bibliography format:\n"
+            "6. REFERENCES SECTION: End your response with a 'References' section listing all cited papers in full APA7 bibliography format:\n"
             "   Author, A. A., & Author, B. B. (Year). Title of article. Journal Name, volume(issue), pages. https://doi.org/xxxxx\n"
-            "6. If asked about an author or paper not in the context or Inventory, respond EXACTLY: \n"
+            "7. If asked about an author or paper not in the context or Inventory, respond EXACTLY: \n"
             "   'I could not find any relevant papers or context in the local database to answer your question. Please ingest papers first.'\n"
-            "7. If context lacks sufficient detail, state that clearly, then summarise what the context does say.\n"
-            "8. Maintain a formal, neutral, and academic tone throughout.\n"
-            "9. Do NOT infer personal stances (politics, religion, abortion, legal or moral views) unless directly stated in retrieved context.\n"
-            "10. Never fabricate citations, references, or source details."
+            "   Do NOT attempt to answer using pre-trained knowledge or by fabricating information.\n"
+            "8. If context lacks sufficient detail, state that clearly, then summarise what the context does say.\n"
+            "9. Maintain a formal, neutral, and academic tone throughout.\n"
+            "10. Do NOT infer personal stances (politics, religion, abortion, legal or moral views) unless directly stated in retrieved context.\n"
+            "11. Never fabricate citations, references, or source details. Only cite papers that appear in the Library Inventory or context blocks."
         )
 
         # User prompt: the context blocks + library inventory + the actual research query
