@@ -159,12 +159,21 @@ class RAGService:
         no lexical evidence for the sensitive topic, and force a safe refusal.
         """
         q = (query or "").lower()
-        sensitive_terms = [
+        # Only trigger on explicitly controversial political/social topics, not generic academic terms
+        sensitive_topics = [
             "abortion", "reproductive rights", "pro-choice", "pro life",
-            "supports", "opposes", "stance", "position", "views on",
         ]
-        if not any(term in q for term in sensitive_terms):
+        stance_indicators = [
+            "supports", "opposes", "stance on", "views on", "position on",
+        ]
+        
+        # Must have both a sensitive topic AND a stance indicator to trigger
+        has_topic = any(topic in q for topic in sensitive_topics)
+        has_stance = any(indicator in q for indicator in stance_indicators)
+        
+        if not (has_topic and has_stance):
             return False
+            
         combined = " ".join((c.get("text") or "").lower() for c in chunks)
         topic_present = any(term in combined for term in ["abortion", "reproductive", "pro-choice", "pro life"])
         return not topic_present
