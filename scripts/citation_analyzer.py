@@ -73,6 +73,50 @@ class CitationAnalyzerService:
     # PRIVATE: Passage Extraction from PDF Text
     # ──────────────────────────────────────────────────────────────────────────
 
+    def _strip_references_from_pages(self, pages: list[dict]) -> list[dict]:
+        """
+        Identify the bibliography/references section page and truncate it and
+        all subsequent pages to prevent matching author names in the reference list.
+        """
+        if not pages:
+            return []
+
+        # We only look in the last 40% of the pages list where bibliography sections reside
+        num_pages = len(pages)
+        start_idx = int(num_pages * 0.60)
+
+        ref_header_pattern = re.compile(
+            r'(?:^|\n)\s*(?:'
+            r'references'
+            r'|bibliography'
+            r'|works cited'
+            r'|literature cited'
+            r'|reference list'
+            r'|citations'
+            r'|referenzen'
+            r'|bibliographie'
+            r'|bibliograf[íi]a'
+            r')\s*(?:\n|$)',
+            re.IGNORECASE
+        )
+
+        for i in range(start_idx, num_pages):
+            page_text = pages[i]["text"]
+            match = ref_header_pattern.search(page_text)
+            if match:
+                logger.info(
+                    f"Found reference section header on page {pages[i]['page_number']} of the citing paper. "
+                    f"Truncating pages list here to prevent false author reference matching."
+                )
+                # Keep pages up to the reference start, copy the references page and truncate it, then drop subsequent pages
+                truncated_pages = list(pages[:i])
+                last_page_copy = pages[i].copy()
+                last_page_copy["text"] = page_text[:match.start()].rstrip()
+                truncated_pages.append(last_page_copy)
+                return truncated_pages
+
+        return pages
+
     def _extract_citation_passages_from_text(
         self,
         pages: list[dict],
@@ -401,6 +445,7 @@ class CitationAnalyzerService:
                             print("  [+] Extracting text and searching for citation markers...")
                             try:
                                 pages = self.pdf_service.extract_text_by_page(downloaded_path)
+                                pages = self._strip_references_from_pages(pages)
                                 passages = self._extract_citation_passages_from_text(
                                     pages, author_surnames, target_title
                                 )

@@ -207,13 +207,15 @@
                     <!-- Right/Main Column: Chat/Query interface -->
                     <div class="rag-chat-area glass-card">
                         <div class="chat-header">
-                            <div class="chat-title-info">
-                                <h3><i class="fa-solid fa-messages"></i> Grounded AI Chat</h3>
-                                <p>Answers are generated entirely locally, strictly based on the facts in your ingested literature.</p>
+                            <div class="chat-header-main">
+                                <div class="chat-title-info">
+                                    <h3><i class="fa-solid fa-messages"></i> Grounded AI Chat</h3>
+                                    <p>Answers are generated entirely locally, strictly based on the facts in your ingested literature.</p>
+                                </div>
+                                <button id="btn-clear-chat" class="btn btn-secondary" title="Clear entire chat history" style="font-size:12px; padding: 6px 12px; gap:6px; display:flex; align-items:center;">
+                                    <i class="fa-solid fa-trash-can" style="color: var(--accent-crimson);"></i> Clear Chat
+                                </button>
                             </div>
-                            <button id="btn-clear-chat" class="btn btn-secondary btn-icon" title="Clear entire chat history" style="flex-shrink:0; align-self:flex-start; font-size:12px; padding: 6px 12px; gap:5px; display:flex; align-items:center;">
-                                <i class="fa-solid fa-trash-can"></i> Clear Chat
-                            </button>
                             
                             <!-- RAG Config Panel -->
                             <div class="rag-controls">
