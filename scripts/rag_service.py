@@ -150,7 +150,8 @@ class RAGService:
         """
         if not answer:
             return ""
-        stripped = re.split(r"\n\s*references\s*:\s*\n", answer, maxsplit=1, flags=re.IGNORECASE)[0]
+        # Match lines like "References:", "## References", "References list", etc., and strip everything after
+        stripped = re.split(r"\n\s*(?:#+\s*|\*+\s*|_+)?references\b[:\s]*", answer, maxsplit=1, flags=re.IGNORECASE)[0]
         return stripped.strip()
 
     def _is_unverifiable_sensitive_claim(self, query: str, chunks: list[dict]) -> bool:
@@ -294,7 +295,8 @@ class RAGService:
             "8. If context lacks sufficient detail, state that clearly, then summarise what the context does say.\n"
             "9. Maintain a formal, neutral, and academic tone throughout.\n"
             "10. Do NOT infer personal stances (politics, religion, abortion, legal or moral views) unless directly stated in retrieved context.\n"
-            "11. Never fabricate citations, references, or source details. Only cite papers that appear in the Library Inventory or context blocks."
+            "11. Never fabricate citations, references, or source details. Only cite papers that appear in the Library Inventory or context blocks.\n"
+            "12. TRUTH GAPS: If the user asks about a specific concept, theory, application, or relationship (e.g., 'quantum superposition' or 'credit card fraud') and it is NOT explicitly described in the retrieved Document context blocks, you MUST state that the provided context does not mention it, even if the authors or papers themselves are listed in the inventory. Do NOT attempt to explain the concept using your general knowledge."
         )
 
         # User prompt: the context blocks + library inventory + the actual research query
