@@ -690,6 +690,30 @@ class ManifestManagerService:
                         updated = True
                         logger.info(f"Manifest: removed stale entry for deleted file '{filename}'")
 
+            # ── Pass 3: Clean up ghost papers from ChromaDB ────────────────────────
+            # If a paper is in ChromaDB but not marked as success in the manifest,
+            # it means the paper was deleted or is orphaned. Delete it from ChromaDB.
+            manifest_success_titles = {
+                meta.get("title").lower().strip()
+                for meta in manifest.values()
+                if meta.get("status") == "success" and meta.get("title")
+            }
+            
+            for t in list(ingested_titles):
+                t_lower = t.lower().strip()
+                # Check if this ChromaDB title exists as a success entry in our manifest
+                if t_lower not in manifest_success_titles:
+                    # Double check if there's a close substring match to prevent false deletions
+                    has_match = False
+                    for mst in manifest_success_titles:
+                        if mst in t_lower or t_lower in mst:
+                            has_match = True
+                            break
+                    if not has_match:
+                        logger.info(f"Manifest Sync: Deleting ghost paper '{t}' from ChromaDB.")
+                        vector_store_service.delete_paper(title=t)
+                        updated = True
+
             # Only write to disk if something actually changed (avoid unnecessary I/O)
             if updated:
                 self._save_manifest(manifest)
