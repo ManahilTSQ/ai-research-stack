@@ -161,7 +161,8 @@ def query_refers_to_missing_library_paper(query: str, papers_metadata: dict) -> 
 def resolve_matching_paper_titles(query: str, papers_metadata: dict) -> list[str]:
     """
     Map a natural-language question to paper title(s) in the local library inventory.
-    Matches author surnames and distinctive title words against ChromaDB metadata.
+    Matches author surnames and distinctive title words against ChromaDB metadata,
+    falling back to matching against filenames and metadata inside the ingestion manifest.
     """
     if not papers_metadata:
         return []
@@ -171,6 +172,38 @@ def resolve_matching_paper_titles(query: str, papers_metadata: dict) -> list[str
         return []
 
     matched: list[str] = []
+
+    # 1. Try to match using the Ingestion Manifest (very robust for physical uploads / filenames)
+    try:
+        manifest_path = settings.BASE_DIR / "output" / "ingestion_manifest.json"
+        if manifest_path.exists():
+            import json
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+            for filename, meta in manifest.items():
+                m_title = meta.get("title", "")
+                m_authors = meta.get("authors", "")
+                m_year = meta.get("year", "")
+                
+                for token in tokens:
+                    if len(token) < 4:
+                        continue
+                    # Match query token against filename, manifest title, or manifest authors
+                    if (token in filename.lower() or 
+                            token in m_title.lower() or 
+                            token in m_authors.lower()):
+                        # Resolve the corresponding title in papers_metadata
+                        for db_title in papers_metadata.keys():
+                            if (db_title.lower().strip() == m_title.lower().strip() or
+                                    db_title.lower().strip() in m_title.lower().strip() or
+                                    m_title.lower().strip() in db_title.lower().strip()):
+                                matched.append(db_title)
+                                break
+    except Exception:
+        # Prevent any manifest reading issue from crashing RAG
+        pass
+
+    # 2. Match against active ChromaDB papers metadata directly
     for title, meta in papers_metadata.items():
         authors = (meta.get("authors") or "").lower()
         title_l = (title or "").lower()
@@ -178,10 +211,19 @@ def resolve_matching_paper_titles(query: str, papers_metadata: dict) -> list[str
             if len(token) < 4:
                 continue
             if token in authors or token in title_l:
-                matched.append(title)
+                if title not in matched:
+                    matched.append(title)
                 break
 
-    return matched
+    # Deduplicate while preserving order
+    seen = set()
+    out = []
+    for m in matched:
+        if m not in seen:
+            seen.add(m)
+            out.append(m)
+
+    return out
 
 
 def _dedupe_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
