@@ -147,6 +147,67 @@ class PDFProcessorService:
     # PUBLIC: Text Chunking
     # ──────────────────────────────────────────────────────────────────────────
 
+    def _strip_references_section(self, full_text: str) -> str:
+        """
+        Remove the References/Bibliography section from the end of a document's
+        full text BEFORE chunking.
+
+        Why this matters: Academic PDFs end with a reference list. If those
+        reference entries are chunked and stored in ChromaDB, the LLM retrieves
+        them and falsely cites papers in the reference list as if they are
+        separately ingested sources — causing hallucinated citations.
+
+        Strategy:
+          - Match common reference section headers in the LAST 40% of the text.
+          - Strip everything from that header onwards.
+          - Only acts on the last match to avoid removing body text that happens
+            to contain the word "references" in a section heading.
+
+        Args:
+            full_text: The complete concatenated document text.
+
+        Returns:
+            The document text with the reference section removed, or the
+            original text unchanged if no reference section header was found.
+        """
+        if not full_text or len(full_text) < 500:
+            return full_text
+
+        # Only scan the last 40% of the document — reference lists are always at the end.
+        scan_start = int(len(full_text) * 0.60)
+        tail = full_text[scan_start:]
+
+        # Common reference section headers used in academic papers
+        ref_header_pattern = re.compile(
+            r'\n\s*(?:'
+            r'references'
+            r'|bibliography'
+            r'|works cited'
+            r'|literature cited'
+            r'|reference list'
+            r'|citations'
+            r'|referenzen'          # German
+            r'|bibliographie'       # French/German
+            r'|bibliograf[íi]a'    # Spanish/Portuguese
+            r')\s*\n',
+            re.IGNORECASE
+        )
+
+        match = None
+        for m in ref_header_pattern.finditer(tail):
+            match = m  # Keep the LAST match (in case "references" appears mid-paper)
+
+        if match:
+            cut_pos = scan_start + match.start()
+            stripped = full_text[:cut_pos].rstrip()
+            logger.info(
+                f"Stripped references section starting at char {cut_pos} "
+                f"(removed {len(full_text) - cut_pos} chars of bibliography)."
+            )
+            return stripped
+
+        return full_text
+
     def chunk_text(
         self,
         pages: list[dict],
@@ -163,9 +224,12 @@ class PDFProcessorService:
 
         Algorithm:
           1. Concatenate all page texts into one big string.
-          2. Track which page number each character position belongs to
+          2. Strip the references/bibliography section from the end (prevents
+             reference list entries from becoming retrievable chunks that the
+             LLM falsely cites as ingested papers).
+          3. Track which page number each character position belongs to
              (so we can annotate each chunk with its source pages).
-          3. Slide a window of 'chunk_size' characters across the full text,
+          4. Slide a window of 'chunk_size' characters across the full text,
              advancing by (chunk_size - chunk_overlap) each step.
 
         Args:
@@ -210,7 +274,19 @@ class PDFProcessorService:
             logger.warning("No text content found in any page — nothing to chunk.")
             return []
 
-        # ── Step 2: Validate and sanitize chunking parameters ─────────────────
+        # ── Step 2: Strip references section to prevent false LLM citations ───
+        # Reference list entries, if chunked into ChromaDB, get retrieved and
+        # the LLM cites them as if they are separately ingested papers.
+        full_text = self._strip_references_section(full_text)
+        # Rebuild char_to_page to match the (possibly shortened) full_text
+        char_to_page = char_to_page[:len(full_text)]
+        text_len = len(full_text)
+
+        if text_len == 0:
+            logger.warning("Document was entirely a reference list — nothing to chunk.")
+            return []
+
+        # ── Step 3: Validate and sanitize chunking parameters ─────────────────
         if chunk_size <= 0:
             chunk_size = 1000  # Enforce a sensible minimum
 
@@ -219,7 +295,7 @@ class PDFProcessorService:
             chunk_overlap = int(chunk_size * 0.2)
             logger.warning(f"Invalid chunk_overlap — reset to 20% of chunk_size: {chunk_overlap}")
 
-        # ── Step 3: Slide the window across the full text ─────────────────────
+        # ── Step 4: Slide the window across the full text ─────────────────────
         chunks = []
         start = 0       # Current window start position (character index)
         chunk_idx = 0   # Sequential chunk counter
@@ -267,3 +343,4 @@ class PDFProcessorService:
             f"(chunk_size={chunk_size}, overlap={chunk_overlap})"
         )
         return chunks
+

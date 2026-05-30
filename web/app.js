@@ -90,6 +90,7 @@ document.addEventListener("DOMContentLoaded", () => {
     });
     // When files are selected, start uploading immediately
     document.getElementById("pdf-file-input").addEventListener("change", handleUploadPDFs);
+    document.getElementById("btn-clear-chat")?.addEventListener("click", clearChat);
 
     // Load More button
     document.getElementById("btn-load-more").addEventListener("click", handleLoadMore);
@@ -1299,6 +1300,37 @@ document.addEventListener("DOMContentLoaded", () => {
                 });
             });
         } catch (_) {}
+    }
+
+    /**
+     * Clear all chat messages, conversation memory, and persisted localStorage history.
+     * Resets the chat area to the initial welcome state.
+     */
+    function clearChat() {
+        const messagesDiv = document.getElementById("chat-messages");
+        if (!messagesDiv) return;
+        // Reset to the original welcome bubble
+        messagesDiv.innerHTML = `
+            <div class="chat-bubble bot-message initial-message">
+                <div class="bubble-avatar"><i class="fa-solid fa-microchip-ai"></i></div>
+                <div class="bubble-content">
+                    <p>Hello! I am your offline Research Assistant. I can answer questions about the academic papers you have ingested.</p>
+                    <p><strong>Sample queries you can try:</strong></p>
+                    <ul>
+                        <li>"What are the main arguments presented in the core papers?"</li>
+                        <li>"Compare the research methodologies across my papers."</li>
+                        <li>"What are the key limitations outlined by the authors?"</li>
+                    </ul>
+                </div>
+            </div>`;
+        // Wipe in-memory conversation state
+        chatHistoryTurns = [];
+        sourcesByBubbleId = {};
+        activeChatSources = [];
+        // Remove persisted chat from localStorage
+        try { localStorage.removeItem(CHAT_STORAGE_KEY); } catch (_) {}
+        // Hide the sources panel if open
+        document.getElementById("retrieved-sources-panel")?.classList.add("hidden");
     }
 
     /**
