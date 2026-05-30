@@ -81,22 +81,25 @@ class CitationAnalyzerService:
         if not pages:
             return []
 
-        # We only look in the last 40% of the pages list where bibliography sections reside
+        # We only look in the last 50% of the pages list where bibliography sections reside
         num_pages = len(pages)
-        start_idx = int(num_pages * 0.60)
+        start_idx = int(num_pages * 0.50)
 
         ref_header_pattern = re.compile(
             r'(?:^|\n)\s*(?:'
             r'references'
             r'|bibliography'
-            r'|works cited'
-            r'|literature cited'
-            r'|reference list'
+            r'|works\s+cited'
+            r'|literature\s+cited'
+            r'|reference\s+list'
             r'|citations'
+            r'|cited\s+works'
             r'|referenzen'
             r'|bibliographie'
+            r'|r[eé]f[eé]rences'
             r'|bibliograf[íi]a'
-            r')\s*(?:\n|$)',
+            r'|notes'
+            r')\s*\n',
             re.IGNORECASE
         )
 
@@ -117,6 +120,42 @@ class CitationAnalyzerService:
 
         return pages
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # PRIVATE: Bibliography-Entry Detection
+    # ──────────────────────────────────────────────────────────────────────────
+
+    _BIBLIO_NUMERIC_BRACKET = re.compile(r'^\s*\[?\d{1,3}\]?\s+[A-Z]')
+    _BIBLIO_NUMBERED_DOT    = re.compile(r'^\s*\d{1,3}\.\s+[A-Z]')
+    # APA/Vancouver "Lastname, F. M., Lastname2, F." repeating pattern (2+ authors)
+    _BIBLIO_AUTHOR_CHAIN    = re.compile(
+        r'^(?:[A-Z][a-z\u00e1\u00e9\u00ed\u00f3\u00fa\u00f1\-]+,\s+[A-Z](?:\.[A-Z]?\.?)?[.,]?\s*){2,}'
+    )
+    # Very high comma density with short tokens → looks like a reference list line
+    _BIBLIO_COMMA_DENSE     = re.compile(r'^(?:[^,]{1,25},){3,}')
+
+    def _is_bibliography_entry(self, text: str) -> bool:
+        """
+        Return True when *text* looks like a bibliography/reference-list entry
+        rather than a real in-text citation sentence.
+
+        Heuristics (any one suffices to reject):
+          1. Starts with a numbered reference marker like "[1]" or "23."
+          2. Starts with 2+ consecutive "Lastname, F." tokens (author chain).
+          3. Very high comma density with short tokens (typical of a ref list line).
+        """
+        stripped = text.strip()
+        if not stripped:
+            return True
+        if self._BIBLIO_NUMERIC_BRACKET.match(stripped):
+            return True
+        if self._BIBLIO_NUMBERED_DOT.match(stripped):
+            return True
+        if self._BIBLIO_AUTHOR_CHAIN.match(stripped):
+            return True
+        if self._BIBLIO_COMMA_DENSE.match(stripped):
+            return True
+        return False
+
     def _extract_citation_passages_from_text(
         self,
         pages: list[dict],
@@ -133,6 +172,10 @@ class CitationAnalyzerService:
         For each matched sentence, captures 1 sentence before and after for context
         (sentence-window extraction), giving the LLM enough surrounding text to
         classify the citation intent accurately.
+
+        Passages that look like bibliography entries (numbered references, dense
+        author-name chains) or are shorter than 120 chars are rejected so that
+        only meaningful in-text citation sentences reach the LLM.
 
         Args:
             pages: List of page dicts from PDFProcessorService.extract_text_by_page().
@@ -160,7 +203,9 @@ class CitationAnalyzerService:
         stopwords = {
             "attention", "need", "networks", "generation", "augmented",
             "retrieval", "using", "about", "their", "under", "learning",
-            "based", "with", "from", "deep", "large"
+            "based", "with", "from", "deep", "large", "model", "models",
+            "method", "approach", "framework", "system", "analysis",
+            "study", "paper", "work", "results", "data"
         }
         title_words = [
             w for w in target_title.split()
@@ -195,8 +240,27 @@ class CitationAnalyzerService:
                     end_idx = min(len(sentences), idx + 2)
                     passage = " ".join(sentences[start_idx:end_idx]).strip()
 
-                    # De-duplicate and discard trivially short passages (< 20 chars)
-                    if passage not in extracted_passages and len(passage) > 20:
+                    # ── Quality gate ─────────────────────────────────────────
+                    # Require a minimum meaningful length; real in-text citation
+                    # sentences with a 1-sentence context window are typically
+                    # well over 120 characters.
+                    if len(passage) < 120:
+                        logger.debug(
+                            "Skipping short passage (%d chars): %s",
+                            len(passage), passage[:80]
+                        )
+                        continue
+
+                    # Reject passages that look like a bibliography entry
+                    # (e.g. "[1] Smith, J., Jones, A. (2019). Title...").
+                    if self._is_bibliography_entry(passage):
+                        logger.debug(
+                            "Skipping bibliography-entry passage: %s", passage[:80]
+                        )
+                        continue
+
+                    # De-duplicate and store
+                    if passage not in extracted_passages:
                         extracted_passages.append(passage)
 
         return extracted_passages
