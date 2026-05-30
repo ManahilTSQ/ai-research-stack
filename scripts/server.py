@@ -928,9 +928,14 @@ def query_rag(request: RAGQueryRequest):
 
     if not result["success"]:
         error_msg = result.get("error", "RAG failed.")
-        # Surface relevance/coverage misses as user-facing 404 instead of generic 500.
-        if "No relevant chunks" in error_msg or "No matching papers" in error_msg:
-            raise HTTPException(status_code=404, detail=result.get("answer", error_msg))
+        answer_msg = result.get("answer", error_msg)
+        # Off-topic gate, irrelevant context, or no-chunks → surface as clean 200 answer
+        if any(phrase in error_msg for phrase in [
+            "Off-topic query blocked",
+            "No relevant chunks",
+            "No matching papers",
+        ]):
+            return {"answer": answer_msg, "sources": []}
         raise HTTPException(status_code=500, detail=error_msg)
 
     return {"answer": result["answer"], "sources": result["sources"]}

@@ -94,6 +94,15 @@ def _query_stopwords() -> set[str]:
         "that", "this", "have", "into", "your", "their", "paper", "papers",
         "author", "authors", "say", "says", "line", "summarize", "summary",
         "brief", "explain", "describe", "tell", "give", "please", "would",
+        # Generic academic terms and common filler words to prevent false-positive RAG matches
+        "detailed", "provide", "provides", "present", "presents", "core", "research",
+        "method", "methodology", "findings", "contributions", "study", "studies",
+        "result", "results", "analysis", "article", "articles", "chapter", "chapters",
+        "book", "books", "discuss", "discusses", "explores", "exploring", "contribution",
+        "focus", "focuses", "question", "questions", "concept", "concepts", "theory",
+        "theories", "approach", "approaches", "framework", "frameworks", "system",
+        "systems", "process", "processes", "perspective", "perspectives", "literature",
+        "review", "reviews", "empirical", "evidence", "conclusions"
     }
 
 

@@ -66,16 +66,16 @@ def run():
 
             if ok:
                 manifest_svc.mark_as_ingested(filename, title, doi, status="success")
-                print(f"  [✓] SUCCESS — '{title}' ingested with {len(chunks)} chunks.")
+                print(f"  [OK] SUCCESS - '{title}' ingested with {len(chunks)} chunks.")
                 success += 1
             else:
                 manifest_svc.mark_as_ingested(filename, title, doi, status="failed",
                                               error="ChromaDB upsert returned False.")
-                print(f"  [✗] FAILED — ChromaDB upsert returned False for '{title}'.")
+                print(f"  [FAIL] FAILED - ChromaDB upsert returned False for '{title}'.")
                 failed += 1
 
         except Exception as e:
-            print(f"  [✗] ERROR: {e}")
+            print(f"  [ERROR] {e}")
             manifest_svc.mark_as_ingested(filename, title, doi, status="failed", error=str(e))
             failed += 1
 

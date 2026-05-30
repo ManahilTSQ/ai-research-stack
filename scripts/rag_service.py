@@ -188,10 +188,36 @@ class RAGService:
         # Rely on system prompt to prevent hallucination instead
         return False, ""
 
+    def _is_off_topic(self, query: str) -> bool:
+        """
+        Deterministic pre-LLM keyword blocker.
+        Returns True if the query is clearly unrelated to academic research.
+        This fires BEFORE any ChromaDB or LLM call — it is an absolute gate.
+        """
+        q = query.lower().strip()
+        # Hard off-topic keyword families — grouped for clarity
+        off_topic_patterns = [
+            # Food & cooking
+            "recipe", "cook", "bake", "ingredient", "meal", "food",
+            "breakfast", "lunch", "dinner", "cuisine", "chef",
+            # Weather & trivial queries
+            "weather", "temperature", "forecast", "rain", "sunny",
+            # Sports
+            "football", "cricket", "soccer", "basketball", "tennis",
+            "match", "score", "tournament",
+            # Entertainment
+            "movie", "film", "song", "music", "celebrity", "actor", "actress",
+            # Finance / non-research
+            "stock", "bitcoin", "cryptocurrency", "investment tips",
+            # Travel
+            "hotel", "flight", "booking", "vacation", "tourist",
+        ]
+        return any(pat in q for pat in off_topic_patterns)
+
     def generate_answer(
         self,
         query: str,
-        limit: int = 4,
+        limit: int = 8,
         filter_title: str | None = None,
         conversation_history: list[dict] | None = None,
     ) -> dict:
@@ -219,6 +245,20 @@ class RAGService:
               - "success" (bool): Whether generation succeeded.
               - "error" (str, optional): Error message if success=False.
         """
+        # ── Step 0: Deterministic off-topic gate — fires before ANY LLM or DB call ──
+        if self._is_off_topic(query):
+            return {
+                "query": query,
+                "answer": (
+                    "This question is outside the scope of your ingested research knowledge base. "
+                    "I can only answer questions based on the academic papers that have been ingested. "
+                    "Please ask a question about the research papers in your library."
+                ),
+                "sources": [],
+                "success": False,
+                "error": "Off-topic query blocked by keyword gate.",
+            }
+
         # Fetch library index to support meta-queries
         stats = self.vector_store.get_collection_stats()
         papers_metadata = stats.get("papers_metadata", {})
@@ -273,30 +313,40 @@ class RAGService:
                 "Only use information from this paper's context blocks when answering.\n"
             )
 
-        # System prompt: sets the LLM's role and strict citation rules
+        # System prompt: absolute iron-wall instruction set for Llama 3 8B
         system_prompt = (
-            "You are a professional, self-hosted academic AI research assistant.\n"
-            "Your task is to answer the researcher's query based strictly on the provided Document context blocks and the Ingested Paper Library Inventory.\n\n"
+            "=== ABSOLUTE OPERATING RULES — READ BEFORE EVERYTHING ELSE ===\n"
+            "You are an AI assistant LOCKED to an academic research knowledge base.\n"
+            "You ONLY answer questions using information from the DOCUMENT CONTEXT BLOCKS below.\n"
+            "You have NO general knowledge. You are NOT ChatGPT. You CANNOT access the internet.\n"
+            "You MUST REFUSE to answer ANYTHING that is not present in the provided context.\n\n"
+            "=== HARD REFUSAL TRIGGERS — ALWAYS REFUSE THESE, NO EXCEPTIONS ===\n"
+            "- Cooking, recipes, food → REFUSE\n"
+            "- Medical advice, health, symptoms → REFUSE (unless paper is medical research)\n"
+            "- News, weather, current events → REFUSE\n"
+            "- Any question where the answer requires knowledge NOT in the context blocks → REFUSE\n"
+            "- Any question about a person, paper, or concept not found in the Library Inventory → REFUSE\n\n"
+            "REFUSAL FORMAT (copy this exactly when refusing):\n"
+            "\"This question is outside the scope of your ingested research knowledge base. "
+            "I can only answer questions based on the papers that have been ingested. "
+            "Please ask a question about the research papers in your library.\"\n\n"
+            "=== WHAT YOU ARE ALLOWED TO DO ===\n"
+            "- Answer research questions strictly using the Document Context Blocks provided.\n"
+            "- Summarize, compare, or explain content that is EXPLICITLY present in the context.\n"
+            "- List authors, years, titles, DOIs only from the Library Inventory or context.\n\n"
+            "=== CITATION RULES ===\n"
+            "1. ONLY use facts from the Document Context Blocks. Zero exceptions.\n"
+            "2. NEVER invent author names, paper titles, years, DOIs or references.\n"
+            "3. Use APA7 inline citations: (Author, Year) or (Author et al., Year, p. X).\n"
+            "4. NEVER use (Source 1), [Document 2] or any numbered source labels.\n"
+            "5. NEVER call papers 'Paper A', 'Study 1' etc. Use (Author, Year) or exact title.\n"
+            "6. End every answer with a References section in full APA7 format.\n"
+            "7. TRUTH GAPS: If the concept asked about is NOT in the context blocks, "
+            "say: 'The retrieved context does not contain information about [topic].' DO NOT guess.\n"
+            "8. If context is insufficient, say so explicitly.\n"
+            "9. Formal, neutral academic tone always.\n\n"
             f"{scope_note}"
-            "STRICT CITATION AND WRITING RULES — you MUST follow ALL of these:\n"
-            "1. ONLY use facts from the provided Document context blocks or Library Inventory. No pre-trained knowledge or invented details.\n"
-            "2. NEVER invent, fabricate, or hallucinate author names, paper titles, or any bibliographic information. If an author name is not in the Library Inventory, you MUST state they are not found.\n"
-            "3. INLINE CITATIONS: Always use APA7 parenthetical format: (Author, Year) or (Author & Author, Year) or (Author et al., Year). \n"
-            "   If citing a specific passage, add the page: (Author, Year, p. X).\n"
-            "4. NEVER use bracketed source numbers like '(Source 1)', '[Source 2]', 'Document Source 1', 'Document 1' etc. in the text. These are internal labels only.\n"
-            "   ALWAYS convert internal source labels to proper (Author, Year) citations using the Authors and Year in each Document block.\n"
-            "5. NEVER refer to papers as 'Paper A', 'Paper B', 'Study 1', 'Study 2', or any similar generic label. \n"
-            "   Always identify papers by: their EXACT title in quotes, or using (Author, Year) notation.\n"
-            "6. REFERENCES SECTION: End your response with a 'References' section listing all cited papers in full APA7 bibliography format:\n"
-            "   Author, A. A., & Author, B. B. (Year). Title of article. Journal Name, volume(issue), pages. https://doi.org/xxxxx\n"
-            "7. If asked about an author or paper not in the context or Inventory, respond EXACTLY: \n"
-            "   'I could not find any relevant papers or context in the local database to answer your question. Please ingest papers first.'\n"
-            "   Do NOT attempt to answer using pre-trained knowledge or by fabricating information.\n"
-            "8. If context lacks sufficient detail, state that clearly, then summarise what the context does say.\n"
-            "9. Maintain a formal, neutral, and academic tone throughout.\n"
-            "10. Do NOT infer personal stances (politics, religion, abortion, legal or moral views) unless directly stated in retrieved context.\n"
-            "11. Never fabricate citations, references, or source details. Only cite papers that appear in the Library Inventory or context blocks.\n"
-            "12. TRUTH GAPS: If the user asks about a specific concept, theory, application, or relationship (e.g., 'quantum superposition' or 'credit card fraud') and it is NOT explicitly described in the retrieved Document context blocks, you MUST state that the provided context does not mention it, even if the authors or papers themselves are listed in the inventory. Do NOT attempt to explain the concept using your general knowledge."
+            "=== BEGIN ANSWERING ONLY FROM CONTEXT BELOW ==="
         )
 
         # User prompt: the context blocks + library inventory + the actual research query
@@ -331,8 +381,9 @@ class RAGService:
             "messages": messages,
             "stream": False,   # Wait for the complete response (not a streaming response)
             "options": {
-                "temperature": 0.2,  # Low temperature = more deterministic, less creative
-                "top_p": 0.9         # Nucleus sampling threshold
+                "temperature": 0.05, # Near-zero: almost fully deterministic, kills creativity/hallucination
+                "top_p": 0.8,        # Tighter nucleus sampling
+                "repeat_penalty": 1.1  # Reduces repetitive hallucination loops
             }
         }
 
