@@ -51,24 +51,29 @@ The AI Research Stack is a private, offline-capable research tool designed for a
 Browser (cite.aitawfiq.com)
         │
         ▼ HTTPS
-Cloudflare Tunnel  ──────────────────────────────────────┐
-        │                                                 │
-        ▼ HTTP (localhost)                                │
-FastAPI Server (port 8000)                               │
-        │                                                 │
-        ├── /api/search      → Semantic Scholar API       │
-        ├── /api/download    → Unpaywall / arXiv PDF      │
-        ├── /api/pdfs        → Ingestion Manifest         │
-        ├── /api/ingest-pending → Bulk folder scan        │
-        ├── /api/query-rag   → ChromaDB → Ollama → Answer │
-        ├── /api/papers/{id} → Delete paper + chunks      │
-        └── /api/analyze-citations → Citation classifier  │
-                │                                         │
-                ├── ChromaDB (vectordb/)                  │
-                │     └── ONNX MiniLM-L6-v2 embeddings   │
-                ├── Ollama (port 11434)                   │
-                │     └── llama3:70b (CPU, Q4)            │
-                └── ingestion_manifest.json               │
+Cloudflare Tunnel  ──────────────────────────────────────────┐
+        │                                                     │
+        ▼ HTTP (localhost)                                    │
+FastAPI Server (port 8000)                                   │
+        │                                                     │
+        ├── /api/health            → Ollama & Vector DB Health│
+        ├── /api/search            → Semantic Scholar API     │
+        ├── /api/download          → Unpaywall / arXiv PDF    │
+        ├── /api/upload            → UI multi-PDF upload      │
+        ├── /api/pdfs              → Ingestion Manifest       │
+        ├── /api/ingest-pending    → Bulk folder scan         │
+        ├── /api/query-rag         → ChromaDB → Ollama        │
+        ├── /api/papers/{filename} → GET PDF / DELETE paper   │
+        ├── /api/prompts           → Prompt templates CRUD    │
+        ├── /api/analyze-citations → Citation classifier      │
+        ├── /api/reports           → Citation reports registry│
+        └── /sw.js                 → SW unregistration        │
+                │                                             │
+                ├── ChromaDB (vectordb/)                      │
+                │     └── ONNX MiniLM-L6-v2 embeddings       │
+                ├── Ollama (port 11434)                       │
+                │     └── llama3:70b (CPU, Q4)                │
+                └── ingestion_manifest.json                   │
 ```
 
 ---
@@ -115,12 +120,19 @@ FastAPI Server (port 8000)                               │
 │   ├── vector_store.py        ← ChromaDB read/write + ONNX embedding
 │   ├── rag_service.py         ← RAG pipeline: retrieve → prompt → answer
 │   ├── citation_analyzer.py   ← Citation intent classification (LLM)
+│   ├── prompt_manager.py      ← Prompt CRUD & template parsing helper
+│   ├── rag_context.py         ← Context compilation & off-topic blocker logic
+│   ├── search_utils.py        ← Search query parsers & exact author filters
+│   ├── paper_labels.py        ← Formatting sidebar paper representation
+│   ├── reconcile_db.py        ← DB and manifest reconciliation utility
+│   ├── inspect_db.py          ← Vector database diagnostics tool
 │   ├── main.py                ← CLI entry point
 │   └── batch_reingest.py      ← Re-ingest all papers from scratch
 ├── web/                       ← Single-page browser UI
 │   ├── index.html
 │   ├── app.js
-│   └── styles.css
+│   ├── styles.css
+│   └── sw-unregister.js       ← Service worker unregistration utility
 ├── venv/                      ← Python virtual environment
 ├── .env                       ← Your local config (never commit)
 ├── .env.example               ← Config template
@@ -134,7 +146,7 @@ FastAPI Server (port 8000)                               │
 
 ### 1. Paper Discovery
 
-Search the global Semantic Scholar index by keywords, title, or author. Each result shows:
+Search the global Semantic Scholar index by keywords, title, or author. Supports exact author matching using quoted names (e.g., `"Manahil Shahid"`) or the **Exact author match** toggle to reduce noise. Each result shows:
 - Full title, authors, year, venue
 - Citation count
 - Open Access badge (PDF available vs abstract only)
@@ -147,16 +159,18 @@ Papers with open-access PDFs are downloaded, chunked, and embedded automatically
 The RAG (Retrieval-Augmented Generation) tab lets you ask natural-language questions answered strictly from your ingested literature.
 
 **Left sidebar shows:**
-- Total papers ingested and total vector chunks
-- Each paper listed as `Author, Year` (e.g. `Shahid & Hammoud, 2026`) — hover for full title
-- Trash icon to remove any paper instantly (no confirmation required)
-- "Scan & Ingest Folder" button to pick up any PDFs dropped into `papers/`
+- Total papers ingested and total vector chunks.
+- Each paper listed as `Author, Year` (e.g. `Shahid & Hammoud, 2026`) instead of filename guesses — hover for full title. If ChromaDB metadata is unresolved, it falls back to the manifest filename guess.
+- Trash icon to remove any paper instantly (no confirmation required).
+- **Select PDF Files...** button to upload PDFs directly from your local computer, with support for an optional target subfolder.
+- **Scan & Ingest Folder** button to pick up any PDFs dropped into `papers/` recursively.
 
 **Chat area:**
-- Type any research question
-- Adjust context chunks (3–10) via the slider
-- Select a system prompt template (literature review, comparative analysis, etc.)
-- Every answer ends with full APA7 references
+- Type any research question.
+- Adjust context chunks (5–50) via the slider (defaults to 15).
+- Select a system prompt template (Standard Chat, Literature Review, Comparative Analysis, etc.).
+- **Clear Chat** button to wipe the current conversation history.
+- Every answer ends with full APA7 references.
 
 ### 3. APA7 Citations
 
@@ -173,9 +187,9 @@ Shahid, M., & Hammoud, A. (2026). Title of the Paper. Journal Name, 12(3), 45–
 
 The metadata (author names, year, DOI, journal) is pulled from Semantic Scholar during ingestion and stored in both ChromaDB and `ingestion_manifest.json`.
 
-### 4. Recursive Folder Scanning
+### 4. Recursive Folder Scanning & Ingestion
 
-The system scans `papers/` **and all its subfolders** recursively. You can organise papers into topic folders:
+The system scans `papers/` **and all its subfolders** recursively. You can organize papers into topic folders:
 
 ```
 papers/
@@ -187,9 +201,9 @@ papers/
     └── attention_is_all_you_need.pdf
 ```
 
-Click **Scan & Ingest Folder** and all new PDFs across all subfolders are detected and queued.
+Click **Scan & Ingest Folder** and all new PDFs across all subfolders are detected, queued, and ingested automatically.
 
-Manifest keys are stored as relative paths (e.g. `cryptography/Cryptography-09-00017.pdf`) to avoid name collisions between subfolders.
+Manifest keys are stored as relative paths (e.g. `cryptography/Cryptography-09-00017.pdf`) to avoid name collisions.
 
 ### 5. Metadata Auto-Resolution
 
@@ -200,7 +214,7 @@ When a PDF has a generic filename (e.g. `21091121.pdf`), the system:
 
 This runs in a background thread and updates the sidebar automatically.
 
-### 6. Citation Analysis
+### 6. Citation Analysis & Classified Reports Registry
 
 Enter any paper's DOI or Semantic Scholar ID and the system:
 1. Fetches the top N citing papers from Semantic Scholar
@@ -210,7 +224,29 @@ Enter any paper's DOI or Semantic Scholar ID and the system:
    - **Contrasting** — challenges or contradicts the paper
    - **Background** — mentions it as context
    - **Methodological** — uses its methods
-4. Exports results as a CSV report
+4. Exports results as a CSV report. Previous reports are stored in the **Reports Registry** in the UI where they can be browsed, downloaded, or deleted.
+
+### 7. Custom Prompt Template Library (In-App Editor)
+
+Manage prompt templates directly from the web browser under the **Prompt Templates** tab:
+- **Create & Save Templates**: Write custom system prompts and user templates using standard placeholders (`{context}`, `{title}`, `{query}`).
+- **Interactive Editor**: Read and edit existing prompts, toggle the **Overwrite** flag, or **Delete** custom templates. Changes reflect instantly in the RAG prompt dropdown.
+
+### 8. Query Scoping & Comparative Analysis
+
+Narrow down chat responses using query constraints:
+- **Focus on paper**: Restrict retrieval context to a single chosen paper in your knowledge base.
+- **Compare with paper**: Load two specific papers to perform side-by-side comparisons using the *Comparative Analysis* template.
+- **Dynamic Template Variables**: Extra inputs appear automatically for templates like the *Hassan-style IS Journal Article* to customize placeholders (Focal phenomenon, stance, target journal, etc.).
+
+### 9. RAG Safety Guardrails & Hallucination Prevention
+
+To guarantee factual adherence and prevent hallucinations:
+- **Bibliography Stripping**: Automatically strips the `References` or `Bibliography` section from PDF files before chunking and indexing. Stripping also applies to citing papers in the citation analysis pipeline.
+- **120-Char Passages**: Enforces a 120-character minimum passage length for citing papers to guarantee sufficient context.
+- **Deterministic Off-Topic Refusals**: Custom off-topic blockers detect irrelevant questions or empty database states, returning clean refusal responses rather than throwing server errors.
+- **Truth Gaps & Low Temp**: Runs Ollama at a very low temperature (`0.05`) with a strict system prompt to enforce factual grounding.
+- **Chat Persistence**: Requests pass the `conversation_history` context to maintain discussion coherence.
 
 ---
 
@@ -516,6 +552,30 @@ To switch to a faster model (for testing):
 nano .env
 # Change: OLLAMA_MODEL=llama3:8b
 sudo systemctl restart research-stack
+```
+
+---
+
+## Command-Line Utilities
+
+### 1. Database Reconciliation (`reconcile_db.py`)
+
+A comprehensive synchronization, cleanup, and database rebuilding tool. It guarantees 100% alignment between the physical PDF files in the `papers/` directory, ChromaDB persistent vectors, and the `output/ingestion_manifest.json` file. It cleans up orphaned chunks, retries failed ingestions, and scans for new PDFs.
+
+```bash
+# Run standard database synchronization and cleanup
+python scripts/reconcile_db.py
+
+# Force reset: completely delete the ChromaDB collection, reset the manifest, and rebuild everything fresh from disk
+python scripts/reconcile_db.py --reset
+```
+
+### 2. Database Diagnostics (`inspect_db.py`)
+
+A utility to output the status of your local vector database, list the names of all stored papers, and test a similarity search query locally.
+
+```bash
+python scripts/inspect_db.py
 ```
 
 ---
