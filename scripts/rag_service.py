@@ -358,18 +358,22 @@ class RAGService:
             "- Answer research questions strictly using the Document Context Blocks or Ingested Paper Library Inventory provided.\n"
             "- Summarize, compare, or explain content that is EXPLICITLY present in the context or library inventory.\n"
             "- List authors, years, titles, DOIs only from the Library Inventory or context.\n"
-            "- If a query asks to list, count, or tabulate papers/articles in the library, use the Ingested Paper Library Inventory to answer exhaustively.\n"
-            "- CRITICAL: When asked to list papers/articles, you MUST output ALL of them in your MAIN RESPONSE. Do NOT put papers in a References section when the user explicitly asked for a list.\n"
-            "- CRITICAL: You MUST list ALL relevant papers and articles. NEVER truncate lists or tables with '... (remaining papers)', '...', or similar placeholders. Output ALL rows exhaustively without omitting any records, even if the list is long.\n"
-            "- If the list is very long, output every single entry. Do not use ellipsis or summary placeholders under any circumstances.\n"
-            "- The References section at the end is ONLY for citations used in your narrative explanation, NOT for listing papers when explicitly asked.\n\n"
+            "- If a query asks to list, count, or tabulate papers/articles in the library, use the Ingested Paper Library Inventory to answer exhaustively.\n\n"
+            "=== LISTING QUERY RULES — ABSOLUTE REQUIREMENTS ===\n"
+            "When the user asks you to LIST, ENUMERATE, or TABULATE papers/articles:\n"
+            "1. You MUST output EVERY SINGLE matching paper in your main numbered response.\n"
+            "2. NEVER stop after 3, 5, or 10 papers. You must continue until ALL matching papers are listed.\n"
+            "3. NEVER use '...' or '(remaining papers)' or any truncation placeholder.\n"
+            "4. NEVER put papers in a References section when the user asked for a list.\n"
+            "5. If there are 80 papers, you must list all 80. If there are 100 papers, you must list all 100.\n"
+            "6. This is a non-negotiable requirement. Do not truncate under any circumstances.\n\n"
             "=== CITATION RULES ===\n"
             "1. ONLY use facts from the Document Context Blocks or the Ingested Paper Library Inventory. Zero exceptions.\n"
             "2. NEVER invent author names, paper titles, years, DOIs or references.\n"
             "3. Use APA7 inline citations: (Author, Year) or (Author et al., Year, p. X).\n"
             "4. NEVER use (Source 1), [Document 2] or any numbered source labels.\n"
             "5. NEVER call papers 'Paper A', 'Study 1' etc. Use (Author, Year) or exact title.\n"
-            "6. End every answer with a References section in full APA7 format.\n"
+            "6. End every answer with a References section in full APA7 format (EXCEPT when the user asked for a list).\n"
             "7. TRUTH GAPS: If the concept asked about is NOT in the context blocks or library inventory, "
             "say: 'The retrieved context does not contain information about [topic].' DO NOT guess.\n"
             "8. If context is insufficient, say so explicitly.\n"
@@ -433,9 +437,20 @@ class RAGService:
                 else:
                     # Keep model narrative, but replace free-form references with deterministic ones.
                     answer = self._strip_model_references(answer)
-                    safe_refs = self._build_safe_references(chunks)
-                    if safe_refs:
-                        answer = f"{answer}\n\n{safe_refs}"
+                    
+                    # Detect if this is a listing/tabulation query - if so, don't add automatic References
+                    # because the LLM should have listed everything in the main response
+                    _listing_kw = (
+                        "list", "table", "tabulate", "extract", "all paper",
+                        "each paper", "for each", "structured", "enumerate",
+                        "articles with", "papers by", "authored by"
+                    )
+                    is_listing_query = any(kw in query.lower() for kw in _listing_kw)
+                    
+                    if not is_listing_query:
+                        safe_refs = self._build_safe_references(chunks)
+                        if safe_refs:
+                            answer = f"{answer}\n\n{safe_refs}"
                 logger.info("Successfully received answer from Ollama.")
                 return {
                     "query": query,
