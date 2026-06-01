@@ -7,10 +7,11 @@ the same chunk formatting, relevance filtering, and two-paper compare logic.
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from typing import Any
 
 from config import settings
-import re
 
 
 # Standard refusal when vector search finds nothing sufficiently similar.
@@ -101,6 +102,21 @@ _PAPER_FOCUS_RE = re.compile(
 
 # Substrings that must never match inside another name word (e.g. hassan in Riskhan).
 _FORBIDDEN_AUTHOR_SUBSTRINGS = frozenset({"hassan", "hasan"})
+
+# Surnames that appear with many different given names — require fuller name in query.
+_DISAMBIGUATE_SURNAMES = frozenset({
+    "khan", "kumar", "singh", "ahmed", "ali", "smith", "lee", "wang", "zhang",
+})
+
+
+def normalize_for_match(text: str) -> str:
+    """Lowercase + Unicode normalize (fi ligatures, accents) for author/title matching."""
+    if not text:
+        return ""
+    s = unicodedata.normalize("NFKD", text)
+    s = s.replace("\ufb01", "fi").replace("\ufb02", "fl")
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return re.sub(r"\s+", " ", s).lower().strip()
 
 # Topic profiles: require domain phrases in paper metadata/abstract, not generic "learning".
 _TOPIC_PROFILES: list[dict[str, Any]] = [
@@ -422,12 +438,43 @@ def build_author_segment_catalog(papers_metadata: dict) -> dict[str, dict[str, A
     catalog: dict[str, dict[str, Any]] = {}
     for title, meta in (papers_metadata or {}).items():
         for segment in _split_author_segments(meta.get("authors") or ""):
-            key = segment.lower()
+            key = normalize_for_match(segment)
+            if not key:
+                continue
             if key not in catalog:
                 catalog[key] = {"display": segment, "titles": []}
             if title not in catalog[key]["titles"]:
                 catalog[key]["titles"].append(title)
     return catalog
+
+
+def _papers_with_surname(surname: str, papers_metadata: dict) -> list[str]:
+    """All papers where any author segment ends with this surname (any spelling variant)."""
+    sn = normalize_for_match(surname)
+    if len(sn) < 3:
+        return []
+    matched: set[str] = set()
+    for title, meta in papers_metadata.items():
+        for segment in _split_author_segments(meta.get("authors") or ""):
+            words = _author_part_words(normalize_for_match(segment))
+            if words and words[-1] == sn:
+                matched.add(title)
+    return sorted(matched)
+
+
+def _given_name_keys_for_surname(surname: str, catalog: dict) -> set[str]:
+    """Distinct given-name identities for a surname (to detect Khan vs Khan)."""
+    sn = normalize_for_match(surname)
+    keys: set[str] = set()
+    for key, entry in catalog.items():
+        words = _author_part_words(key)
+        if not words or words[-1] != sn:
+            continue
+        if len(words) == 1:
+            keys.add(sn)
+        else:
+            keys.add(" ".join(words[:-1]))
+    return keys
 
 
 def _token_is_ambiguous_surname(token: str, indexes: dict[str, Any], total_papers: int) -> bool:
@@ -457,68 +504,64 @@ def resolve_author_from_library(
 
     catalog = build_author_segment_catalog(papers_metadata)
     indexes = build_catalog_indexes(papers_metadata)
-    total = len(papers_metadata)
-    q_lower = (query or "").lower()
+    q_norm = normalize_for_match(query)
 
     explicit = extract_author_search_phrase(query)
     if explicit:
-        titles = resolve_papers_for_author_phrase(
-            explicit, papers_metadata, indexes=indexes
-        )
+        titles = resolve_papers_for_author_phrase(explicit, papers_metadata, indexes=indexes)
         if titles:
             return explicit, titles
-        ek = explicit.lower().strip()
+        ek = normalize_for_match(explicit)
         if ek in catalog:
             return catalog[ek]["display"], list(catalog[ek]["titles"])
 
     if not query_has_author_intent(query) and not explicit:
         return None, []
 
-    # Longest author segment whose full name appears in the query (metadata-driven).
-    candidates: list[tuple[int, str, list[str]]] = []
+    # Longest normalized author segment contained in the query (Unicode-safe).
+    best_key: str | None = None
+    best_len = 0
+    matched_titles: set[str] = set()
+
     for key, entry in catalog.items():
-        words = _author_part_words(key)
-        if not words:
+        if len(key) < 4:
             continue
-        if key in q_lower:
-            candidates.append((len(words) + 100, entry["display"], entry["titles"]))
+        if key in q_norm and len(key) > best_len:
+            best_key = key
+            best_len = len(key)
+            matched_titles.update(entry["titles"])
+        else:
+            words = _author_part_words(key)
+            if len(words) >= 2 and all(
+                re.search(rf"\b{re.escape(w)}\b", q_norm) for w in words
+            ):
+                if len(key) > best_len:
+                    best_key = key
+                    best_len = len(key)
+                    matched_titles.update(entry["titles"])
+
+    if matched_titles and best_key:
+        return catalog[best_key]["display"], sorted(matched_titles)
+
+    # Surname-only: union all papers for that surname (Jhanjhi, Aldughayfiq, etc.).
+    for token in sorted(_significant_query_tokens(query), key=len, reverse=True):
+        if len(token) < 4 or token in _FORBIDDEN_AUTHOR_SUBSTRINGS:
             continue
-        if len(words) >= 2 and all(_query_mentions_word(q_lower, w) for w in words):
-            candidates.append((len(words) + 50, entry["display"], entry["titles"]))
+        if not re.search(rf"\b{re.escape(token)}\b", q_norm):
             continue
-        if len(words) == 1 and _query_mentions_word(q_lower, words[0]):
-            if words[0] in _FORBIDDEN_AUTHOR_SUBSTRINGS:
-                continue
-            candidates.append((1, entry["display"], entry["titles"]))
-
-    if not candidates:
-        return None, []
-
-    candidates.sort(key=lambda x: (-x[0], -len(x[1])))
-    best_score, best_display, best_titles = candidates[0]
-
-    # Single-surname queries: refuse when multiple different authors share that surname in the KB.
-    best_words = _author_part_words(best_display.lower())
-    if len(best_words) == 1 or best_score < 50:
-        surname = best_words[-1]
-        matching = [
-            c for c in candidates
-            if _author_part_words(c[1].lower())[-1] == surname
-        ]
-        if len(matching) > 1 and _token_is_ambiguous_surname(surname, indexes, total):
-            full_in_query = [c for c in matching if c[1].lower() in q_lower]
-            if len(full_in_query) == 1:
-                return full_in_query[0][1], list(full_in_query[0][2])
+        papers = _papers_with_surname(token, papers_metadata)
+        if not papers:
+            continue
+        given_keys = _given_name_keys_for_surname(token, catalog)
+        if len(given_keys) > 1 and token in _DISAMBIGUATE_SURNAMES:
+            # e.g. "Khan" alone with many different Khans — need a fuller name.
+            for key, entry in catalog.items():
+                if key in q_norm:
+                    return entry["display"], list(entry["titles"])
             return None, []
+        return token.title(), papers
 
-    titles: set[str] = set()
-    for score, _disp, tlist in candidates:
-        if score < best_score - 5:
-            break
-        if score >= best_score - 5:
-            titles.update(tlist)
-
-    return best_display, sorted(titles)
+    return None, []
 
 
 def build_catalog_indexes(papers_metadata: dict) -> dict[str, Any]:
@@ -558,7 +601,7 @@ def build_catalog_indexes(papers_metadata: dict) -> dict[str, Any]:
 
 
 def _author_part_words(part: str) -> list[str]:
-    return re.findall(r"[a-z]+", (part or "").lower())
+    return re.findall(r"[a-z]+", normalize_for_match(part))
 
 
 def author_field_contains_token(authors: str, token: str) -> bool:

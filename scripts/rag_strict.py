@@ -316,25 +316,7 @@ def verify_answer_against_scope(
         if tl in answer_lower:
             return False, f"out_of_scope_title:{title[:60]}"
 
-    # Author-token checks only when the query locked to a specific author/paper corpus.
-    if not locked:
-        return True, ""
-
-    all_author_tokens: dict[str, set[str]] = {}
-    for title, meta in papers_metadata.items():
-        if title in allowed_titles:
-            continue
-        for token in _author_tokens_from_string(meta.get("authors") or ""):
-            all_author_tokens.setdefault(token, set()).add(title)
-
-    for token, titles in all_author_tokens.items():
-        if len(token) < 5 or token in _TITLE_WORD_STOP:
-            continue
-        if token in allowed_author_tokens:
-            continue
-        if token in answer_lower:
-            return False, f"out_of_scope_author:{token}"
-
+    # Co-authors on scoped papers are allowed; do not run surname-token checks on synthesis answers.
     return True, ""
 
 
@@ -384,7 +366,9 @@ def answer_catalog_metadata_query(query: str, papers_metadata: dict) -> str | No
     author_phrase = extract_papers_by_author_phrase(query)
     if author_phrase or re.search(r"\bpapers?\s+by\s+|\barticles?\s+by\s+", q):
         phrase = author_phrase or re.split(r"\bby\s+", query, maxsplit=1, flags=re.I)[-1].strip()
-        scoped = resolve_matching_paper_titles(f"papers by {phrase}", papers_metadata)
+        _ph, scoped = resolve_author_from_library(f"papers by {phrase}", papers_metadata)
+        if not scoped:
+            scoped = resolve_matching_paper_titles(f"papers by {phrase}", papers_metadata)
         if not scoped:
             return NOT_IN_LIBRARY_REFUSAL
         inv = {t: papers_metadata[t] for t in scoped if t in papers_metadata}
