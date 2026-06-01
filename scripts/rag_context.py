@@ -255,13 +255,13 @@ def retrieve_relevant_chunks(
     filter_title: str | None = None,
 ) -> list[dict[str, Any]]:
     """
-    Retrieve context chunks for RAG with author/paper-aware fallbacks.
+    Retrieve context chunks for RAG with author/paper-aware isolation.
 
     Pipeline:
-      1. Vector search (semantic similarity).
-      2. If query names an author/paper in the library, pull chunks for that paper directly.
-      3. Apply distance threshold (relaxed when a library paper was explicitly matched).
-      4. Optional lexical token gate — skipped when that would drop all matched-paper chunks.
+      1. Detect if the query names a specific author/paper already in the library.
+      2. Author-scoped path: fetch chunks EXCLUSIVELY from those papers — no semantic
+         mixing that could contaminate results with other authors' papers.
+      3. Unscoped path: standard semantic search → distance filter → token filter.
     """
     stats = vector_store.get_collection_stats()
     papers_metadata = stats.get("papers_metadata", {})
@@ -270,38 +270,43 @@ def retrieve_relevant_chunks(
     if filter_title:
         inventory_titles = [filter_title]
 
+    # ── Author / Paper-scoped retrieval ───────────────────────────────────────
+    # When the query names a specific author or paper that is already in the library,
+    # pull chunks EXCLUSIVELY from those matched papers.  This prevents topically
+    # similar papers written by *different* authors from polluting the context and
+    # causing the LLM to attribute content to the wrong author.
+    # Note: no [:3] cap — we fetch ALL matched papers so every one of the author's
+    # works is represented in the context for exhaustive listing/tabulation queries.
+    if inventory_titles:
+        author_chunks: list[dict[str, Any]] = []
+        per_paper = max(limit, 10)
+        for title in inventory_titles:
+            paper_chunks = vector_store.get_chunks_for_paper(title, max_chunks=per_paper)
+            author_chunks = _dedupe_chunks(author_chunks + paper_chunks)
+        if author_chunks:
+            # Return all fetched chunks; rag_service will pass an enlarged limit for
+            # listing/tabulation queries so no paper is silently dropped.
+            return author_chunks
+
+    # ── Standard semantic search path ─────────────────────────────────────────
     # Request extra candidates so post-filters still leave enough context.
     search_limit = max(limit * 3, limit + 8)
     raw = vector_store.query_similar_chunks(
         query, limit=search_limit, filter_title=filter_title
     )
 
-    # Direct fetch for papers the user named (e.g. "Khamsani") even if embeddings miss.
-    for title in inventory_titles[:3]:
-        paper_chunks = vector_store.get_chunks_for_paper(title, max_chunks=max(limit * 2, 12))
-        raw = _dedupe_chunks(raw + paper_chunks)
-
-    relaxed_distance = settings.RAG_MAX_DISTANCE
-    if inventory_titles:
-        relaxed_distance = min(1.25, settings.RAG_MAX_DISTANCE + 0.35)
-
-    chunks = filter_chunks_by_relevance(raw, max_distance=relaxed_distance)
+    chunks = filter_chunks_by_relevance(raw, max_distance=settings.RAG_MAX_DISTANCE)
 
     if settings.RAG_REQUIRE_QUERY_TERM_MATCH:
         chunks = _filter_chunks_by_query_term_presence(
             chunks,
             query,
-            skip_if_empty=bool(inventory_titles),
+            skip_if_empty=False,
         )
 
-    # Last resort: user named a paper in inventory but filters removed everything.
-    if not chunks and inventory_titles:
-        fallback: list[dict[str, Any]] = []
-        for title in inventory_titles[:2]:
-            fallback.extend(
-                vector_store.get_chunks_for_paper(title, max_chunks=max(limit, 10))
-            )
-        chunks = _dedupe_chunks(fallback)[:limit]
+    # Last resort: semantic search returned nothing — surface raw candidates.
+    if not chunks:
+        chunks = raw[:limit]
 
     return chunks[:limit]
 

@@ -263,9 +263,33 @@ class RAGService:
         stats = self.vector_store.get_collection_stats()
         papers_metadata = stats.get("papers_metadata", {})
 
-        # ── Step 1: Retrieve chunks and drop low-similarity (off-topic) matches ──
+        # ── Detect author-scoped and listing/tabulation queries ─────────────
+        # When the query names a specific author, we:
+        #   a) Filter the library inventory to only that author's papers so the LLM
+        #      cannot accidentally reference other authors' works.
+        #   b) Scale up the retrieval limit so every paper gets at least one chunk.
+        matched_titles = resolve_matching_paper_titles(query, papers_metadata)
+        _listing_kw = (
+            "list", "table", "tabulate", "extract", "all paper",
+            "each paper", "for each", "structured", "enumerate",
+        )
+        is_listing_query = any(kw in query.lower() for kw in _listing_kw)
+
+        # Build an author-filtered inventory when an author is identified
+        inventory_metadata = papers_metadata
+        if matched_titles and not filter_title:
+            filtered = {t: papers_metadata[t] for t in matched_titles if t in papers_metadata}
+            if filtered:
+                inventory_metadata = filtered
+
+        # For listing queries over many papers, give each paper at least 3 chunks
+        effective_limit = limit
+        if is_listing_query and matched_titles:
+            effective_limit = max(limit, len(matched_titles) * 3, 24)
+
+        # ── Step 1: Retrieve chunks ───────────────────────────────────────────
         chunks = retrieve_relevant_chunks(
-            self.vector_store, query, limit=limit, filter_title=filter_title
+            self.vector_store, query, limit=effective_limit, filter_title=filter_title
         )
 
         if not papers_metadata:
@@ -301,7 +325,7 @@ class RAGService:
                 "error": "No relevant chunks above similarity threshold.",
             }
 
-        library_inventory_str = build_library_inventory(papers_metadata)
+        library_inventory_str = build_library_inventory(inventory_metadata)
         context_str = chunks_to_context_string(chunks)
 
         # ── Step 3: Build structured prompts ──────────────────────────────────
