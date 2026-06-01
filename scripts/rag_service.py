@@ -272,6 +272,7 @@ class RAGService:
         _listing_kw = (
             "list", "table", "tabulate", "extract", "all paper",
             "each paper", "for each", "structured", "enumerate",
+            "articles with", "papers by", "authored by"
         )
         is_listing_query = any(kw in query.lower() for kw in _listing_kw)
 
@@ -282,6 +283,35 @@ class RAGService:
             if filtered:
                 inventory_metadata = filtered
 
+        # ── CODE-BASED LISTING FOR LISTING QUERIES ───────────────────────
+        # For listing queries, bypass the LLM entirely and generate the list
+        # directly from the library inventory to ensure ALL papers are listed.
+        if is_listing_query and inventory_metadata:
+            # Generate a direct list from the inventory
+            listing_parts = []
+            for idx, (title, meta) in enumerate(inventory_metadata.items(), 1):
+                authors = meta.get("authors", "Unknown Authors")
+                year = meta.get("year", "N/A")
+                doi = meta.get("doi", "N/A")
+                venue = meta.get("venue", "")
+                
+                entry = f"{idx}. {authors} ({year}). {title}"
+                if venue:
+                    entry += f". {venue}"
+                if doi and doi != "N/A":
+                    entry += f". doi: {doi}"
+                listing_parts.append(entry)
+            
+            if listing_parts:
+                answer = "\n".join(listing_parts)
+                return {
+                    "query": query,
+                    "answer": answer,
+                    "sources": [],
+                    "success": True
+                }
+
+        # For non-listing queries, proceed with normal RAG pipeline
         # For listing queries over many papers, give each paper at least 3 chunks
         effective_limit = limit
         if is_listing_query and matched_titles:
