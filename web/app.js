@@ -1014,7 +1014,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 const candidate = (nonInitial[nonInitial.length - 1] || tokenised[tokenised.length - 1] || "").replace(/\./g, "");
                 return candidate;
             }).filter(Boolean);
-            return names.slice(0, 3);
+            return names; // Return ALL names, not truncated
         };
 
         const hasEtAl = /et al\.?/i.test(authorsStr);
@@ -1029,7 +1029,8 @@ document.addEventListener("DOMContentLoaded", () => {
         } else if (lastNames.length === 2) {
             namePart = `${lastNames[0]} & ${lastNames[1]}`;
         } else {
-            namePart = `${lastNames[0]} et al.`;
+            // Show all authors with commas, not truncated to "et al"
+            namePart = lastNames.join(", ");
         }
 
         if (namePart && yearPart) return `${namePart}, ${yearPart}`;

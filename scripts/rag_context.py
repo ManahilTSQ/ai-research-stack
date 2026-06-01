@@ -172,6 +172,8 @@ def resolve_matching_paper_titles(query: str, papers_metadata: dict) -> list[str
     Map a natural-language question to paper title(s) in the local library inventory.
     Matches author surnames and distinctive title words against ChromaDB metadata,
     falling back to matching against filenames and metadata inside the ingestion manifest.
+    
+    Prioritizes author field matches over title matches for author-scoped queries.
     """
     if not papers_metadata:
         return []
@@ -180,7 +182,18 @@ def resolve_matching_paper_titles(query: str, papers_metadata: dict) -> list[str
     if not tokens:
         return []
 
+    # Detect if this is an author-scoped query (e.g., "papers by X", "X's articles", "articles with X as author")
+    query_lower = query.lower()
+    author_scoped_patterns = [
+        r"papers?\s+by\s+", r"articles?\s+by\s+", r"works?\s+by\s+",
+        r"'s\s+(papers?|articles?|works?)", r"articles?\s+with\s+.+?\s+as\s+(author|co-author)",
+        r"list\s+(articles?|papers?)\s+with\s+", r"papers?\s+authored?\s+by\s+",
+        r".+?\s+authored?\s+(papers?|articles?)", r"as\s+(author|co-author)\s+or\s+co-author"
+    ]
+    is_author_scoped = any(re.search(pattern, query_lower) for pattern in author_scoped_patterns)
+
     matched: list[str] = []
+    author_matches: list[str] = []  # Track matches specifically from author field
 
     # 1. Try to match using the Ingestion Manifest (very robust for physical uploads / filenames)
     try:
@@ -197,16 +210,24 @@ def resolve_matching_paper_titles(query: str, papers_metadata: dict) -> list[str
                 for token in tokens:
                     if len(token) < 4:
                         continue
-                    # Match query token against filename, manifest title, or manifest authors
-                    if (token in filename.lower() or 
-                            token in m_title.lower() or 
-                            token in m_authors.lower()):
+                    # Prioritize author field matches
+                    if token in m_authors.lower():
                         # Resolve the corresponding title in papers_metadata
                         for db_title in papers_metadata.keys():
                             if (db_title.lower().strip() == m_title.lower().strip() or
                                     db_title.lower().strip() in m_title.lower().strip() or
                                     m_title.lower().strip() in db_title.lower().strip()):
-                                matched.append(db_title)
+                                if db_title not in author_matches:
+                                    author_matches.append(db_title)
+                                break
+                    # Also match against filename and title as fallback
+                    elif token in filename.lower() or token in m_title.lower():
+                        for db_title in papers_metadata.keys():
+                            if (db_title.lower().strip() == m_title.lower().strip() or
+                                    db_title.lower().strip() in m_title.lower().strip() or
+                                    m_title.lower().strip() in db_title.lower().strip()):
+                                if db_title not in matched:
+                                    matched.append(db_title)
                                 break
     except Exception:
         # Prevent any manifest reading issue from crashing RAG
@@ -219,10 +240,20 @@ def resolve_matching_paper_titles(query: str, papers_metadata: dict) -> list[str
         for token in tokens:
             if len(token) < 4:
                 continue
-            if token in authors or token in title_l:
+            # Prioritize author field matches
+            if token in authors:
+                if title not in author_matches:
+                    author_matches.append(title)
+                break
+            # Title matches as fallback
+            elif token in title_l:
                 if title not in matched:
                     matched.append(title)
                 break
+
+    # If this is an author-scoped query, only return author field matches
+    if is_author_scoped and author_matches:
+        matched = author_matches
 
     # Deduplicate while preserving order
     seen = set()
