@@ -370,8 +370,6 @@ def format_authors(authors: list) -> str:
     if not authors:
         return "Unknown Authors"
     names = [a.get("name", "") for a in authors if a.get("name")]
-    if len(names) > 3:
-        return ", ".join(names[:3]) + " et al."
     return ", ".join(names)
 
 

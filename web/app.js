@@ -94,6 +94,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Load More button
     document.getElementById("btn-load-more").addEventListener("click", handleLoadMore);
+    document.getElementById("btn-import-all")?.addEventListener("click", handleImportAll);
+    document.getElementById("sidebar-search-input")?.addEventListener("input", renderLocalManifestFiles);
 
     // Real-time filter and sort bindings
     ["filter-author", "filter-venue", "filter-year-min", "filter-year-max", "sort-results"].forEach(id => {
@@ -504,9 +506,6 @@ document.addEventListener("DOMContentLoaded", () => {
     function formatAuthors(authors) {
         if (!authors || authors.length === 0) return "Unknown Authors";
         const names = authors.map(a => a.name).filter(Boolean);
-        if (names.length > 3) {
-            return names.slice(0, 3).join(", ") + " et al.";
-        }
         return names.join(", ");
     }
 
@@ -577,6 +576,114 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
+    /**
+     * Ingest all search results.
+     * Iterates over visible search results and queues them for backend processing.
+     */
+    async function handleImportAll() {
+        const btn = document.getElementById("btn-import-all");
+        if (!btn || btn.disabled) return;
+        
+        // Find visible papers that are NOT already ingested
+        const normTitle = (s) => (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        const uningested = allFetchedPapers.filter(paper => {
+            const paperNormTitle = normTitle(paper.title);
+            const alreadyIngested = ingestedPapers.some(ip => {
+                if (paper.paperId && ip.paper_id && ip.paper_id === paper.paperId) return true;
+                if (paper.doi && paper.doi !== "N/A" && ip.doi && ip.doi !== "N/A") {
+                    return ip.doi.toLowerCase() === paper.doi.toLowerCase();
+                }
+                return normTitle(ip.title) === paperNormTitle;
+            });
+            const canIngest = paper.has_pdf || !!(paper.abstract && paper.abstract.trim());
+            return !alreadyIngested && canIngest;
+        });
+
+        if (uningested.length === 0) {
+            alert("All search results are already in the Knowledge Base, or have no PDF/Abstract available.");
+            return;
+        }
+
+        if (!confirm(`Are you sure you want to download and ingest all ${uningested.length} new papers?`)) {
+            return;
+        }
+
+        btn.disabled = true;
+        btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i> Queuing ${uningested.length}...`;
+
+        let successCount = 0;
+        let failCount = 0;
+
+        for (const paper of uningested) {
+            const cardBtn = document.getElementById(`btn-ingest-${paper.paperId}`);
+            if (cardBtn) {
+                cardBtn.disabled = true;
+                cardBtn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i> Queuing...`;
+            }
+
+            try {
+                const resp = await fetch(`${API_BASE}/api/download`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        title: paper.title,
+                        authors: paper.authors,
+                        venue: paper.venue,
+                        year: paper.year !== "N/A" ? parseInt(paper.year) : null,
+                        externalIds: {
+                            DOI: paper.doi !== "N/A" ? paper.doi : null,
+                            ArXiv: paper.arxiv !== "N/A" ? paper.arxiv : null
+                        },
+                        abstract: paper.abstract,
+                        citationCount: paper.citationCount,
+                        paperId: paper.paperId || null
+                    })
+                });
+                
+                const result = await resp.json();
+                
+                if (result.success) {
+                    if (paper.paperId) {
+                        ingestedPapers.push({
+                            title: paper.title,
+                            doi: paper.doi,
+                            paper_id: paper.paperId
+                        });
+                    }
+                    if (cardBtn) {
+                        cardBtn.className = "btn btn-secondary";
+                        if (result.mode === "pdf") {
+                            cardBtn.innerHTML = `<i class="fa-solid fa-circle-check text-emerald"></i> PDF Ingested ✓`;
+                        } else if (result.mode === "abstract") {
+                            cardBtn.innerHTML = `<i class="fa-solid fa-file-lines"></i> Abstract Only ⚠`;
+                        } else {
+                            cardBtn.innerHTML = `<i class="fa-solid fa-circle-check text-emerald"></i> Ingested ✓`;
+                        }
+                    }
+                    successCount++;
+                } else {
+                    throw new Error("Failed");
+                }
+            } catch (err) {
+                if (cardBtn) {
+                    cardBtn.disabled = false;
+                    cardBtn.innerHTML = `<i class="fa-solid fa-circle-exclamation text-crimson"></i> Failed`;
+                }
+                failCount++;
+            }
+            // 200ms spacing to maintain queue stability
+            await new Promise(r => setTimeout(r, 200));
+        }
+
+        btn.innerHTML = `<i class="fa-solid fa-circle-check text-emerald"></i> Queued ${successCount} paper(s)`;
+        await new Promise(r => setTimeout(r, 2000));
+        btn.disabled = false;
+        btn.innerHTML = `<i class="fa-solid fa-cloud-arrow-down"></i> Ingest All Results`;
+
+        checkHealth();
+        fetchLocalPDFs();
+    }
+
 
     /* ==========================================================================
        TAB 2: RAG KNOWLEDGE BASE
@@ -587,7 +694,6 @@ document.addEventListener("DOMContentLoaded", () => {
      * Shows ingestion status badges (success / pending / failed) for each file.
      */
     async function fetchLocalPDFs() {
-        const listDiv = document.getElementById("local-files-list");
         try {
             const resp = await fetch(`${API_BASE}/api/pdfs`);
             const files = await resp.json();
@@ -605,93 +711,119 @@ document.addEventListener("DOMContentLoaded", () => {
             // Always refresh the paper filter dropdown whenever the manifest is loaded
             populatePaperFilter(files);
 
-            if (files.length === 0) {
-                listDiv.innerHTML = `
-                    <div class="list-empty">
-                        <i class="fa-solid fa-box-open" style="font-size:24px; margin-bottom:8px; opacity:0.5;"></i>
-                        <p>No PDFs saved in papers/ directory.</p>
-                    </div>
-                `;
-                return;
-            }
-
-            listDiv.innerHTML = "";
-            files.forEach(file => {
-                const item = document.createElement("div");
-                item.className = "file-item";
-
-                // Choose status badge based on manifest status field
-                let statusBadge = "";
-                if (file.status === "success") {
-                    statusBadge = `<span class="badge badge-success" style="font-size: 9px;"><i class="fa-solid fa-circle-check"></i> Ingested</span>`;
-                } else if (file.status === "pending") {
-                    statusBadge = `<span class="badge badge-pending" style="font-size: 9px;"><i class="fa-solid fa-spinner fa-spin"></i> Pending</span>`;
-                } else {
-                    statusBadge = `<span class="badge badge-failed" style="font-size: 9px;"><i class="fa-solid fa-triangle-exclamation"></i> Error</span>`;
-                }
-
-                // Prefer server-computed Author, Year label (never a long title).
-                const sidebarLabel = file.sidebar_label || formatSidebarLabel(file.authors, file.year, file.title, file.filename);
-
-                item.innerHTML = `
-                    <div class="file-item-main" title="${file.title}">
-                        <div class="file-name-row">
-                            ${file.status === "success" 
-                                ? `<a class="sidebar-paper-link" href="${API_BASE}/api/papers/${encodeURIComponent(file.filename)}" target="_blank" title="Open PDF in new tab">${sidebarLabel}</a>`
-                                : `<span class="sidebar-paper-inactive" style="opacity: 0.6;">${sidebarLabel}</span>`
-                            }
-                        </div>
-                        <div class="file-meta-row">
-                            <span>${formatBytes(file.size_bytes)}</span>
-                            ${statusBadge}
-                        </div>
-                    </div>
-                    <div class="file-item-actions" style="display: flex; gap: 4px; align-items: center; flex-shrink: 0;">
-                        <button class="btn-view-abstract btn-icon" title="View Ingested Abstract" style="padding: 6px; border-radius: 6px; color: var(--accent-indigo) !important; opacity: 0.7; transition: opacity 0.2s, transform 0.2s;">
-                            <i class="fa-solid fa-file-lines"></i>
-                        </button>
-                        <button class="btn-delete-file btn-icon" data-filename="${file.filename}" title="Delete Paper">
-                            <i class="fa-solid fa-trash-can text-crimson"></i>
-                        </button>
-                    </div>
-                `;
-
-                // Wire up view abstract button
-                const viewBtn = item.querySelector(".btn-view-abstract");
-                if (viewBtn) {
-                    viewBtn.addEventListener("click", (e) => {
-                        e.stopPropagation();
-                        showAbstractModal(file);
-                    });
-                }
-
-                listDiv.appendChild(item);
-            });
-
-            // Wire up deletion for each button — no confirmation dialog, no alert pop-ups
-            listDiv.querySelectorAll(".btn-delete-file").forEach(btn => {
-                btn.addEventListener("click", async (e) => {
-                    e.stopPropagation();
-                    const filename = btn.getAttribute("data-filename");
-                    try {
-                        btn.disabled = true;
-                        btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i>`;
-                        // Await the delete to fully complete before refreshing stats
-                        await fetch(`${API_BASE}/api/papers/${filename}`, { method: "DELETE" });
-                    } catch (delErr) {
-                        // Continue even on network error
-                    } finally {
-                        // Small delay to let ChromaDB commit the deletion before stat refresh
-                        await new Promise(r => setTimeout(r, 600));
-                        await checkHealth();
-                        await fetchLocalPDFs();
-                    }
-                });
-            });
+            renderLocalManifestFiles();
 
         } catch (err) {
-            listDiv.innerHTML = `<div class="list-empty text-crimson">Failed to load manifest.</div>`;
+            const listDiv = document.getElementById("local-files-list");
+            if (listDiv) {
+                listDiv.innerHTML = `<div class="list-empty text-crimson">Failed to load manifest.</div>`;
+            }
         }
+    }
+
+    /**
+     * Render the manifest files list in the sidebar, applying search query filtering.
+     */
+    function renderLocalManifestFiles() {
+        const listDiv = document.getElementById("local-files-list");
+        if (!listDiv) return;
+
+        const files = localManifestFiles || [];
+        const filterText = (document.getElementById("sidebar-search-input")?.value || "").trim().toLowerCase();
+
+        const filtered = files.filter(file => {
+            if (!filterText) return true;
+            const sidebarLabel = (file.sidebar_label || "").toLowerCase();
+            const title = (file.title || "").toLowerCase();
+            const authors = (file.authors || "").toLowerCase();
+            const filename = (file.filename || "").toLowerCase();
+            const year = String(file.year || "").toLowerCase();
+            return sidebarLabel.includes(filterText) || title.includes(filterText) || authors.includes(filterText) || filename.includes(filterText) || year.includes(filterText);
+        });
+
+        if (filtered.length === 0) {
+            listDiv.innerHTML = `
+                <div class="list-empty">
+                    <i class="fa-solid fa-box-open" style="font-size:24px; margin-bottom:8px; opacity:0.5;"></i>
+                    <p>${files.length === 0 ? "No PDFs saved in papers/ directory." : "No matching papers found."}</p>
+                </div>
+            `;
+            return;
+        }
+
+        listDiv.innerHTML = "";
+        filtered.forEach(file => {
+            const item = document.createElement("div");
+            item.className = "file-item";
+
+            // Choose status badge based on manifest status field
+            let statusBadge = "";
+            if (file.status === "success") {
+                statusBadge = `<span class="badge badge-success" style="font-size: 9px;"><i class="fa-solid fa-circle-check"></i> Ingested</span>`;
+            } else if (file.status === "pending") {
+                statusBadge = `<span class="badge badge-pending" style="font-size: 9px;"><i class="fa-solid fa-spinner fa-spin"></i> Pending</span>`;
+            } else {
+                statusBadge = `<span class="badge badge-failed" style="font-size: 9px;"><i class="fa-solid fa-triangle-exclamation"></i> Error</span>`;
+            }
+
+            // Prefer server-computed Author, Year label (never a long title).
+            const sidebarLabel = file.sidebar_label || formatSidebarLabel(file.authors, file.year, file.title, file.filename);
+
+            item.innerHTML = `
+                <div class="file-item-main" title="${file.title}">
+                    <div class="file-name-row">
+                        ${file.status === "success" 
+                            ? `<a class="sidebar-paper-link" href="${API_BASE}/api/papers/${encodeURIComponent(file.filename)}" target="_blank" title="Open PDF in new tab">${sidebarLabel}</a>`
+                            : `<span class="sidebar-paper-inactive" style="opacity: 0.6;">${sidebarLabel}</span>`
+                        }
+                    </div>
+                    <div class="file-meta-row">
+                        <span>${formatBytes(file.size_bytes)}</span>
+                        ${statusBadge}
+                    </div>
+                </div>
+                <div class="file-item-actions" style="display: flex; gap: 4px; align-items: center; flex-shrink: 0;">
+                    <button class="btn-view-abstract btn-icon" title="View Ingested Abstract" style="padding: 6px; border-radius: 6px; color: var(--accent-indigo) !important; opacity: 0.7; transition: opacity 0.2s, transform 0.2s;">
+                        <i class="fa-solid fa-file-lines"></i>
+                    </button>
+                    <button class="btn-delete-file btn-icon" data-filename="${file.filename}" title="Delete Paper">
+                        <i class="fa-solid fa-trash-can text-crimson"></i>
+                    </button>
+                </div>
+            `;
+
+            // Wire up view abstract button
+            const viewBtn = item.querySelector(".btn-view-abstract");
+            if (viewBtn) {
+                viewBtn.addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    showAbstractModal(file);
+                });
+            }
+
+            listDiv.appendChild(item);
+        });
+
+        // Wire up deletion for each button — no confirmation dialog, no alert pop-ups
+        listDiv.querySelectorAll(".btn-delete-file").forEach(btn => {
+            btn.addEventListener("click", async (e) => {
+                e.stopPropagation();
+                const filename = btn.getAttribute("data-filename");
+                try {
+                    btn.disabled = true;
+                    btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i>`;
+                    // Await the delete to fully complete before refreshing stats
+                    await fetch(`${API_BASE}/api/papers/${filename}`, { method: "DELETE" });
+                } catch (delErr) {
+                    // Continue even on network error
+                } finally {
+                    // Small delay to let ChromaDB commit the deletion before stat refresh
+                    await new Promise(r => setTimeout(r, 600));
+                    await checkHealth();
+                    await fetchLocalPDFs();
+                }
+            });
+        });
     }
 
     /**

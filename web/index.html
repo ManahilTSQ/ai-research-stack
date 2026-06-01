@@ -127,6 +127,11 @@
                             <option value="year-asc">Year (Oldest First)</option>
                         </select>
                     </div>
+                    <div class="import-all-group" style="display: flex; gap: 8px; align-items: center; margin-left: auto;">
+                        <button id="btn-import-all" class="btn btn-primary glow-button" style="padding: 6px 14px; font-size: 12px;" type="button">
+                            <i class="fa-solid fa-cloud-arrow-down"></i> Ingest All Results
+                        </button>
+                    </div>
                 </div>
 
                 <!-- Search Results Area -->
@@ -198,6 +203,9 @@
                         <!-- Ingested Files List -->
                         <div class="files-list-container">
                             <h4>Local Paper Manifest</h4>
+                            <div class="sidebar-search-container" style="margin-bottom: 10px;">
+                                <input type="text" id="sidebar-search-input" placeholder="Search saved papers..." autocomplete="off" style="width: 100%; background: rgba(0,0,0,0.25); border: 1px solid var(--border-glass); border-radius: 6px; padding: 6px 12px; color: #fff; font-size: 12px;">
+                            </div>
                             <div id="local-files-list" class="files-list">
                                 <div class="list-empty">Loading file manifest...</div>
                             </div>
