@@ -84,10 +84,22 @@ _AUTHOR_PHRASE_PATTERNS = [
 
 _AUTHOR_INTENT_RE = re.compile(
     r"\b(?:contributions?|thoughts?|views?|opinions?|research(?:er)?|"
-    r"authored?|wrote|written|findings?|summarize|summary|according to|"
+    r"authored?|wrote|written|findings?|according to|"
     r"main work|what does|what did|what are|who is|tell me about)\b",
     re.I,
 )
+
+# Tokens too common for "what do my papers say about X" title matching.
+_GENERIC_TOPIC_TOKENS = frozenset({
+    "about", "papers", "paper", "research", "study", "studies", "using", "based",
+    "approach", "approaches", "method", "methods", "model", "models", "system",
+    "systems", "analysis", "review", "reviews", "survey", "surveys", "detection",
+    "classification", "learning", "deep", "machine", "framework", "application",
+    "applications", "novel", "enhanced", "hybrid", "secure", "security",
+    "internet", "things", "smart", "cities", "city", "network", "networks",
+})
+
+MAX_SCOPED_CONTEXT_CHUNKS = 48
 
 _PRONOUN_AUTHOR_RE = re.compile(
     r"\b(?:his|her|their)\s+(?:main\s+)?(?:contributions?|thoughts?|views?|work|research|papers?)\b",
@@ -135,6 +147,10 @@ _TOPIC_PROFILES: list[dict[str, Any]] = [
             r"melanoma",
             r"breast\s+cancer\s+imag",
             r"colon\s+cancer\s+(?:tissue|image)",
+            r"colon\s+cancer",
+            r"pressure\s+ulcer",
+            r"retinoblastoma",
+            r"phishing\s+detect",
         ],
         "paper_markers": [
             "medical imaging", "medical image", "radiology", "histopathology",
@@ -276,6 +292,58 @@ def _significant_query_tokens(query: str) -> list[str]:
     if not tokens:
         tokens = [t for t in raw if len(t) >= 3 and t not in stop]
     return tokens
+
+
+def _topic_specific_tokens(query: str) -> list[str]:
+    """Distinctive topic tokens (excludes generic words like 'detection', 'learning')."""
+    return [t for t in _significant_query_tokens(query) if t not in _GENERIC_TOPIC_TOKENS]
+
+
+def _refine_topic_papers_by_query(
+    query: str,
+    paper_titles: list[str],
+    papers_metadata: dict,
+) -> list[str]:
+    """Narrow broad profile matches using distinctive words from the question."""
+    tokens = _topic_specific_tokens(query)
+    if not tokens or not paper_titles:
+        return paper_titles
+    need = 2 if len(tokens) >= 2 else 1
+    refined: list[str] = []
+    for title in paper_titles:
+        meta = papers_metadata.get(title) or {}
+        hay = _paper_haystack(title, meta)
+        hits = sum(1 for t in tokens if t in hay)
+        if hits >= need:
+            refined.append(title)
+    return refined if refined else paper_titles
+
+
+def _chunk_query_overlap_score(chunk: dict[str, Any], query: str) -> int:
+    """Higher = chunk text/metadata overlaps more with distinctive query terms."""
+    tokens = _topic_specific_tokens(query) or _significant_query_tokens(query)
+    if not tokens:
+        return 0
+    hay = _chunk_search_haystack(chunk)
+    return sum(1 for t in tokens if t in hay)
+
+
+def rank_and_cap_chunks(
+    chunks: list[dict[str, Any]],
+    query: str,
+    *,
+    limit: int,
+    max_total: int = MAX_SCOPED_CONTEXT_CHUNKS,
+) -> list[dict[str, Any]]:
+    """Prefer chunks that mention the question's topic; cap total context size."""
+    if not chunks:
+        return []
+    cap = min(max_total, max(limit, 12))
+    ranked = sorted(
+        chunks,
+        key=lambda c: (-_chunk_query_overlap_score(c, query), float(c.get("distance", 0.0))),
+    )
+    return ranked[:cap]
 
 
 def _chunk_search_haystack(chunk: dict[str, Any]) -> str:
@@ -737,7 +805,8 @@ def resolve_topic_scoped_papers(
         hay = _paper_haystack(title, meta)
         if any(m in hay for m in markers):
             matched.append(title)
-    return sorted(matched)
+    matched = sorted(matched)
+    return _refine_topic_papers_by_query(query, matched, papers_metadata)
 
 
 def filter_chunks_for_topic_profile(
@@ -847,11 +916,19 @@ def resolve_matching_paper_titles(query: str, papers_metadata: dict) -> list[str
     if not papers_metadata:
         return []
 
-    if query_has_author_intent(query) or query_expects_named_author(query):
+    # Paper-title focus before author heuristics ("summarize" must not block quoted titles).
+    if query_has_paper_focus(query):
+        paper_matches = fuzzy_match_paper_titles(query, papers_metadata)
+        if paper_matches:
+            return paper_matches
+
+    if query_expects_named_author(query) or (
+        query_has_author_intent(query) and not query_has_paper_focus(query)
+    ):
         _phrase, author_matches = resolve_author_from_library(query, papers_metadata)
         if author_matches:
             return author_matches
-        if query_expects_named_author(query) or query_has_author_intent(query):
+        if query_expects_named_author(query):
             return []
 
     indexes = build_catalog_indexes(papers_metadata)
@@ -866,12 +943,6 @@ def resolve_matching_paper_titles(query: str, papers_metadata: dict) -> list[str
             return author_matches
         if is_author_scoped:
             return []
-
-    # Paper-title focus (quoted title, summarize, etc.)
-    if query_has_paper_focus(query):
-        paper_matches = fuzzy_match_paper_titles(query, papers_metadata)
-        if paper_matches:
-            return paper_matches
 
     tokens = _significant_query_tokens(query)
     if not tokens:
@@ -964,13 +1035,13 @@ def retrieve_relevant_chunks(
     # works is represented in the context for exhaustive listing/tabulation queries.
     if inventory_titles:
         author_chunks: list[dict[str, Any]] = []
-        per_paper = max(limit, 12)
+        n_papers = max(1, len(inventory_titles))
+        per_paper = max(3, min(12, (limit * 2) // n_papers))
         for title in inventory_titles:
             paper_chunks = vector_store.get_chunks_for_paper(title, max_chunks=per_paper)
             author_chunks = _dedupe_chunks(author_chunks + paper_chunks)
         if author_chunks:
-            # Return all chunks for scoped papers (any author in KB — not capped to 15).
-            return author_chunks
+            return rank_and_cap_chunks(author_chunks, query, limit=limit)
 
     # ── Standard semantic search path ─────────────────────────────────────────
     # Request extra candidates so post-filters still leave enough context.
@@ -1011,7 +1082,7 @@ def retrieve_relevant_chunks(
     if profile and chunks:
         chunks = filter_chunks_for_topic_profile(chunks, profile)
 
-    return chunks[:limit]
+    return rank_and_cap_chunks(chunks, query, limit=limit)
 
 
 def chunk_citation_label(chunk: dict[str, Any], index: int) -> str:

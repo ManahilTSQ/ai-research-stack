@@ -44,6 +44,8 @@ from rag_strict import (
     answer_catalog_metadata_query,
     _fuzzy_title_match,
     _TOPIC_NOT_FOUND_REFUSAL,
+    compare_query_needs_paper_pickers,
+    COMPARE_NEEDS_PICKER_MSG,
 )
 
 # Maximum papers processed in one batched extraction table (one LLM call per paper).
@@ -451,6 +453,14 @@ class RAGService:
         scope = resolve_query_scope(
             query, papers_metadata, filter_title=filter_title
         )
+        if compare_query_needs_paper_pickers(query, papers_metadata) and not filter_title:
+            return {
+                "query": query,
+                "answer": COMPARE_NEEDS_PICKER_MSG,
+                "sources": [],
+                "success": True,
+            }
+
         matched_titles = scope.scoped_titles
         listing_style_query = is_listing_query(query)
 
@@ -617,6 +627,13 @@ class RAGService:
                 "that are clearly about the topic in the question. "
                 "Do NOT describe unrelated papers (e.g. phishing, traffic, barcodes) "
                 "even if they mention 'deep learning'.\n"
+                "If the inventory lists papers whose titles mention the topic, you MUST "
+                "summarize what those papers say — do not claim the topic is absent.\n"
+            )
+        elif scope.entity_kind == "paper" and len(matched_titles) == 1:
+            scope_note = (
+                f"SINGLE-PAPER SCOPE: Answer ONLY from \"{matched_titles[0]}\". "
+                "Do NOT invent frameworks, product names, or methods not in the passages.\n"
             )
         elif filter_title:
             scope_note = (

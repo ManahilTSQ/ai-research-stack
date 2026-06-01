@@ -30,6 +30,16 @@ from rag_context import (
     detect_topic_profile,
     resolve_topic_scoped_papers,
     _significant_query_tokens,
+    _topic_specific_tokens,
+    _refine_topic_papers_by_query,
+)
+
+_COMPARE_QUERY_RE = re.compile(r"\bcompare\b", re.I)
+
+COMPARE_NEEDS_PICKER_MSG = (
+    "To compare two papers, select **Paper A** and **Paper B** in the Focus on Paper "
+    "controls (or use the compare template), then ask your comparison question. "
+    "You can also quote both exact titles in your message."
 )
 
 VERIFICATION_FAILED_REFUSAL = (
@@ -139,6 +149,17 @@ def _papers_matching_topic_tokens(
     return matched
 
 
+def compare_query_needs_paper_pickers(query: str, papers_metadata: dict) -> bool:
+    """True when user asked to compare but did not select or quote two papers."""
+    if not _COMPARE_QUERY_RE.search(query or ""):
+        return False
+    quoted = extract_quoted_paper_titles(query)
+    if len(quoted) >= 2:
+        resolved = fuzzy_match_paper_titles(query, papers_metadata)
+        return len(resolved) < 2
+    return True
+
+
 def resolve_query_scope(
     query: str,
     papers_metadata: dict,
@@ -157,6 +178,15 @@ def resolve_query_scope(
                 entity_kind="filter",
             )
         return QueryScope(requires_entity=True, entity_kind="filter")
+
+    if query_has_paper_focus(query):
+        paper_titles = fuzzy_match_paper_titles(query, papers_metadata)
+        if paper_titles:
+            return QueryScope(
+                scoped_titles=paper_titles[:1] if len(paper_titles) == 1 else paper_titles,
+                requires_entity=True,
+                entity_kind="paper",
+            )
 
     author_phrase, author_titles = resolve_author_from_library(query, papers_metadata)
     if author_phrase or author_titles or query_expects_named_author(query):
@@ -185,22 +215,15 @@ def resolve_query_scope(
             topic_tokens=topic_tokens,
         )
     if topic_tokens and any(c in q_lower for c in topic_cues):
-        topic_papers = _papers_matching_topic_tokens(topic_tokens, papers_metadata)
+        specific = _topic_specific_tokens(query) or topic_tokens
+        topic_papers = _papers_matching_topic_tokens(specific, papers_metadata)
+        topic_papers = _refine_topic_papers_by_query(query, topic_papers, papers_metadata)
         return QueryScope(
             scoped_titles=topic_papers,
             requires_entity=True,
             entity_kind="topic",
-            topic_tokens=topic_tokens,
+            topic_tokens=specific,
         )
-
-    if query_has_paper_focus(query):
-        paper_titles = fuzzy_match_paper_titles(query, papers_metadata)
-        if paper_titles:
-            return QueryScope(
-                scoped_titles=paper_titles,
-                requires_entity=True,
-                entity_kind="paper",
-            )
 
     paper_titles = fuzzy_match_paper_titles(query, papers_metadata)
     if len(paper_titles) == 1:
