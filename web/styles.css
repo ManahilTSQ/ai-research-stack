@@ -1022,6 +1022,21 @@ select:focus {
     border-radius: 4px 16px 16px 16px;
 }
 
+.bot-message .bubble-content .bubble-markdown,
+.bot-message .bubble-content .bubble-markdown p {
+    line-height: 1.55;
+}
+
+.bot-message .bubble-content ol,
+.bot-message .bubble-content ul {
+    margin: 8px 0 12px 20px;
+    padding: 0;
+}
+
+.bot-message .bubble-content li {
+    margin-bottom: 6px;
+}
+
 .bubble-content {
     padding: 12px 18px;
     font-size: 14px;

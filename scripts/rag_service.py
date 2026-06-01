@@ -42,6 +42,7 @@ from rag_strict import (
     inventory_for_scope,
     apply_verification_or_refuse,
     answer_catalog_metadata_query,
+    _fuzzy_title_match,
     _TOPIC_NOT_FOUND_REFUSAL,
 )
 
@@ -284,7 +285,7 @@ class RAGService:
                 row = self._metadata_table_row(title, meta, columns)
             rows.append(row)
 
-        answer = "\n".join([header, separator, *rows])
+        answer = "\n\n".join([header, separator, *rows])
         if answer_has_table_truncation(answer):
             return {
                 "query": query,
@@ -497,7 +498,7 @@ class RAGService:
                     title_escaped = title.replace("|", "\\|")
                     venue_escaped = venue.replace("|", "\\|")
                     table_rows.append(f"| {title_escaped} | {year} | {venue_escaped} |")
-                answer = "\n".join(table_rows)
+                answer = "\n\n".join(table_rows)
             else:
                 # Generate numbered list
                 listing_parts = []
@@ -513,7 +514,7 @@ class RAGService:
                     if doi and doi != "N/A":
                         entry += f". doi: {doi}"
                     listing_parts.append(entry)
-                answer = "\n".join(listing_parts)
+                answer = "Papers in your library:\n\n" + "\n\n".join(listing_parts)
             
             return {
                 "query": query,
@@ -559,6 +560,15 @@ class RAGService:
                 "sources": [],
                 "success": False,
                 "error": "No matching papers in the vector database.",
+            }
+
+        if _fuzzy_title_match(query, papers_metadata) and not chunks:
+            return {
+                "query": query,
+                "answer": NOT_IN_LIBRARY_REFUSAL,
+                "sources": [],
+                "success": False,
+                "error": "Named paper title not found in library.",
             }
 
         # Papers exist but nothing in the corpus is similar enough to the query.

@@ -348,6 +348,8 @@ def verify_answer_against_scope(
 
 def is_catalog_metadata_query(query: str) -> bool:
     q = (query or "").lower()
+    if re.search(r"\bpapers?\s+by\s+", q) or re.search(r"\barticles?\s+by\s+", q):
+        return True
     if re.search(r"\b(list|show|name|who|all)\b.{0,40}\b(authors?|writers?)\b", q):
         return True
     if re.search(r"\bhow many\b.{0,30}\b(papers?|articles?)\b", q):
@@ -359,11 +361,52 @@ def is_catalog_metadata_query(query: str) -> bool:
     return False
 
 
+def extract_papers_by_author_phrase(query: str) -> str | None:
+    """e.g. 'List papers by Jhanjhi' → 'Jhanjhi'."""
+    patterns = [
+        r"\b(?:list|show|give)?\s*(?:me\s+)?(?:all\s+)?papers?\s+by\s+(.+?)(?:\s*[\.,;]|$)",
+        r"\barticles?\s+by\s+(.+?)(?:\s*[\.,;]|$)",
+        r"\bpapers?\s+by\s+(.+?)(?:\s*[\.,;]|$)",
+    ]
+    for pat in patterns:
+        m = re.search(pat, (query or "").strip(), re.I)
+        if m:
+            phrase = m.group(1).strip(" .,;:\"'")
+            if len(phrase) >= 2:
+                return phrase
+    return None
+
+
+def _format_numbered_list(header: str, lines: list[str]) -> str:
+    """Use blank lines between entries so the UI renders readable lists."""
+    body = "\n\n".join(lines)
+    return f"{header}\n\n{body}"
+
+
 def answer_catalog_metadata_query(query: str, papers_metadata: dict) -> str | None:
     """Deterministic answers for library inventory questions (no LLM)."""
     if not papers_metadata or not is_catalog_metadata_query(query):
         return None
     q = (query or "").lower()
+
+    author_phrase = extract_papers_by_author_phrase(query)
+    if author_phrase or re.search(r"\bpapers?\s+by\s+|\barticles?\s+by\s+", q):
+        phrase = author_phrase or re.split(r"\bby\s+", query, maxsplit=1, flags=re.I)[-1].strip()
+        scoped = resolve_matching_paper_titles(f"papers by {phrase}", papers_metadata)
+        if not scoped:
+            return NOT_IN_LIBRARY_REFUSAL
+        inv = {t: papers_metadata[t] for t in scoped if t in papers_metadata}
+        lines = []
+        for i, title in enumerate(sorted(inv.keys()), 1):
+            m = inv[title]
+            lines.append(
+                f"{i}. {m.get('authors', 'Unknown')} ({m.get('year', 'N/A')}). {title}"
+            )
+        return _format_numbered_list(
+            f"Papers by {phrase} in your ingested library ({len(lines)} paper(s)):",
+            lines,
+        )
+
     if re.search(r"\bhow many\b.{0,30}\b(papers?|articles?)\b", q):
         return (
             f"Your knowledge base contains **{len(papers_metadata)}** ingested paper(s)."
@@ -373,15 +416,21 @@ def answer_catalog_metadata_query(query: str, papers_metadata: dict) -> str | No
         if not authors:
             return "No authors found in the ingested library."
         lines = [f"{i}. {a['authors']} ({a['paper_count']} paper(s))" for i, a in enumerate(authors, 1)]
-        return "Authors in your ingested library:\n" + "\n".join(lines)
-    titles = sorted(papers_metadata.keys())
-    lines = []
-    for i, title in enumerate(titles, 1):
-        m = papers_metadata[title]
-        lines.append(
-            f"{i}. {m.get('authors', 'Unknown')} ({m.get('year', 'N/A')}). {title}"
-        )
-    return "Papers in your ingested library:\n" + "\n".join(lines)
+        return _format_numbered_list("Authors in your ingested library:", lines)
+
+    if re.search(r"\blist\b.{0,40}\b(all\s+)?(ingested\s+)?(papers?|articles?)\b", q) and not re.search(
+        r"\bpapers?\s+by\s+|\barticles?\s+by\s+", q
+    ):
+        titles = sorted(papers_metadata.keys())
+        lines = []
+        for i, title in enumerate(titles, 1):
+            m = papers_metadata[title]
+            lines.append(
+                f"{i}. {m.get('authors', 'Unknown')} ({m.get('year', 'N/A')}). {title}"
+            )
+        return _format_numbered_list("Papers in your ingested library:", lines)
+
+    return None
 
 
 def apply_verification_or_refuse(

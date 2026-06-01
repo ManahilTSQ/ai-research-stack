@@ -1530,11 +1530,55 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     /**
+     * Render markdown pipe tables (including single-line tables from the API).
+     */
+    function extractMarkdownTables(text) {
+        const raw = (text || "").trim();
+        if (!raw.includes("|")) return null;
+
+        let lines = raw.split(/\r?\n/).map(l => l.trim()).filter(l => l.startsWith("|"));
+        if (lines.length < 2) {
+            const rowParts = raw.split(/\|\s*\|/).map((part, idx, arr) => {
+                const chunk = (idx === 0 ? part : "|" + part).trim();
+                if (!chunk.startsWith("|")) return "|" + chunk;
+                if (idx < arr.length - 1 && !chunk.endsWith("|")) return chunk + "|";
+                return chunk;
+            });
+            lines = rowParts.filter(l => /^\|.+\|$/.test(l));
+        }
+        if (lines.length < 2) return null;
+
+        const parseRow = (line) =>
+            line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(c => c.trim());
+
+        const headerCells = parseRow(lines[0]);
+        let bodyStart = 1;
+        if (/^[\s|\-:]+$/.test(lines[1])) bodyStart = 2;
+        const bodyRows = lines.slice(bodyStart).map(parseRow).filter(r => r.some(c => c));
+
+        let html = '<div class="rag-table-wrap"><table class="rag-table"><thead><tr>';
+        headerCells.forEach(cell => { html += `<th>${escapeHTML(cell)}</th>`; });
+        html += "</tr></thead><tbody>";
+        bodyRows.forEach(row => {
+            html += "<tr>";
+            for (let i = 0; i < headerCells.length; i++) {
+                html += `<td>${escapeHTML(row[i] || "")}</td>`;
+            }
+            html += "</tr>";
+        });
+        html += "</tbody></table></div>";
+
+        const lineStart = raw.indexOf(lines[0]);
+        const prefix = raw.slice(0, lineStart).trim();
+        const suffix = raw.slice(raw.indexOf(lines[lines.length - 1]) + lines[lines.length - 1].length).trim();
+        let out = html;
+        if (prefix) out = `<p>${escapeHTML(prefix).replace(/\n/g, "<br>")}</p>` + out;
+        if (suffix) out += `<p>${escapeHTML(suffix).replace(/\n/g, "<br>")}</p>`;
+        return out;
+    }
+
+    /**
      * Parse a subset of Markdown syntax into HTML for bot response rendering.
-     * Handles: bold, italic, headers (h2/h3/h4), unordered lists, code, blockquotes,
-     * citation reference links ([Source N]), and paragraph breaks.
-     * @param {string} text - Raw markdown string from the LLM response.
-     * @returns {string} HTML string wrapped in <p> tags.
      */
     function parseMarkdown(text) {
         const safeText = text == null ? "" : String(text);
@@ -1545,29 +1589,22 @@ document.addEventListener("DOMContentLoaded", () => {
 
         let html = escapeHTML(safeText);
 
-        // Bold: **text** → <strong>text</strong>
         html = html.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+        html = html.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>");
 
-        // Italics: *text* → <em>text</em>
-        html = html.replace(/\*(.*?)\*/g, "<em>$1</em>");
-
-        // Headers: ### → h4, ## → h3, # → h2
         html = html.replace(/^### (.*?)$/gm, "<h4>$1</h4>");
         html = html.replace(/^## (.*?)$/gm, "<h3>$1</h3>");
         html = html.replace(/^# (.*?)$/gm, "<h2>$1</h2>");
 
-        // Unordered list items: - text or * text → <li>
-        html = html.replace(/^\s*[-*+]\s+(.*?)$/gm, "<li>$1</li>");
-        // Wrap consecutive <li> elements in a <ul>
+        html = html.replace(/^\s*(\d+)\.\s+(.*)$/gm, "<li value=\"$1\">$2</li>");
+        html = html.replace(/(<li value="\d+">[\s\S]*?<\/li>)(\s*<li value="\d+">[\s\S]*?<\/li>)*/g, (m) => `<ol>${m}</ol>`);
+
+        html = html.replace(/^\s*[-+]\s+(.*?)$/gm, "<li>$1</li>");
         html = html.replace(/(<li>.*?<\/li>)+/gs, "<ul>$&</ul>");
 
-        // Inline code: `code` → <code>code</code>
         html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
-
-        // Blockquotes: > text → <blockquote>
         html = html.replace(/^&gt;\s+(.*?)$/gm, "<blockquote>$1</blockquote>");
 
-        // Legacy [Source N] links → scroll to chunk; label shows APA-style text when available
         html = html.replace(/\[Source\s+(\d+)\]/gi, (match, num) => {
             const idx = parseInt(num, 10) - 1;
             let label = `Source ${num}`;
@@ -1577,12 +1614,10 @@ document.addEventListener("DOMContentLoaded", () => {
             return `<a class="citation-ref" href="#" data-source-index="${num}">${escapeHTML(label)}</a>`;
         });
 
-        // Paragraph breaks: double newlines → </p><p>
-        html = html.replace(/\n\n/g, "</p><p>");
-        // Single newlines → <br>
+        html = html.replace(/\n\n+/g, "</p><p>");
         html = html.replace(/\n/g, "<br>");
 
-        return `<p>${html}</p>`;
+        return `<div class="bubble-markdown"><p>${html}</p></div>`;
     }
 
 
