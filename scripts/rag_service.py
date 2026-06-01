@@ -53,6 +53,10 @@ MAX_EXTRACTION_TABLE_PAPERS = 40
 logger = logging.getLogger(__name__)
 
 
+class OllamaUnavailableError(RuntimeError):
+    """Raised when the local Ollama server is not reachable."""
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # MODULE-LEVEL UTILITY: Ollama Health Check
 # ──────────────────────────────────────────────────────────────────────────────
@@ -130,10 +134,10 @@ class RAGService:
         """
         logger.info("Initialising RAG Orchestration Service...")
 
-        # Early health check — exit immediately if Ollama is not available
         if not check_ollama_health():
-            print("    RAG service cannot start without a working Ollama instance.\n")
-            sys.exit(1)
+            raise OllamaUnavailableError(
+                f"Ollama is not running at {settings.OLLAMA_BASE_URL}. Start with: ollama serve"
+            )
 
         # Initialise the vector store client (loads ChromaDB from disk)
         self.vector_store = VectorStoreService()

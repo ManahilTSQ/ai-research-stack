@@ -1214,36 +1214,46 @@ document.addEventListener("DOMContentLoaded", () => {
      * Handle the RAG chat form submission.
      * Sends the query to /api/query-rag and renders the grounded answer as a chat bubble.
      */
+    function formatApiErrorDetail(detail) {
+        if (!detail) return "Server error";
+        if (typeof detail === "string") return detail;
+        if (Array.isArray(detail)) {
+            return detail.map(d => d.msg || JSON.stringify(d)).join("; ");
+        }
+        if (typeof detail === "object") return detail.message || JSON.stringify(detail);
+        return String(detail);
+    }
+
     async function handleRAGQuery(e) {
         e.preventDefault();
         const inputEl = document.getElementById("rag-input");
         const query = inputEl.value.trim();
         const limit = document.getElementById("rag-limit-slider").value;
         const template = document.getElementById("rag-template-select").value;
-        const messagesDiv = document.getElementById("chat-messages");
         const submitBtn = document.getElementById("rag-submit-btn");
 
         if (!query) return;
 
-        // Show the user's message as a chat bubble immediately
         appendChatBubble("user", query);
         inputEl.value = "";
 
-        // Show a loading indicator while waiting for the LLM response
         const loadId = appendChatBubble("bot", `<i class="fa-solid fa-ellipsis fa-bounce"></i> Thinking...`, [], true);
         submitBtn.disabled = true;
 
+        const removeLoading = () => {
+            const el = document.getElementById(loadId);
+            if (el) el.remove();
+        };
+
         try {
-            // Get optional paper filter — empty string means query all papers
             const paperFilter = document.getElementById("rag-paper-filter")?.value || "";
             const paperFilterB = document.getElementById("rag-paper-filter-b")?.value || "";
             const templateVars = collectTemplateVars();
             const payload = {
                 query: query,
-                limit: parseInt(limit),
+                limit: parseInt(limit, 10) || 15,
                 prompt_template: template ? template : null,
                 filter_title: paperFilter || null,
-                // Include recent turns so backend RAG can preserve memory after refresh.
                 conversation_history: chatHistoryTurns.slice(-12),
             };
             if (template === "comparative_analysis" && paperFilter && paperFilterB) {
@@ -1257,25 +1267,39 @@ document.addEventListener("DOMContentLoaded", () => {
                 body: JSON.stringify(payload),
             });
 
-            if (!resp.ok) {
-                const errData = await resp.json();
-                throw new Error(errData.detail || "Server error");
+            let data = {};
+            try {
+                data = await resp.json();
+            } catch (_) {
+                if (!resp.ok) {
+                    throw new Error(`Server error (HTTP ${resp.status})`);
+                }
             }
 
-            const data = await resp.json();
-            submitBtn.disabled = false;
+            if (!resp.ok) {
+                throw new Error(formatApiErrorDetail(data.detail) || `Server error (HTTP ${resp.status})`);
+            }
 
-            // Remove the loading bubble and render the actual answer
-            document.getElementById(loadId).remove();
+            const answerText = (data.answer != null ? String(data.answer) : "").trim();
+            if (!answerText) {
+                throw new Error("The server returned an empty answer. Check API logs or redeploy the latest code.");
+            }
 
-            // Store sources for the "Show retrieved chunks" button
-            activeChatSources = data.sources || [];
-            appendChatBubble("bot", data.answer, activeChatSources);
+            removeLoading();
+            activeChatSources = Array.isArray(data.sources) ? data.sources : [];
+            appendChatBubble("bot", answerText, activeChatSources);
 
         } catch (err) {
+            removeLoading();
+            const msg = err?.message || String(err) || "Unknown error";
+            appendChatBubble(
+                "bot",
+                `<span class="text-crimson"><i class="fa-solid fa-triangle-exclamation"></i> Error generating answer: ${escapeHTML(msg)}</span>`,
+                [],
+                true
+            );
+        } finally {
             submitBtn.disabled = false;
-            document.getElementById(loadId).remove();
-            appendChatBubble("bot", `<span class="text-crimson"><i class="fa-solid fa-triangle-exclamation"></i> Error generating answer: ${escapeHTML(err.message || err)}</span>`, [], true);
         }
     }
 
@@ -1296,8 +1320,15 @@ document.addEventListener("DOMContentLoaded", () => {
 
         const avatarIcon = sender === "user" ? "fa-user" : "fa-microchip-ai";
 
-        // Parse markdown for bot responses; escape HTML for user input (XSS prevention)
-        const parsedText = sender === "bot" ? (isHtml ? text : parseMarkdown(text)) : escapeHTML(text);
+        let parsedText;
+        try {
+            parsedText = sender === "bot"
+                ? (isHtml ? (text || "") : parseMarkdown(text))
+                : escapeHTML(text);
+        } catch (renderErr) {
+            console.error("Failed to render chat message:", renderErr);
+            parsedText = `<p>${escapeHTML(String(text || ""))}</p>`;
+        }
 
         bubble.innerHTML = `
             <div class="bubble-avatar"><i class="fa-solid ${avatarIcon}"></i></div>
@@ -1413,8 +1444,15 @@ document.addEventListener("DOMContentLoaded", () => {
                 turns: chatHistoryTurns,
                 sourcesByBubbleId: sourcesByBubbleId,
             };
-            localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(payload));
-        } catch (_) {}
+            let serialized = JSON.stringify(payload);
+            if (serialized.length > 4_000_000) {
+                payload.html = "<!-- history truncated for storage limits -->";
+                serialized = JSON.stringify(payload);
+            }
+            localStorage.setItem(CHAT_STORAGE_KEY, serialized);
+        } catch (err) {
+            console.warn("Could not persist chat history:", err);
+        }
     }
 
     function restoreChatHistory() {
@@ -1482,7 +1520,8 @@ document.addEventListener("DOMContentLoaded", () => {
      * @returns {string} HTML-safe string.
      */
     function escapeHTML(str) {
-        return str
+        if (str == null) return "";
+        return String(str)
             .replace(/&/g, "&amp;")
             .replace(/</g, "&lt;")
             .replace(/>/g, "&gt;")
@@ -1498,13 +1537,13 @@ document.addEventListener("DOMContentLoaded", () => {
      * @returns {string} HTML string wrapped in <p> tags.
      */
     function parseMarkdown(text) {
-        const tableHtml = extractMarkdownTables(text);
+        const safeText = text == null ? "" : String(text);
+        const tableHtml = extractMarkdownTables(safeText);
         if (tableHtml !== null) {
             return tableHtml;
         }
 
-        // Start by escaping HTML to prevent XSS from LLM-generated content
-        let html = escapeHTML(text);
+        let html = escapeHTML(safeText);
 
         // Bold: **text** → <strong>text</strong>
         html = html.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");

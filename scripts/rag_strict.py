@@ -352,6 +352,8 @@ def is_catalog_metadata_query(query: str) -> bool:
         return True
     if re.search(r"\bhow many\b.{0,30}\b(papers?|articles?)\b", q):
         return True
+    if re.search(r"\blist\b.{0,40}\b(all\s+)?(ingested\s+)?(papers?|articles?)\b", q):
+        return True
     if re.search(r"\bwhat\b.{0,20}\b(papers?|articles?)\b.{0,20}\b(library|ingested|knowledge base)\b", q):
         return True
     return False

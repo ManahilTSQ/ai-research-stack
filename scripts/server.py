@@ -30,7 +30,7 @@ from config import settings
 from paper_discovery import PaperDiscoveryService
 from pdf_processor import PDFProcessorService
 from vector_store import VectorStoreService
-from rag_service import RAGService, check_ollama_health
+from rag_service import RAGService, check_ollama_health, OllamaUnavailableError
 from manifest_manager import ManifestManagerService
 from citation_analyzer import CitationAnalyzerService
 from prompt_manager import (
@@ -57,6 +57,7 @@ from rag_strict import (
     apply_verification_or_refuse,
     build_catalog_indexes,
     list_distinct_authors,
+    answer_catalog_metadata_query,
 )
 from search_utils import (
     extract_quoted_phrases,
@@ -992,45 +993,79 @@ def catalog_search(q: str = ""):
     return {"papers": papers, "author_tokens": author_hits[:50]}
 
 
+def _rag_failure_phrases() -> tuple[str, ...]:
+    return (
+        "Off-topic query blocked",
+        "No relevant chunks",
+        "No matching papers",
+        "Entity not in library",
+        "Topic not found",
+        "Answer failed scope verification",
+        "Named author not found",
+        "Extraction table too large",
+        "Table truncation detected",
+    )
+
+
 @app.post("/api/query-rag")
 def query_rag(request: RAGQueryRequest):
     if not request.query.strip():
         raise HTTPException(status_code=422, detail="Query string must not be empty.")
 
-    if not check_ollama_health():
-        raise HTTPException(
-            status_code=503,
-            detail="Ollama LLM server is not running. Start with: ollama serve"
+    try:
+        stats = vector_store.get_collection_stats()
+        papers_metadata = stats.get("papers_metadata", {}) or {}
+
+        if not papers_metadata:
+            return {"answer": EMPTY_DB_REFUSAL, "sources": []}
+
+        # Deterministic catalog answers — no Ollama, no RAGService init.
+        catalog_answer = answer_catalog_metadata_query(request.query, papers_metadata)
+        if catalog_answer:
+            return {"answer": catalog_answer, "sources": []}
+
+        if not check_ollama_health():
+            raise HTTPException(
+                status_code=503,
+                detail="Ollama LLM server is not running. Start with: ollama serve",
+            )
+
+        if request.prompt_template and not _should_fallback_to_standard_rag(request):
+            return _execute_template_rag(request)
+
+        rag_service = RAGService()
+        result = rag_service.generate_answer(
+            request.query,
+            limit=request.limit or 15,
+            filter_title=request.filter_title or None,
+            conversation_history=request.conversation_history or [],
         )
 
-    if request.prompt_template and not _should_fallback_to_standard_rag(request):
-        return _execute_template_rag(request)
+        if not result.get("success"):
+            error_msg = result.get("error", "RAG failed.")
+            answer_msg = (result.get("answer") or error_msg or "RAG failed.").strip()
+            if any(phrase in error_msg for phrase in _rag_failure_phrases()):
+                return {"answer": answer_msg, "sources": result.get("sources") or []}
+            raise HTTPException(status_code=500, detail=error_msg)
 
-    rag_service = RAGService()
-    result      = rag_service.generate_answer(
-        request.query,
-        limit=request.limit,
-        filter_title=request.filter_title or None,
-        conversation_history=request.conversation_history or []
-    )
+        answer = (result.get("answer") or "").strip()
+        if not answer:
+            raise HTTPException(
+                status_code=500,
+                detail="RAG returned an empty answer. Check server logs.",
+            )
+        return {"answer": answer, "sources": result.get("sources") or []}
 
-    if not result["success"]:
-        error_msg = result.get("error", "RAG failed.")
-        answer_msg = result.get("answer", error_msg)
-        # Off-topic gate, irrelevant context, or no-chunks → surface as clean 200 answer
-        if any(phrase in error_msg for phrase in [
-            "Off-topic query blocked",
-            "No relevant chunks",
-            "No matching papers",
-            "Entity not in library",
-            "Topic not found",
-            "Answer failed scope verification",
-            "Named author not found",
-        ]):
-            return {"answer": answer_msg, "sources": []}
-        raise HTTPException(status_code=500, detail=error_msg)
-
-    return {"answer": result["answer"], "sources": result["sources"]}
+    except OllamaUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("query_rag failed for query: %s", request.query[:120])
+        raise HTTPException(
+            status_code=500,
+            detail=f"RAG request failed: {e}",
+        ) from e
 
 
 @app.get("/api/prompts")
