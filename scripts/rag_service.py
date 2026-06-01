@@ -287,29 +287,45 @@ class RAGService:
         # For listing queries, bypass the LLM entirely and generate the list
         # directly from the library inventory to ensure ALL papers are listed.
         if is_listing_query and inventory_metadata:
-            # Generate a direct list from the inventory
-            listing_parts = []
-            for idx, (title, meta) in enumerate(inventory_metadata.items(), 1):
-                authors = meta.get("authors", "Unknown Authors")
-                year = meta.get("year", "N/A")
-                doi = meta.get("doi", "N/A")
-                venue = meta.get("venue", "")
-                
-                entry = f"{idx}. {authors} ({year}). {title}"
-                if venue:
-                    entry += f". {venue}"
-                if doi and doi != "N/A":
-                    entry += f". doi: {doi}"
-                listing_parts.append(entry)
+            # Detect if user specifically requested a table format
+            is_table_request = "table" in query.lower() or "tabulate" in query.lower()
             
-            if listing_parts:
+            if is_table_request:
+                # Generate markdown table
+                table_rows = []
+                table_rows.append("| Title | Year | Venue |")
+                table_rows.append("|-------|------|-------|")
+                for title, meta in inventory_metadata.items():
+                    year = meta.get("year", "N/A")
+                    venue = meta.get("venue", "N/A")
+                    # Escape pipe characters in title/venue to avoid breaking markdown
+                    title_escaped = title.replace("|", "\\|")
+                    venue_escaped = venue.replace("|", "\\|")
+                    table_rows.append(f"| {title_escaped} | {year} | {venue_escaped} |")
+                answer = "\n".join(table_rows)
+            else:
+                # Generate numbered list
+                listing_parts = []
+                for idx, (title, meta) in enumerate(inventory_metadata.items(), 1):
+                    authors = meta.get("authors", "Unknown Authors")
+                    year = meta.get("year", "N/A")
+                    doi = meta.get("doi", "N/A")
+                    venue = meta.get("venue", "")
+                    
+                    entry = f"{idx}. {authors} ({year}). {title}"
+                    if venue:
+                        entry += f". {venue}"
+                    if doi and doi != "N/A":
+                        entry += f". doi: {doi}"
+                    listing_parts.append(entry)
                 answer = "\n".join(listing_parts)
-                return {
-                    "query": query,
-                    "answer": answer,
-                    "sources": [],
-                    "success": True
-                }
+            
+            return {
+                "query": query,
+                "answer": answer,
+                "sources": [],
+                "success": True
+            }
 
         # For non-listing queries, proceed with normal RAG pipeline
         # For listing queries over many papers, give each paper at least 3 chunks
