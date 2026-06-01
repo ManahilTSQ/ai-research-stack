@@ -96,6 +96,9 @@ class Settings:
     # Helps block off-topic answers when vectors are weakly similar.
     RAG_REQUIRE_QUERY_TERM_MATCH: bool = os.getenv("RAG_REQUIRE_QUERY_TERM_MATCH", "true").lower() == "true"
 
+    # Strict RAG: entity gates, scoped retrieval, post-answer verification (recommended).
+    RAG_STRICT_MODE: bool = os.getenv("RAG_STRICT_MODE", "true").lower() == "true"
+
     # ── Citation Report Retention ───────────────────────────────────────────────
     # Auto-delete CSV reports older than this many days on list/load (0 = keep forever).
     REPORT_RETENTION_DAYS: int = int(os.getenv("REPORT_RETENTION_DAYS", "0"))

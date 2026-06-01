@@ -46,8 +46,17 @@ from rag_context import (
     build_library_inventory,
     chunks_to_context_string,
     retrieve_relevant_chunks,
+    filter_chunks_to_titles,
     EMPTY_DB_REFUSAL,
     IRRELEVANT_REFUSAL,
+)
+from rag_strict import (
+    resolve_query_scope,
+    scope_refusal_message,
+    inventory_for_scope,
+    apply_verification_or_refuse,
+    build_catalog_indexes,
+    list_distinct_authors,
 )
 from search_utils import (
     extract_quoted_phrases,
@@ -258,6 +267,17 @@ def _execute_template_rag(request: RAGQueryRequest) -> dict:
     if not papers_metadata:
         raise HTTPException(status_code=404, detail=EMPTY_DB_REFUSAL)
 
+    scope = resolve_query_scope(
+        request.query,
+        papers_metadata,
+        filter_title=request.filter_title or None,
+    )
+    if scope.requires_entity and not scope.scoped_titles:
+        raise HTTPException(status_code=404, detail=scope_refusal_message(scope))
+
+    inventory_metadata = inventory_for_scope(papers_metadata, scope)
+    matched_titles = scope.scoped_titles
+
     is_compare = bool(
         request.filter_title
         and request.filter_title_b
@@ -285,14 +305,18 @@ def _execute_template_rag(request: RAGQueryRequest) -> dict:
             request.query,
             limit=limit,
             filter_title=request.filter_title or None,
+            scope_titles=matched_titles if scope.is_locked or matched_titles else None,
         )
         context_a = context_b = ""
         title_a = title_b = ""
 
+    if matched_titles and not request.filter_title:
+        chunks = filter_chunks_to_titles(chunks, matched_titles)
+
     if not chunks:
         raise HTTPException(status_code=404, detail=IRRELEVANT_REFUSAL)
 
-    library_inventory_str = build_library_inventory(papers_metadata)
+    library_inventory_str = build_library_inventory(inventory_metadata)
     context_str = chunks_to_context_string(chunks)
 
     if is_compare:
@@ -331,7 +355,15 @@ def _execute_template_rag(request: RAGQueryRequest) -> dict:
             variables[key] = str(val) if val is not None else ""
 
     user_prompt = substitute_placeholders(user_template, variables)
-    answer = _ollama_chat(system_prompt, user_prompt, temperature=0.3)
+    answer = _ollama_chat(system_prompt, user_prompt, temperature=0.05)
+    answer, verified = apply_verification_or_refuse(
+        answer,
+        scope=scope,
+        papers_metadata=papers_metadata,
+        chunks=chunks,
+    )
+    if not verified:
+        raise HTTPException(status_code=404, detail=answer)
 
     return {
         "answer": answer,
@@ -347,10 +379,17 @@ def _should_fallback_to_standard_rag(request: RAGQueryRequest) -> bool:
     If the Hassan-style drafting template is selected but the user asks
     a direct question (instead of requesting a draft), run standard RAG.
     """
-    if request.prompt_template != "hassanian_article":
-        return False
+    from rag_context import is_per_paper_extraction_query, is_simple_inventory_listing
+
     q = (request.query or "").strip().lower()
     if not q:
+        return False
+
+    # Tables and corpus listings need author-scoped standard RAG, not article templates.
+    if is_per_paper_extraction_query(request.query) or is_simple_inventory_listing(request.query):
+        return True
+
+    if request.prompt_template != "hassanian_article":
         return False
     draft_verbs = ("draft", "write an article", "manuscript", "paper section", "problematisation")
     if any(v in q for v in draft_verbs):
@@ -540,11 +579,11 @@ def download_paper(request: DownloadRequest, background_tasks: BackgroundTasks):
             logger.info(f"Abstract-only fallback for '{title}'")
             vector_store.add_paper_chunks(
                 paper_title=title, doi=identifier, chunks=chunks,
-                authors=authors_str, year=year
+                authors=authors_str, year=year, venue=request.venue
             )
             manifest_service.mark_as_ingested(
                 sanitize_filename(title), title, doi, status="success",
-                authors=authors_str, year=year, abstract=abstract,
+                authors=authors_str, year=year, venue=request.venue, abstract=abstract,
                 paper_id=request.paperId,
             )
             return
@@ -553,13 +592,13 @@ def download_paper(request: DownloadRequest, background_tasks: BackgroundTasks):
             identifier = doi or (f"arXiv:{arxiv_id}" if arxiv_id else title)
             success = vector_store.add_paper_chunks(
                 paper_title=title, doi=identifier, chunks=chunks,
-                authors=authors_str, year=year
+                authors=authors_str, year=year, venue=request.venue
             )
             filename = sanitize_filename(title)
             manifest_service.mark_as_ingested(
                 filename, title, doi,
                 status="success" if success else "failed",
-                authors=authors_str, year=year, abstract=request.abstract,
+                authors=authors_str, year=year, venue=request.venue, abstract=request.abstract,
                 paper_id=request.paperId,
             )
             logger.info(
@@ -803,12 +842,12 @@ async def upload_pdfs(
                     if chunks:
                         success = vector_store.add_paper_chunks(
                             paper_title=title, doi=doi if doi != "N/A" else None, chunks=chunks,
-                            authors=authors, year=year
+                            authors=authors, year=year, venue=resolved.get("venue")
                         )
                         manifest_service.mark_as_ingested(
                             rel, title, doi=doi if doi != "N/A" else None,
                             status="success" if success else "failed",
-                            authors=authors, year=year,
+                            authors=authors, year=year, venue=resolved.get("venue"),
                             abstract=abstract
                         )
                         logger.info(f"Auto-ingested '{rel}': {len(chunks)} chunks, success={success}")
@@ -874,13 +913,13 @@ def ingest_pending(background_tasks: BackgroundTasks):
 
                 success = vector_store.add_paper_chunks(
                     paper_title=title, doi=doi if doi != "N/A" else None, chunks=chunks,
-                    authors=authors, year=year
+                    authors=authors, year=year, venue=resolved.get("venue")
                 )
 
                 manifest_service.mark_as_ingested(
                     filename, title, doi if doi != "N/A" else None,
                     status="success" if success else "failed",
-                    authors=authors, year=year,
+                    authors=authors, year=year, venue=resolved.get("venue"),
                     abstract=abstract
                 )
                 processed += 1
@@ -900,6 +939,57 @@ def ingest_pending(background_tasks: BackgroundTasks):
 
     background_tasks.add_task(_bulk_ingest)
     return {"success": True, "message": "Bulk ingestion started in the background."}
+
+
+@app.get("/api/catalog/papers")
+def catalog_papers():
+    """Deterministic list of ingested papers (no LLM)."""
+    stats = vector_store.get_collection_stats()
+    meta = stats.get("papers_metadata") or {}
+    papers = []
+    for title, m in sorted(meta.items()):
+        papers.append({
+            "title": title,
+            "authors": m.get("authors", "Unknown Authors"),
+            "year": m.get("year", "N/A"),
+            "venue": m.get("venue", "N/A"),
+            "doi": m.get("doi", "N/A"),
+        })
+    return {"count": len(papers), "papers": papers}
+
+
+@app.get("/api/catalog/authors")
+def catalog_authors():
+    """Deterministic list of distinct author strings in the library."""
+    stats = vector_store.get_collection_stats()
+    meta = stats.get("papers_metadata") or {}
+    authors = list_distinct_authors(meta)
+    return {"count": len(authors), "authors": authors}
+
+
+@app.get("/api/catalog/search")
+def catalog_search(q: str = ""):
+    """Search papers/authors in the library by substring (no LLM)."""
+    stats = vector_store.get_collection_stats()
+    meta = stats.get("papers_metadata") or {}
+    needle = (q or "").strip().lower()
+    if not needle:
+        return {"papers": [], "authors": []}
+    papers = []
+    for title, m in meta.items():
+        blob = f"{title} {m.get('authors', '')} {m.get('venue', '')} {m.get('year', '')}".lower()
+        if needle in blob:
+            papers.append({
+                "title": title,
+                "authors": m.get("authors"),
+                "year": m.get("year"),
+                "venue": m.get("venue"),
+            })
+    indexes = build_catalog_indexes(meta)
+    author_hits = sorted(
+        t for t, titles in indexes["author_to_titles"].items() if needle in t
+    )
+    return {"papers": papers, "author_tokens": author_hits[:50]}
 
 
 @app.post("/api/query-rag")
@@ -932,6 +1022,10 @@ def query_rag(request: RAGQueryRequest):
             "Off-topic query blocked",
             "No relevant chunks",
             "No matching papers",
+            "Entity not in library",
+            "Topic not found",
+            "Answer failed scope verification",
+            "Named author not found",
         ]):
             return {"answer": answer_msg, "sources": []}
         raise HTTPException(status_code=500, detail=error_msg)

@@ -190,7 +190,7 @@ def reconcile(force_reset: bool = False):
             # 3. Embed and upsert into ChromaDB
             ok = vector_store.add_paper_chunks(
                 paper_title=title, doi=doi if doi != "N/A" else None, chunks=chunks,
-                authors=authors, year=year
+                authors=authors, year=year, venue=None
             )
 
             if ok:

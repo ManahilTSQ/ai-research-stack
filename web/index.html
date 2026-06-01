@@ -165,6 +165,14 @@
                             <button id="btn-sync-pdfs" class="btn-icon" title="Refresh file list"><i class="fa-solid fa-rotate"></i></button>
                         </div>
 
+                        <div class="sidebar-search-container">
+                            <label for="sidebar-search-input" class="sidebar-search-label">
+                                <i class="fa-solid fa-magnifying-glass"></i> Find a paper
+                            </label>
+                            <input type="search" id="sidebar-search-input" placeholder="Search by author, year, title..." autocomplete="off">
+                            <span id="sidebar-search-count" class="sidebar-search-count"></span>
+                        </div>
+
                         <!-- DB Summary Stats -->
                         <div class="db-stats-badge">
                             <div class="stat-item">
@@ -203,9 +211,6 @@
                         <!-- Ingested Files List -->
                         <div class="files-list-container">
                             <h4>Local Paper Manifest</h4>
-                            <div class="sidebar-search-container" style="margin-bottom: 10px;">
-                                <input type="text" id="sidebar-search-input" placeholder="Search saved papers..." autocomplete="off" style="width: 100%; background: rgba(0,0,0,0.25); border: 1px solid var(--border-glass); border-radius: 6px; padding: 6px 12px; color: #fff; font-size: 12px;">
-                            </div>
                             <div id="local-files-list" class="files-list">
                                 <div class="list-empty">Loading file manifest...</div>
                             </div>

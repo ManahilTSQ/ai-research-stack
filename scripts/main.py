@@ -195,7 +195,7 @@ def process_paper_pipeline(
             chunks = pdf_service.chunk_text(pages, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
             print(f"[+] Generated {len(chunks)} chunks.")
             print("[6/6] Ingesting into ChromaDB vector database...")
-            success = vector_store.add_paper_chunks(paper_title=title, doi=doi, chunks=chunks)
+            success = vector_store.add_paper_chunks(paper_title=title, doi=doi, chunks=chunks, venue=None)
 
             if success:
                 print("[+] Vector DB ingestion complete!")
@@ -265,7 +265,7 @@ def process_paper_pipeline(
         # Use the best available identifier for the vector ID
         identifier = doi or (f"arXiv:{arxiv_id}" if arxiv_id else title)
         success = vector_store.add_paper_chunks(
-            paper_title=title, doi=identifier, chunks=abstract_chunks
+            paper_title=title, doi=identifier, chunks=abstract_chunks, venue=None
         )
 
         if success:
@@ -393,7 +393,7 @@ def run_batch_ingestion(
             title = pdf_path.stem.replace("_", " ").title()
             doi   = None  # No DOI available for manually dropped PDFs
 
-            success = vector_store.add_paper_chunks(paper_title=title, doi=doi, chunks=chunks)
+            success = vector_store.add_paper_chunks(paper_title=title, doi=doi, chunks=chunks, venue=None)
             if success:
                 success_count += 1
                 print(f"[+] Ingested: '{title}'")

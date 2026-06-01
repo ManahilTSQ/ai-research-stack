@@ -30,6 +30,56 @@ NOT_IN_LIBRARY_REFUSAL = (
     "author or paper name. Please check the spelling or ingest the paper first."
 )
 
+TABLE_TRUNCATION_REFUSAL = (
+    "The table could not be completed for every paper in scope. "
+    "Please try again with a paper filter, a smaller author corpus, or ask for "
+    "title/year/venue only (metadata table)."
+)
+
+# Listing keywords used across RAG paths.
+LISTING_QUERY_KEYWORDS = (
+    "list", "table", "tabulate", "extract", "all paper",
+    "each paper", "for each", "structured", "enumerate",
+    "articles with", "papers by", "authored by",
+)
+
+# Signals that the user wants content extracted from PDF text, not just metadata.
+CONTENT_EXTRACTION_SIGNALS = (
+    "core security", "proposed solution", "framework", "assumption",
+    "methodology", "contribution", "finding", "abstract", "threat",
+    "mitigation", "challenge", "hypothesis", "objective", "research question",
+    "surveillance", "connectivity", "citizens", "problem", "solution",
+    "limitation", "open problem", "column", "columns",
+)
+
+_AUTHOR_PHRASE_PATTERNS = [
+    re.compile(r"corpus of\s+(.+?)(?:'s|\u2019s)\s+(?:articles?|papers?|works?)", re.I),
+    re.compile(r"corpus of\s+(.+?)\s+(?:articles?|papers?|works?)\s+on\b", re.I),
+    re.compile(r"corpus of\s+(.+?)\s+on\b", re.I),
+    re.compile(r"papers?\s+by\s+(.+?)(?:\s+on\b|[\.,;]|$)", re.I),
+    re.compile(r"articles?\s+by\s+(.+?)(?:\s+on\b|[\.,;]|$)", re.I),
+    re.compile(r"(.+?)(?:'s|\u2019s)\s+(?:articles?|papers?|works?)\s+on\b", re.I),
+]
+
+_AUTHOR_SCOPED_PATTERNS = [
+    r"corpus of\s+",
+    r"papers?\s+by\s+",
+    r"articles?\s+by\s+",
+    r"works?\s+by\s+",
+    r"'s\s+(papers?|articles?|works?)",
+    r"\u2019s\s+(papers?|articles?|works?)",
+    r"articles?\s+with\s+.+?\s+as\s+(author|co-author)",
+    r"list\s+(articles?|papers?)\s+with\s+",
+    r"papers?\s+authored?\s+by\s+",
+    r".+?\s+authored?\s+(papers?|articles?)",
+    r"as\s+(author|co-author)\s+or\s+co-author",
+]
+
+TABLE_TRUNCATION_RE = re.compile(
+    r"remaining\s+papers?|\.\.\.\s*\(|\.\.\.\s*\||\|\s*\.\.\.\s*\|",
+    re.IGNORECASE,
+)
+
 
 def format_chunk_block(chunk: dict[str, Any], index: int | None = None) -> str:
     """
@@ -156,6 +206,97 @@ def _filter_chunks_by_query_term_presence(
     return kept
 
 
+def is_listing_query(query: str) -> bool:
+    q = (query or "").lower()
+    return any(kw in q for kw in LISTING_QUERY_KEYWORDS)
+
+
+def is_content_extraction_query(query: str) -> bool:
+    q = (query or "").lower()
+    if not is_listing_query(query):
+        return False
+    if any(sig in q for sig in CONTENT_EXTRACTION_SIGNALS):
+        return True
+    # Numbered column specs like "(1) title (2) year" imply multi-field extraction.
+    return bool(re.search(r"\(\d+\)\s*\w+", q))
+
+
+def is_simple_inventory_listing(query: str) -> bool:
+    """Metadata-only list/table (title, year, venue) — safe to generate without LLM."""
+    return is_listing_query(query) and not is_content_extraction_query(query)
+
+
+def is_per_paper_extraction_query(query: str) -> bool:
+    """Structured per-paper table requiring text extraction from each PDF."""
+    q = (query or "").lower()
+    if "table" not in q and "tabulate" not in q and "for each" not in q:
+        return False
+    return is_content_extraction_query(query) or "extract" in q
+
+
+def query_expects_named_author(query: str) -> bool:
+    """True when the user clearly names an author corpus (must not answer from other authors)."""
+    if extract_author_search_phrase(query):
+        return True
+    q = (query or "").lower()
+    return any(re.search(p, q) for p in _AUTHOR_SCOPED_PATTERNS)
+
+
+def extract_author_search_phrase(query: str) -> str | None:
+    """Pull a human author phrase from queries like 'corpus of Noor Zaman Jhanjhi's articles'."""
+    q = (query or "").strip()
+    if not q:
+        return None
+    for pattern in _AUTHOR_PHRASE_PATTERNS:
+        m = pattern.search(q)
+        if not m:
+            continue
+        phrase = m.group(1).strip(" .,;:\"'")
+        phrase = re.sub(r"\s+", " ", phrase)
+        if len(phrase) >= 3:
+            return phrase
+    return None
+
+
+def author_phrase_tokens(phrase: str) -> list[str]:
+    stop = _query_stopwords() | {"noor", "dr", "prof", "professor"}
+    raw = re.findall(r"[a-z0-9]+", (phrase or "").lower())
+    return [t for t in raw if len(t) >= 3 and t not in stop]
+
+
+def parse_table_columns_from_query(query: str) -> list[str]:
+    """Parse explicit column headers from numbered lists in the user query."""
+    numbered = re.findall(r"\(\d+\)\s*([^,;\n]+)", query or "")
+    cols = [c.strip().rstrip(".") for c in numbered if c.strip()]
+    if cols:
+        return cols
+    return [
+        "Title",
+        "Year",
+        "Venue",
+        "Core topic / problem",
+        "Main approach / contribution",
+        "Key assumptions or scope",
+    ]
+
+
+def answer_has_table_truncation(answer: str) -> bool:
+    return bool(TABLE_TRUNCATION_RE.search(answer or ""))
+
+
+def filter_chunks_to_titles(
+    chunks: list[dict[str, Any]],
+    allowed_titles: list[str],
+) -> list[dict[str, Any]]:
+    if not allowed_titles:
+        return chunks
+    allowed = {t.strip() for t in allowed_titles}
+    return [
+        c for c in chunks
+        if (c.get("metadata") or {}).get("title", "").strip() in allowed
+    ]
+
+
 def query_refers_to_missing_library_paper(query: str, papers_metadata: dict) -> bool:
     """
     True when the query names a specific author/surname that is not in the library.
@@ -182,18 +323,25 @@ def resolve_matching_paper_titles(query: str, papers_metadata: dict) -> list[str
     if not tokens:
         return []
 
-    # Detect if this is an author-scoped query (e.g., "papers by X", "X's articles", "articles with X as author")
     query_lower = query.lower()
-    author_scoped_patterns = [
-        r"papers?\s+by\s+", r"articles?\s+by\s+", r"works?\s+by\s+",
-        r"'s\s+(papers?|articles?|works?)", r"articles?\s+with\s+.+?\s+as\s+(author|co-author)",
-        r"list\s+(articles?|papers?)\s+with\s+", r"papers?\s+authored?\s+by\s+",
-        r".+?\s+authored?\s+(papers?|articles?)", r"as\s+(author|co-author)\s+or\s+co-author"
-    ]
-    is_author_scoped = any(re.search(pattern, query_lower) for pattern in author_scoped_patterns)
+    is_author_scoped = query_expects_named_author(query)
 
     matched: list[str] = []
-    author_matches: list[str] = []  # Track matches specifically from author field
+    author_matches: list[str] = []
+
+    # Match on explicit author phrase tokens first (full name / surname).
+    author_phrase = extract_author_search_phrase(query)
+    phrase_tokens = author_phrase_tokens(author_phrase) if author_phrase else []
+    if phrase_tokens:
+        for title, meta in papers_metadata.items():
+            authors = (meta.get("authors") or "").lower()
+            if all(t in authors for t in phrase_tokens):
+                if title not in author_matches:
+                    author_matches.append(title)
+            elif len(phrase_tokens) >= 2 and phrase_tokens[-1] in authors:
+                # Surname-only match when full phrase is not stored verbatim.
+                if title not in author_matches:
+                    author_matches.append(title)
 
     # 1. Try to match using the Ingestion Manifest (very robust for physical uploads / filenames)
     try:
@@ -251,18 +399,20 @@ def resolve_matching_paper_titles(query: str, papers_metadata: dict) -> list[str
                     matched.append(title)
                 break
 
-    # If this is an author-scoped query, only return author field matches
-    if is_author_scoped and author_matches:
-        matched = author_matches
+    if author_matches:
+        if is_author_scoped:
+            matched = author_matches
+        else:
+            matched = author_matches + [m for m in matched if m not in author_matches]
+    elif is_author_scoped:
+        return []
 
-    # Deduplicate while preserving order
-    seen = set()
-    out = []
+    seen: set[str] = set()
+    out: list[str] = []
     for m in matched:
         if m not in seen:
             seen.add(m)
             out.append(m)
-
     return out
 
 
@@ -284,6 +434,8 @@ def retrieve_relevant_chunks(
     query: str,
     limit: int,
     filter_title: str | None = None,
+    *,
+    scope_titles: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Retrieve context chunks for RAG with author/paper-aware isolation.
@@ -297,9 +449,18 @@ def retrieve_relevant_chunks(
     stats = vector_store.get_collection_stats()
     papers_metadata = stats.get("papers_metadata", {})
 
-    inventory_titles = resolve_matching_paper_titles(query, papers_metadata)
+    inventory_titles = list(scope_titles) if scope_titles else resolve_matching_paper_titles(
+        query, papers_metadata
+    )
     if filter_title:
         inventory_titles = [filter_title]
+
+    strict = getattr(settings, "RAG_STRICT_MODE", True)
+    locked_scope = bool(inventory_titles) and (
+        bool(scope_titles)
+        or query_expects_named_author(query)
+        or bool(filter_title)
+    )
 
     # ── Author / Paper-scoped retrieval ───────────────────────────────────────
     # When the query names a specific author or paper that is already in the library,
@@ -335,8 +496,23 @@ def retrieve_relevant_chunks(
             skip_if_empty=False,
         )
 
-    # Last resort: semantic search returned nothing — surface raw candidates.
-    if not chunks:
+    if inventory_titles and (locked_scope or query_expects_named_author(query)):
+        chunks = filter_chunks_to_titles(chunks, inventory_titles)
+        if not chunks:
+            for title in inventory_titles:
+                chunks = _dedupe_chunks(
+                    chunks + vector_store.get_chunks_for_paper(title, max_chunks=max(limit, 12))
+                )
+
+    # Strict mode: never return unscoped semantic noise when the query is entity-locked.
+    if strict and locked_scope:
+        return filter_chunks_to_titles(chunks, inventory_titles)[:limit]
+
+    if not chunks and inventory_titles and not strict:
+        chunks = raw[:limit]
+        chunks = filter_chunks_to_titles(chunks, inventory_titles) or chunks
+
+    if not chunks and not locked_scope:
         chunks = raw[:limit]
 
     return chunks[:limit]

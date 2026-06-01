@@ -108,7 +108,8 @@ class VectorStoreService:
         doi: str | None,
         chunks: list[dict],
         authors: str | None = None,
-        year: int | None = None
+        year: int | None = None,
+        venue: str | None = None
     ) -> bool:
         """
         Upsert (insert or update) all text chunks for a single paper into ChromaDB.
@@ -129,6 +130,7 @@ class VectorStoreService:
             chunks: List of chunk dicts as produced by PDFProcessorService.chunk_text().
             authors: Formatted string of authors. May be None.
             year: Publication year. May be None.
+            venue: Publication venue (journal/conference name). May be None.
 
         Returns:
             True on successful upsert, False if no chunks were provided or on error.
@@ -162,6 +164,7 @@ class VectorStoreService:
                 "doi": doi or "N/A",
                 "authors": authors or "Unknown Authors",
                 "year": str(year) if year else "N/A",
+                "venue": venue or "N/A",
                 # Convert the list of page numbers to a comma-separated string
                 "pages": ",".join(map(str, chunk_meta.get("pages", []))),
                 "char_start": int(chunk_meta.get("char_start", 0)),
@@ -208,9 +211,9 @@ class VectorStoreService:
             logger.error(f"Failed to delete paper chunks from ChromaDB: {e}")
             return False
 
-    def update_paper_metadata(self, title: str, authors: str, year: int | str, doi: str | None = None, new_title: str | None = None) -> bool:
+    def update_paper_metadata(self, title: str, authors: str, year: int | str, doi: str | None = None, venue: str | None = None, new_title: str | None = None) -> bool:
         """
-        Update metadata (authors, year, doi, title) in-place for all chunks of a paper.
+        Update metadata (authors, year, doi, venue, title) in-place for all chunks of a paper.
         """
         try:
             # Retrieve all chunks belonging to this paper title
@@ -226,6 +229,8 @@ class VectorStoreService:
             for meta in metadatas:
                 meta["authors"] = authors
                 meta["year"] = str(year)
+                if venue and venue != "N/A":
+                    meta["venue"] = venue
                 if doi and doi != "N/A":
                     meta["doi"] = doi
                 if new_title:
@@ -382,7 +387,8 @@ class VectorStoreService:
                             papers_metadata[title] = {
                                 "authors": meta.get("authors", "Unknown Authors"),
                                 "year": meta.get("year", "N/A"),
-                                "doi": meta.get("doi", "N/A")
+                                "doi": meta.get("doi", "N/A"),
+                                "venue": meta.get("venue", "N/A")
                             }
 
             return {

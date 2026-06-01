@@ -62,7 +62,7 @@ def run():
                 continue
 
             print(f"  [+] Extracted {len(chunks)} chunks. Upserting into ChromaDB...")
-            ok = vector_store.add_paper_chunks(paper_title=title, doi=doi, chunks=chunks)
+            ok = vector_store.add_paper_chunks(paper_title=title, doi=doi, chunks=chunks, venue=None)
 
             if ok:
                 manifest_svc.mark_as_ingested(filename, title, doi, status="success")

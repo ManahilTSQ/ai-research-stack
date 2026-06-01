@@ -741,6 +741,15 @@ document.addEventListener("DOMContentLoaded", () => {
             return sidebarLabel.includes(filterText) || title.includes(filterText) || authors.includes(filterText) || filename.includes(filterText) || year.includes(filterText);
         });
 
+        const countEl = document.getElementById("sidebar-search-count");
+        if (countEl) {
+            if (filterText) {
+                countEl.textContent = `Showing ${filtered.length} of ${files.length} papers`;
+            } else {
+                countEl.textContent = files.length ? `${files.length} papers in manifest` : "";
+            }
+        }
+
         if (filtered.length === 0) {
             listDiv.innerHTML = `
                 <div class="list-empty">
@@ -1489,6 +1498,11 @@ document.addEventListener("DOMContentLoaded", () => {
      * @returns {string} HTML string wrapped in <p> tags.
      */
     function parseMarkdown(text) {
+        const tableHtml = extractMarkdownTables(text);
+        if (tableHtml !== null) {
+            return tableHtml;
+        }
+
         // Start by escaping HTML to prevent XSS from LLM-generated content
         let html = escapeHTML(text);
 

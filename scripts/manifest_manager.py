@@ -144,6 +144,7 @@ class ManifestManagerService:
         error: str = "",
         authors: str | None = None,
         year: int | str | None = None,
+        venue: str | None = None,
         abstract: str | None = None,
         paper_id: str | None = None,
     ) -> None:
@@ -177,6 +178,7 @@ class ManifestManagerService:
             "error": error,
             "authors": authors or "Unknown Authors",
             "year": str(year) if year else "N/A",
+            "venue": venue or "N/A",
             "abstract": final_abstract,
             # Semantic Scholar paper ID — used to detect duplicate discovery results
             "paper_id": paper_id or existing_entry.get("paper_id") or "",
@@ -223,6 +225,7 @@ class ManifestManagerService:
             "authors": "Unknown Authors",
             "year": "N/A",
             "doi": existing_doi or "N/A",
+            "venue": "N/A",
             "abstract": ""
         }
 
@@ -267,6 +270,7 @@ class ManifestManagerService:
                     resolved["authors"] = _format_authors_helper(cand.get("authors", []))
                     resolved["year"] = str(cand.get("year") or "N/A")
                     resolved["doi"] = (cand.get("externalIds") or {}).get("DOI") or existing_doi
+                    resolved["venue"] = cand.get("venue") or "N/A"
                     resolved["abstract"] = cand.get("abstract") or ""
                     _fill_abstract(resolved, first_page_text)  # use PDF text if S2 gave no abstract
                     return resolved
@@ -284,6 +288,7 @@ class ManifestManagerService:
                     resolved["authors"] = _format_authors_helper(cand.get("authors", []))
                     resolved["year"] = str(cand.get("year") or "N/A")
                     resolved["doi"] = (cand.get("externalIds") or {}).get("DOI") or extracted_doi
+                    resolved["venue"] = cand.get("venue") or "N/A"
                     resolved["abstract"] = cand.get("abstract") or ""
                     _fill_abstract(resolved, first_page_text)  # use PDF text if S2 gave no abstract
                     return resolved
@@ -334,6 +339,7 @@ class ManifestManagerService:
                     resolved["authors"] = _format_authors_helper(cand.get("authors", []))
                     resolved["year"] = str(cand.get("year") or "N/A")
                     resolved["doi"] = (cand.get("externalIds") or {}).get("DOI") or resolved["doi"]
+                    resolved["venue"] = cand.get("venue") or "N/A"
                     resolved["abstract"] = cand.get("abstract") or ""
                     _fill_abstract(resolved, first_page_text)  # use PDF text if S2 gave no abstract
                     return resolved
@@ -452,6 +458,7 @@ class ManifestManagerService:
                         authors=new_authors,
                         year=str(new_year),
                         doi=resolved.get("doi"),
+                        venue=resolved.get("venue"),
                         new_title=new_title if new_title != meta.get("title") else None,
                     )
 
@@ -539,6 +546,7 @@ class ManifestManagerService:
                             "error": "",
                             "authors": paper_meta.get("authors", "Unknown Authors"),
                             "year": paper_meta.get("year", "N/A"),
+                            "venue": paper_meta.get("venue", "N/A"),
                             # Use the file's last-modified time as a proxy for ingestion time
                             "ingested_at": datetime.fromtimestamp(
                                 pdf_path.stat().st_mtime
@@ -589,6 +597,7 @@ class ManifestManagerService:
                         db_authors = paper_meta.get("authors", "Unknown Authors")
                         db_year = paper_meta.get("year", "N/A")
                         db_doi = paper_meta.get("doi", "N/A")
+                        db_venue = paper_meta.get("venue", "N/A")
 
                         # If the DB has valid metadata but the manifest doesn't, sync it synchronously (very fast)
                         if db_authors != "Unknown Authors" or db_year != "N/A":
@@ -600,6 +609,9 @@ class ManifestManagerService:
                                 updated = True
                             if meta.get("doi") in [None, "N/A", "None"] or meta["doi"] != db_doi:
                                 meta["doi"] = db_doi
+                                updated = True
+                            if meta.get("venue") in [None, "N/A", "None"] or meta["venue"] != db_venue:
+                                meta["venue"] = db_venue
                                 updated = True
                         
                         # If the DB and manifest are missing metadata or abstract, queue it for background resolution
@@ -628,6 +640,7 @@ class ManifestManagerService:
                                 s2_authors = resolved["authors"]
                                 s2_year = resolved["year"]
                                 s2_doi = resolved["doi"]
+                                s2_venue = resolved.get("venue", "N/A")
                                 s2_abstract = resolved.get("abstract", "")
 
                                 logger.info(f"Resolved S2 Metadata for '{title}': title='{s2_title}', authors='{s2_authors}', year={s2_year}")
@@ -638,6 +651,7 @@ class ManifestManagerService:
                                     authors=s2_authors,
                                     year=str(s2_year),
                                     doi=s2_doi if s2_doi != "N/A" else existing_doi,
+                                    venue=s2_venue if s2_venue != "N/A" else None,
                                     new_title=s2_title
                                 )
 
@@ -648,6 +662,7 @@ class ManifestManagerService:
                                         current_manifest[filename]["title"] = s2_title
                                         current_manifest[filename]["authors"] = s2_authors
                                         current_manifest[filename]["year"] = str(s2_year)
+                                        current_manifest[filename]["venue"] = s2_venue
                                         current_manifest[filename]["abstract"] = s2_abstract
                                         if s2_doi and s2_doi != "N/A":
                                             current_manifest[filename]["doi"] = s2_doi

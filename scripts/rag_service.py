@@ -24,10 +24,29 @@ from rag_context import (
     retrieve_relevant_chunks,
     resolve_matching_paper_titles,
     query_refers_to_missing_library_paper,
+    query_expects_named_author,
+    is_listing_query,
+    is_simple_inventory_listing,
+    is_per_paper_extraction_query,
+    parse_table_columns_from_query,
+    answer_has_table_truncation,
+    filter_chunks_to_titles,
     EMPTY_DB_REFUSAL,
     IRRELEVANT_REFUSAL,
     NOT_IN_LIBRARY_REFUSAL,
+    TABLE_TRUNCATION_REFUSAL,
 )
+from rag_strict import (
+    resolve_query_scope,
+    scope_refusal_message,
+    inventory_for_scope,
+    apply_verification_or_refuse,
+    answer_catalog_metadata_query,
+    _TOPIC_NOT_FOUND_REFUSAL,
+)
+
+# Maximum papers processed in one batched extraction table (one LLM call per paper).
+MAX_EXTRACTION_TABLE_PAPERS = 40
 
 
 # ── Logger setup ──────────────────────────────────────────────────────────────
@@ -120,6 +139,162 @@ class RAGService:
         self.vector_store = VectorStoreService()
 
         logger.info("RAG Service initialised successfully.")
+
+    def _ollama_chat(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        temperature: float = 0.05,
+        num_predict: int = 2048,
+    ) -> str:
+        url = f"{settings.OLLAMA_BASE_URL}/api/chat"
+        payload = {
+            "model": settings.OLLAMA_MODEL,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "stream": False,
+            "options": {
+                "temperature": temperature,
+                "top_p": 0.8,
+                "repeat_penalty": 1.1,
+                "num_predict": num_predict,
+            },
+        }
+        response = requests.post(url, json=payload, timeout=settings.OLLAMA_TIMEOUT)
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"Ollama returned HTTP {response.status_code}: {response.text[:300]}"
+            )
+        return response.json()["message"]["content"].strip()
+
+    def _escape_md_cell(self, value: str) -> str:
+        return (value or "").replace("|", "\\|").replace("\n", " ").strip()
+
+    def _metadata_table_row(self, title: str, meta: dict, columns: list[str]) -> str:
+        """Deterministic cells for standard bibliographic columns."""
+        col_map = {
+            "title": title,
+            "year": str(meta.get("year", "N/A")),
+            "venue": str(meta.get("venue", "N/A")),
+            "authors": str(meta.get("authors", "Unknown Authors")),
+            "doi": str(meta.get("doi", "N/A")),
+        }
+        cells: list[str] = []
+        for col in columns:
+            key = col.lower().strip()
+            if key in col_map:
+                cells.append(self._escape_md_cell(col_map[key]))
+            else:
+                cells.append("—")
+        return "| " + " | ".join(cells) + " |"
+
+    def _extract_single_paper_row(
+        self,
+        title: str,
+        meta: dict,
+        columns: list[str],
+        paper_chunks: list[dict],
+        query: str,
+    ) -> str:
+        """One LLM call per paper — prevents cross-author contamination and truncation."""
+        context = chunks_to_context_string(paper_chunks, header=f"Paper: {title}")
+        col_list = ", ".join(columns)
+        system_prompt = (
+            "You extract ONE markdown table row for a single academic paper.\n"
+            "Rules:\n"
+            "- Use ONLY the provided paper context and metadata.\n"
+            "- Output EXACTLY one line: a markdown table row starting with | and ending with |.\n"
+            "- Do NOT output a header row, separator row, or any other text.\n"
+            "- If a field is not stated in the text, write: Not stated in text\n"
+            "- Never mention other papers or authors not in this paper's metadata.\n"
+        )
+        user_prompt = (
+            f"Researcher request (for context): {query}\n\n"
+            f"Paper metadata:\n"
+            f"Title: {title}\n"
+            f"Authors: {meta.get('authors', 'Unknown')}\n"
+            f"Year: {meta.get('year', 'N/A')}\n"
+            f"Venue: {meta.get('venue', 'N/A')}\n"
+            f"DOI: {meta.get('doi', 'N/A')}\n\n"
+            f"Columns (in order): {col_list}\n\n"
+            f"{context}\n\n"
+            "Output one markdown table row only:"
+        )
+        raw = self._ollama_chat(system_prompt, user_prompt, num_predict=1024)
+        for line in raw.splitlines():
+            line = line.strip()
+            if line.startswith("|") and line.endswith("|"):
+                parts = [p.strip() for p in line.strip("|").split("|")]
+                if len(parts) == len(columns):
+                    return "| " + " | ".join(self._escape_md_cell(p) for p in parts) + " |"
+        return self._metadata_table_row(title, meta, columns)
+
+    def _generate_per_paper_extraction_table(
+        self,
+        query: str,
+        inventory_metadata: dict,
+        columns: list[str],
+    ) -> dict:
+        titles = list(inventory_metadata.keys())
+        if not titles:
+            return {
+                "query": query,
+                "answer": NOT_IN_LIBRARY_REFUSAL,
+                "sources": [],
+                "success": False,
+                "error": "No papers in scope for extraction table.",
+            }
+        if len(titles) > MAX_EXTRACTION_TABLE_PAPERS:
+            return {
+                "query": query,
+                "answer": (
+                    f"This extraction table would cover {len(titles)} papers, which exceeds "
+                    f"the limit of {MAX_EXTRACTION_TABLE_PAPERS}. Narrow the query to one author "
+                    "or use the paper filter dropdown."
+                ),
+                "sources": [],
+                "success": False,
+                "error": "Extraction table too large.",
+            }
+
+        header = "| " + " | ".join(self._escape_md_cell(c) for c in columns) + " |"
+        separator = "| " + " | ".join("---" for _ in columns) + " |"
+        rows: list[str] = []
+        all_sources: list[dict] = []
+
+        meta_only_keys = {"title", "year", "venue", "authors", "doi"}
+        needs_llm = any(c.lower().strip() not in meta_only_keys for c in columns)
+
+        for title in sorted(titles, key=lambda t: str(inventory_metadata[t].get("year", ""))):
+            meta = inventory_metadata[title]
+            paper_chunks = self.vector_store.get_chunks_for_paper(title, max_chunks=24)
+            all_sources.extend(paper_chunks[:8])
+            if needs_llm and paper_chunks:
+                row = self._extract_single_paper_row(
+                    title, meta, columns, paper_chunks, query
+                )
+            else:
+                row = self._metadata_table_row(title, meta, columns)
+            rows.append(row)
+
+        answer = "\n".join([header, separator, *rows])
+        if answer_has_table_truncation(answer):
+            return {
+                "query": query,
+                "answer": TABLE_TRUNCATION_REFUSAL,
+                "sources": all_sources,
+                "success": False,
+                "error": "Table truncation detected.",
+            }
+        return {
+            "query": query,
+            "answer": answer,
+            "sources": all_sources,
+            "success": True,
+        }
 
     def _build_safe_references(self, chunks: list[dict]) -> str:
         """
@@ -268,25 +443,41 @@ class RAGService:
         #   a) Filter the library inventory to only that author's papers so the LLM
         #      cannot accidentally reference other authors' works.
         #   b) Scale up the retrieval limit so every paper gets at least one chunk.
-        matched_titles = resolve_matching_paper_titles(query, papers_metadata)
-        _listing_kw = (
-            "list", "table", "tabulate", "extract", "all paper",
-            "each paper", "for each", "structured", "enumerate",
-            "articles with", "papers by", "authored by"
+        scope = resolve_query_scope(
+            query, papers_metadata, filter_title=filter_title
         )
-        is_listing_query = any(kw in query.lower() for kw in _listing_kw)
+        matched_titles = scope.scoped_titles
+        listing_style_query = is_listing_query(query)
 
-        # Build an author-filtered inventory when an author is identified
-        inventory_metadata = papers_metadata
-        if matched_titles and not filter_title:
-            filtered = {t: papers_metadata[t] for t in matched_titles if t in papers_metadata}
-            if filtered:
-                inventory_metadata = filtered
+        if scope.requires_entity and not scope.scoped_titles:
+            return {
+                "query": query,
+                "answer": scope_refusal_message(scope),
+                "sources": [],
+                "success": False,
+                "error": f"Entity not in library ({scope.entity_kind}).",
+            }
 
-        # ── CODE-BASED LISTING FOR LISTING QUERIES ───────────────────────
-        # For listing queries, bypass the LLM entirely and generate the list
-        # directly from the library inventory to ensure ALL papers are listed.
-        if is_listing_query and inventory_metadata:
+        inventory_metadata = inventory_for_scope(papers_metadata, scope)
+
+        catalog_answer = answer_catalog_metadata_query(query, papers_metadata)
+        if catalog_answer:
+            return {
+                "query": query,
+                "answer": catalog_answer,
+                "sources": [],
+                "success": True,
+            }
+
+        # ── PER-PAPER EXTRACTION TABLE (one LLM call per paper, no truncation) ──
+        if is_per_paper_extraction_query(query) and inventory_metadata:
+            columns = parse_table_columns_from_query(query)
+            return self._generate_per_paper_extraction_table(
+                query, inventory_metadata, columns
+            )
+
+        # ── CODE-BASED LISTING FOR SIMPLE INVENTORY QUERIES ─────────────────
+        if is_simple_inventory_listing(query) and inventory_metadata:
             # Detect if user specifically requested a table format
             is_table_request = "table" in query.lower() or "tabulate" in query.lower()
             
@@ -327,16 +518,34 @@ class RAGService:
                 "success": True
             }
 
-        # For non-listing queries, proceed with normal RAG pipeline
-        # For listing queries over many papers, give each paper at least 3 chunks
         effective_limit = limit
-        if is_listing_query and matched_titles:
+        if matched_titles:
             effective_limit = max(limit, len(matched_titles) * 3, 24)
+
+        # Extraction/listing tables must not inherit unrelated prior chat turns.
+        history_for_llm = conversation_history
+        if is_per_paper_extraction_query(query) or is_simple_inventory_listing(query):
+            history_for_llm = None
 
         # ── Step 1: Retrieve chunks ───────────────────────────────────────────
         chunks = retrieve_relevant_chunks(
-            self.vector_store, query, limit=effective_limit, filter_title=filter_title
+            self.vector_store,
+            query,
+            limit=effective_limit,
+            filter_title=filter_title,
+            scope_titles=matched_titles if scope.is_locked else None,
         )
+        if matched_titles and not filter_title:
+            chunks = filter_chunks_to_titles(chunks, matched_titles)
+
+        if scope.entity_kind == "topic" and scope.requires_entity and not chunks:
+            return {
+                "query": query,
+                "answer": _TOPIC_NOT_FOUND_REFUSAL,
+                "sources": [],
+                "success": False,
+                "error": "Topic not found in library.",
+            }
 
         if not papers_metadata:
             logger.warning("No papers found in ChromaDB.")
@@ -375,9 +584,14 @@ class RAGService:
         context_str = chunks_to_context_string(chunks)
 
         # ── Step 3: Build structured prompts ──────────────────────────────────
-        # Note if the query is scoped to a specific paper
         scope_note = ""
-        if filter_title:
+        if matched_titles and not filter_title:
+            scope_note = (
+                f"AUTHOR/PAPER SCOPE: Answer ONLY using papers by this author/corpus "
+                f"({len(matched_titles)} paper(s) in scope). "
+                "Do NOT cite or mention any other ingested paper.\n"
+            )
+        elif filter_title:
             scope_note = (
                 f"NOTE: This query is scoped to a SINGLE paper: \"{filter_title}\". "
                 "Only use information from this paper's context blocks when answering.\n"
@@ -447,8 +661,8 @@ class RAGService:
         # Build a multi-turn message array so the model can preserve chat memory
         # across browser refreshes when conversation history is provided by the UI.
         messages = [{"role": "system", "content": system_prompt}]
-        if conversation_history:
-            for turn in conversation_history[-12:]:
+        if history_for_llm:
+            for turn in history_for_llm[-12:]:
                 role = (turn.get("role") or "").strip().lower()
                 content = (turn.get("content") or "").strip()
                 if role in {"user", "assistant"} and content:
@@ -480,23 +694,28 @@ class RAGService:
                         "I cannot confirm or deny that claim from the retrieved context. "
                         "The current sources do not provide direct evidence on this topic."
                     )
+                elif answer_has_table_truncation(answer):
+                    answer = TABLE_TRUNCATION_REFUSAL
                 else:
-                    # Keep model narrative, but replace free-form references with deterministic ones.
                     answer = self._strip_model_references(answer)
-                    
-                    # Detect if this is a listing/tabulation query - if so, don't add automatic References
-                    # because the LLM should have listed everything in the main response
-                    _listing_kw = (
-                        "list", "table", "tabulate", "extract", "all paper",
-                        "each paper", "for each", "structured", "enumerate",
-                        "articles with", "papers by", "authored by"
-                    )
-                    is_listing_query = any(kw in query.lower() for kw in _listing_kw)
-                    
-                    if not is_listing_query:
+                    if not listing_style_query:
                         safe_refs = self._build_safe_references(chunks)
                         if safe_refs:
                             answer = f"{answer}\n\n{safe_refs}"
+                    answer, verified = apply_verification_or_refuse(
+                        answer,
+                        scope=scope,
+                        papers_metadata=papers_metadata,
+                        chunks=chunks,
+                    )
+                    if not verified:
+                        return {
+                            "query": query,
+                            "answer": answer,
+                            "sources": chunks,
+                            "success": False,
+                            "error": "Answer failed scope verification.",
+                        }
                 logger.info("Successfully received answer from Ollama.")
                 return {
                     "query": query,
