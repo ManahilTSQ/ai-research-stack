@@ -538,7 +538,7 @@ class RAGService:
             query,
             limit=effective_limit,
             filter_title=filter_title,
-            scope_titles=matched_titles if scope.is_locked else None,
+            scope_titles=matched_titles if matched_titles else None,
         )
         if matched_titles and not filter_title:
             chunks = filter_chunks_to_titles(chunks, matched_titles)
@@ -600,10 +600,16 @@ class RAGService:
         # ── Step 3: Build structured prompts ──────────────────────────────────
         scope_note = ""
         if matched_titles and not filter_title:
+            if scope.entity_kind == "author":
+                label = f"author \"{scope.author_phrase or 'named in query'}\""
+            elif scope.entity_kind == "paper":
+                label = "the matched paper(s)"
+            else:
+                label = "the matched library papers"
             scope_note = (
-                f"AUTHOR/PAPER SCOPE: Answer ONLY using papers by this author/corpus "
+                f"LIBRARY SCOPE: Answer ONLY using {label} "
                 f"({len(matched_titles)} paper(s) in scope). "
-                "Do NOT cite or mention any other ingested paper.\n"
+                "Do NOT cite, summarize, or mention any other ingested paper or author.\n"
             )
         elif filter_title:
             scope_note = (

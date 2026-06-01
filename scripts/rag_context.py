@@ -59,7 +59,45 @@ _AUTHOR_PHRASE_PATTERNS = [
     re.compile(r"papers?\s+by\s+(.+?)(?:\s+on\b|[\.,;]|$)", re.I),
     re.compile(r"articles?\s+by\s+(.+?)(?:\s+on\b|[\.,;]|$)", re.I),
     re.compile(r"(.+?)(?:'s|\u2019s)\s+(?:articles?|papers?|works?)\s+on\b", re.I),
+    # Synthesis / stance questions: "thoughts of Jhanjhi", "contributions by X"
+    re.compile(
+        r"(?:thoughts?|views?|opinions?|ideas?|perspective|work|research|"
+        r"contributions?|findings?)\s+(?:of|by)\s+(.+?)(?:\s*[\.,;\?]|$)",
+        re.I,
+    ),
+    re.compile(
+        r"(?:what\s+are|describe|summarize|explain)\s+(?:the\s+)?(?:main\s+)?"
+        r"(?:thoughts?|views?|contributions?|work)\s+(?:of|by)\s+(.+?)(?:\s*[\.,;\?]|$)",
+        re.I,
+    ),
+    re.compile(r"according to\s+(.+?)(?:\s*[\.,;\?]|$)", re.I),
+    re.compile(r"(?:who is|tell me about)\s+(.+?)(?:\s*[\.,;\?]|$)", re.I),
+    re.compile(r"about\s+(?:the\s+)?(?:research(?:er)?|work of)\s+(.+?)(?:\s*[\.,;\?]|$)", re.I),
 ]
+
+_AUTHOR_INTENT_RE = re.compile(
+    r"\b(?:contributions?|thoughts?|views?|opinions?|research(?:er)?|"
+    r"authored?|wrote|written|findings?|summarize|summary|according to|"
+    r"main work|what does|what did|what are|who is|tell me about)\b",
+    re.I,
+)
+
+_PRONOUN_AUTHOR_RE = re.compile(
+    r"\b(?:his|her|their)\s+(?:main\s+)?(?:contributions?|thoughts?|views?|work|research|papers?)\b",
+    re.I,
+)
+
+_PAPER_FOCUS_RE = re.compile(
+    r"\b(?:summarize|summary of|paper titled|the paper|this paper|"
+    r"according to the paper|in the paper)\b",
+    re.I,
+)
+
+# Tokens that appear as author surnames in many unrelated papers — skip for auto-detect.
+_COMMON_AUTHOR_SURNAME_BLOCKLIST = frozenset({
+    "kumar", "singh", "ahmed", "ali", "khan", "sharma", "patel", "smith",
+    "wang", "chen", "zhang", "li", "kim", "lee", "roy", "das", "islam",
+})
 
 _AUTHOR_SCOPED_PATTERNS = [
     r"corpus of\s+",
@@ -73,6 +111,9 @@ _AUTHOR_SCOPED_PATTERNS = [
     r"papers?\s+authored?\s+by\s+",
     r".+?\s+authored?\s+(papers?|articles?)",
     r"as\s+(author|co-author)\s+or\s+co-author",
+    r"(?:thoughts?|views?|opinions?|contributions?|perspective)\s+(?:of|by)\s+",
+    r"main\s+contributions?\s+(?:of|by)\s+",
+    r"what\s+are\s+(?:the\s+)?(?:his|her|their)\s+main\s+contributions",
 ]
 
 TABLE_TRUNCATION_RE = re.compile(
@@ -144,6 +185,7 @@ def _query_stopwords() -> set[str]:
         "that", "this", "have", "into", "your", "their", "paper", "papers",
         "author", "authors", "say", "says", "line", "summarize", "summary",
         "brief", "explain", "describe", "tell", "give", "please", "would",
+        "thoughts", "views", "opinions", "ideas", "main",
         # Generic academic terms and common filler words to prevent false-positive RAG matches
         "detailed", "provide", "provides", "present", "presents", "core", "research",
         "method", "methodology", "findings", "contributions", "study", "studies",
@@ -242,6 +284,37 @@ def query_expects_named_author(query: str) -> bool:
     return any(re.search(p, q) for p in _AUTHOR_SCOPED_PATTERNS)
 
 
+def query_has_author_intent(query: str) -> bool:
+    """True when the user is asking about a person's research (not a generic topic)."""
+    q = query or ""
+    return (
+        bool(_AUTHOR_INTENT_RE.search(q))
+        or bool(_PRONOUN_AUTHOR_RE.search(q))
+        or query_expects_named_author(q)
+    )
+
+
+def query_has_paper_focus(query: str) -> bool:
+    """True when the user is asking about a specific paper by title."""
+    return bool(_PAPER_FOCUS_RE.search(query or "")) or bool(
+        re.search(r'"[^"]{8,200}"', query or "")
+    )
+
+
+def _clean_author_phrase(phrase: str) -> str | None:
+    phrase = re.sub(r"\s+", " ", (phrase or "").strip(" .,;:\"'?"))
+    # Drop trailing pronouns / filler from "contributions, what are his"
+    phrase = re.sub(
+        r"\s*,\s*what\s+are\s+(?:his|her|their).*$",
+        "",
+        phrase,
+        flags=re.I,
+    ).strip()
+    if len(phrase) < 2:
+        return None
+    return phrase
+
+
 def extract_author_search_phrase(query: str) -> str | None:
     """Pull a human author phrase from queries like 'corpus of Noor Zaman Jhanjhi's articles'."""
     q = (query or "").strip()
@@ -251,9 +324,8 @@ def extract_author_search_phrase(query: str) -> str | None:
         m = pattern.search(q)
         if not m:
             continue
-        phrase = m.group(1).strip(" .,;:\"'")
-        phrase = re.sub(r"\s+", " ", phrase)
-        if len(phrase) >= 3:
+        phrase = _clean_author_phrase(m.group(1))
+        if phrase:
             return phrase
     return None
 
@@ -262,6 +334,177 @@ def author_phrase_tokens(phrase: str) -> list[str]:
     stop = _query_stopwords() | {"noor", "dr", "prof", "professor"}
     raw = re.findall(r"[a-z0-9]+", (phrase or "").lower())
     return [t for t in raw if len(t) >= 3 and t not in stop]
+
+
+def _load_ingestion_manifest() -> dict:
+    path = settings.BASE_DIR / "output" / "ingestion_manifest.json"
+    if not path.exists():
+        return {}
+    try:
+        import json
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def build_catalog_indexes(papers_metadata: dict) -> dict[str, Any]:
+    """Author token → paper titles and title lookup maps (deterministic, no LLM)."""
+    author_to_titles: dict[str, list[str]] = {}
+    title_lower_map: dict[str, str] = {}
+
+    def _add_author_tokens(authors: str, title: str) -> None:
+        for token in re.findall(r"[a-z]{3,}", (authors or "").lower()):
+            author_to_titles.setdefault(token, [])
+            if title not in author_to_titles[token]:
+                author_to_titles[token].append(title)
+
+    for title, meta in (papers_metadata or {}).items():
+        title_lower_map[title.lower().strip()] = title
+        _add_author_tokens(meta.get("authors") or "", title)
+
+    for _fn, meta in _load_ingestion_manifest().items():
+        m_title = (meta.get("title") or "").strip()
+        m_authors = meta.get("authors") or ""
+        if not m_title:
+            continue
+        for db_title in papers_metadata:
+            if (
+                db_title.lower().strip() == m_title.lower()
+                or db_title.lower() in m_title.lower()
+                or m_title.lower() in db_title.lower()
+            ):
+                _add_author_tokens(m_authors, db_title)
+                break
+
+    return {
+        "author_to_titles": author_to_titles,
+        "title_lower_map": title_lower_map,
+        "all_titles": list(papers_metadata.keys()),
+    }
+
+
+def author_field_contains_token(authors: str, token: str) -> bool:
+    """True if token appears in an author name segment (handles initials like N. Z. Jhanjhi)."""
+    token = (token or "").lower()
+    if len(token) < 3:
+        return False
+    for part in re.split(r"[,;&]| and ", (authors or "").lower()):
+        part = part.strip()
+        if not part:
+            continue
+        if token in part:
+            return True
+        # Match surname after initials: "N. Z. Jhanjhi" for token "jhanjhi"
+        words = re.findall(r"[a-z]+", part)
+        if words and words[-1] == token:
+            return True
+    return False
+
+
+def resolve_papers_for_author_phrase(
+    phrase: str,
+    papers_metadata: dict,
+    *,
+    indexes: dict[str, Any] | None = None,
+) -> list[str]:
+    """All library papers whose author field matches the given name / surname."""
+    if not phrase or not papers_metadata:
+        return []
+    indexes = indexes or build_catalog_indexes(papers_metadata)
+    phrase_tokens = author_phrase_tokens(phrase)
+    if not phrase_tokens:
+        return []
+
+    matched: set[str] = set()
+    surname = phrase_tokens[-1]
+
+    for title, meta in papers_metadata.items():
+        authors = meta.get("authors") or ""
+        if all(author_field_contains_token(authors, t) for t in phrase_tokens):
+            matched.add(title)
+        elif author_field_contains_token(authors, surname):
+            matched.add(title)
+
+    for token in phrase_tokens:
+        for title in indexes["author_to_titles"].get(token, []):
+            matched.add(title)
+
+    return sorted(matched)
+
+
+def _expand_author_name_from_query(query: str, token: str) -> str:
+    """Recover a fuller name from the query when only a surname token was matched."""
+    pattern = rf"((?:[A-Z][A-Za-z]+|[A-Z]\.)(?:\s+(?:[A-Z][A-Za-z]+|[A-Z]\.)){{0,4}}\s+{re.escape(token)})"
+    m = re.search(pattern, query, re.I)
+    if m:
+        return re.sub(r"\s+", " ", m.group(1)).strip()
+    return token
+
+
+def infer_library_author_phrase(query: str, papers_metadata: dict) -> str | None:
+    """
+    Detect an author name present in the library from the query text alone.
+    Used when the user did not say 'papers by X' but clearly asks about a researcher.
+    """
+    explicit = extract_author_search_phrase(query)
+    if explicit:
+        return explicit
+    if not query_has_author_intent(query):
+        return None
+
+    indexes = build_catalog_indexes(papers_metadata)
+    total = max(len(papers_metadata), 1)
+    best_token: str | None = None
+    best_count = 0
+
+    for token in _significant_query_tokens(query):
+        if len(token) < 4 or token in _COMMON_AUTHOR_SURNAME_BLOCKLIST:
+            continue
+        papers = indexes["author_to_titles"].get(token, [])
+        if not papers:
+            continue
+        # Skip tokens that match too many papers (likely a topic word, not a surname).
+        if len(papers) > max(5, int(total * 0.35)) and len(token) < 7:
+            continue
+        if len(papers) > best_count:
+            best_count = len(papers)
+            best_token = token
+
+    if not best_token:
+        return None
+    return _expand_author_name_from_query(query, best_token)
+
+
+def fuzzy_match_paper_titles(query: str, papers_metadata: dict) -> list[str]:
+    """Match paper titles via quoted strings or distinctive title-token overlap."""
+    quoted = re.findall(r'"([^"]{8,200})"', query or "")
+    matches: list[str] = []
+    for q in quoted:
+        ql = q.lower().strip()
+        for title in papers_metadata:
+            tl = title.lower()
+            if ql in tl or tl in ql:
+                if title not in matches:
+                    matches.append(title)
+    if matches:
+        return matches
+
+    tokens = _significant_query_tokens(query)
+    if not tokens:
+        return []
+
+    scored: list[tuple[int, str]] = []
+    for title, meta in papers_metadata.items():
+        hay = f"{title} {meta.get('authors', '')}".lower()
+        score = sum(1 for t in tokens if t in hay)
+        if score >= 2 or (len(tokens) == 1 and tokens[0] in title.lower()):
+            scored.append((score, title))
+    if not scored:
+        return []
+    scored.sort(reverse=True)
+    best_score = scored[0][0]
+    return [t for s, t in scored if s == best_score and s >= 2]
 
 
 def parse_table_columns_from_query(query: str) -> list[str]:
@@ -311,109 +554,69 @@ def query_refers_to_missing_library_paper(query: str, papers_metadata: dict) -> 
 def resolve_matching_paper_titles(query: str, papers_metadata: dict) -> list[str]:
     """
     Map a natural-language question to paper title(s) in the local library inventory.
-    Matches author surnames and distinctive title words against ChromaDB metadata,
-    falling back to matching against filenames and metadata inside the ingestion manifest.
-    
-    Prioritizes author field matches over title matches for author-scoped queries.
+    Author matches always win over title-token matches to prevent wrong-paper answers.
     """
     if not papers_metadata:
         return []
+
+    indexes = build_catalog_indexes(papers_metadata)
+    author_phrase = extract_author_search_phrase(query) or infer_library_author_phrase(
+        query, papers_metadata
+    )
+    is_author_scoped = query_expects_named_author(query) or bool(author_phrase)
+
+    if author_phrase:
+        author_matches = resolve_papers_for_author_phrase(
+            author_phrase, papers_metadata, indexes=indexes
+        )
+        if author_matches:
+            return author_matches
+        if is_author_scoped:
+            return []
+
+    # Paper-title focus (quoted title, summarize, etc.)
+    if query_has_paper_focus(query):
+        paper_matches = fuzzy_match_paper_titles(query, papers_metadata)
+        if paper_matches:
+            return paper_matches
 
     tokens = _significant_query_tokens(query)
     if not tokens:
         return []
 
-    query_lower = query.lower()
-    is_author_scoped = query_expects_named_author(query)
-
     matched: list[str] = []
     author_matches: list[str] = []
 
-    # Match on explicit author phrase tokens first (full name / surname).
-    author_phrase = extract_author_search_phrase(query)
-    phrase_tokens = author_phrase_tokens(author_phrase) if author_phrase else []
-    if phrase_tokens:
-        for title, meta in papers_metadata.items():
-            authors = (meta.get("authors") or "").lower()
-            if all(t in authors for t in phrase_tokens):
-                if title not in author_matches:
-                    author_matches.append(title)
-            elif len(phrase_tokens) >= 2 and phrase_tokens[-1] in authors:
-                # Surname-only match when full phrase is not stored verbatim.
-                if title not in author_matches:
-                    author_matches.append(title)
-
-    # 1. Try to match using the Ingestion Manifest (very robust for physical uploads / filenames)
-    try:
-        manifest_path = settings.BASE_DIR / "output" / "ingestion_manifest.json"
-        if manifest_path.exists():
-            import json
-            with open(manifest_path, "r", encoding="utf-8") as f:
-                manifest = json.load(f)
-            for filename, meta in manifest.items():
-                m_title = meta.get("title", "")
-                m_authors = meta.get("authors", "")
-                m_year = meta.get("year", "")
-                
-                for token in tokens:
-                    if len(token) < 4:
-                        continue
-                    # Prioritize author field matches
-                    if token in m_authors.lower():
-                        # Resolve the corresponding title in papers_metadata
-                        for db_title in papers_metadata.keys():
-                            if (db_title.lower().strip() == m_title.lower().strip() or
-                                    db_title.lower().strip() in m_title.lower().strip() or
-                                    m_title.lower().strip() in db_title.lower().strip()):
-                                if db_title not in author_matches:
-                                    author_matches.append(db_title)
-                                break
-                    # Also match against filename and title as fallback
-                    elif token in filename.lower() or token in m_title.lower():
-                        for db_title in papers_metadata.keys():
-                            if (db_title.lower().strip() == m_title.lower().strip() or
-                                    db_title.lower().strip() in m_title.lower().strip() or
-                                    m_title.lower().strip() in db_title.lower().strip()):
-                                if db_title not in matched:
-                                    matched.append(db_title)
-                                break
-    except Exception:
-        # Prevent any manifest reading issue from crashing RAG
-        pass
-
-    # 2. Match against active ChromaDB papers metadata directly
     for title, meta in papers_metadata.items():
-        authors = (meta.get("authors") or "").lower()
+        authors = meta.get("authors") or ""
         title_l = (title or "").lower()
         for token in tokens:
             if len(token) < 4:
                 continue
-            # Prioritize author field matches
-            if token in authors:
+            if author_field_contains_token(authors, token):
                 if title not in author_matches:
                     author_matches.append(title)
                 break
-            # Title matches as fallback
-            elif token in title_l:
+            if not is_author_scoped and token in title_l:
                 if title not in matched:
                     matched.append(title)
                 break
 
+    for token in tokens:
+        if len(token) < 4:
+            continue
+        for title in indexes["author_to_titles"].get(token, []):
+            if title not in author_matches:
+                author_matches.append(title)
+
     if author_matches:
-        if is_author_scoped:
-            matched = author_matches
-        else:
-            matched = author_matches + [m for m in matched if m not in author_matches]
+        if is_author_scoped or query_has_author_intent(query):
+            return sorted(set(author_matches))
+        matched = author_matches + [m for m in matched if m not in author_matches]
     elif is_author_scoped:
         return []
 
-    seen: set[str] = set()
-    out: list[str] = []
-    for m in matched:
-        if m not in seen:
-            seen.add(m)
-            out.append(m)
-    return out
+    return sorted(set(matched))
 
 
 def _dedupe_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -456,11 +659,8 @@ def retrieve_relevant_chunks(
         inventory_titles = [filter_title]
 
     strict = getattr(settings, "RAG_STRICT_MODE", True)
-    locked_scope = bool(inventory_titles) and (
-        bool(scope_titles)
-        or query_expects_named_author(query)
-        or bool(filter_title)
-    )
+    # Lock retrieval whenever we resolved specific paper(s) — prevents cross-paper contamination.
+    locked_scope = bool(scope_titles) or bool(inventory_titles) or bool(filter_title)
 
     # ── Author / Paper-scoped retrieval ───────────────────────────────────────
     # When the query names a specific author or paper that is already in the library,

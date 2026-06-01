@@ -306,7 +306,7 @@ def _execute_template_rag(request: RAGQueryRequest) -> dict:
             request.query,
             limit=limit,
             filter_title=request.filter_title or None,
-            scope_titles=matched_titles if scope.is_locked or matched_titles else None,
+            scope_titles=matched_titles if matched_titles else None,
         )
         context_a = context_b = ""
         title_a = title_b = ""

@@ -18,9 +18,14 @@ from rag_context import (
     IRRELEVANT_REFUSAL,
     TABLE_TRUNCATION_RE,
     extract_author_search_phrase,
-    author_phrase_tokens,
+    infer_library_author_phrase,
     query_expects_named_author,
+    query_has_author_intent,
+    query_has_paper_focus,
     resolve_matching_paper_titles,
+    resolve_papers_for_author_phrase,
+    fuzzy_match_paper_titles,
+    build_catalog_indexes,
     _significant_query_tokens,
 )
 
@@ -48,7 +53,10 @@ class QueryScope:
 
     @property
     def is_locked(self) -> bool:
-        return bool(self.scoped_titles) and self.requires_entity
+        """True when retrieval and answers must stay within scoped_titles."""
+        if not self.scoped_titles:
+            return False
+        return self.entity_kind in ("author", "paper", "filter", "topic")
 
 
 def _load_manifest() -> dict:
@@ -68,43 +76,6 @@ def _author_tokens_from_string(authors: str) -> set[str]:
         for word in re.findall(r"[a-z]{4,}", part):
             tokens.add(word)
     return tokens
-
-
-def build_catalog_indexes(papers_metadata: dict) -> dict[str, Any]:
-    """Build author → titles and normalized lookup structures from library metadata."""
-    author_to_titles: dict[str, list[str]] = {}
-    title_lower_map: dict[str, str] = {}
-
-    for title, meta in (papers_metadata or {}).items():
-        title_lower_map[title.lower().strip()] = title
-        for token in _author_tokens_from_string(meta.get("authors") or ""):
-            author_to_titles.setdefault(token, [])
-            if title not in author_to_titles[token]:
-                author_to_titles[token].append(title)
-
-    manifest = _load_manifest()
-    for _fn, meta in manifest.items():
-        m_title = (meta.get("title") or "").strip()
-        m_authors = meta.get("authors") or ""
-        if not m_title:
-            continue
-        for db_title in papers_metadata:
-            if (
-                db_title.lower().strip() == m_title.lower()
-                or db_title.lower() in m_title.lower()
-                or m_title.lower() in db_title.lower()
-            ):
-                for token in _author_tokens_from_string(m_authors):
-                    author_to_titles.setdefault(token, [])
-                    if db_title not in author_to_titles[token]:
-                        author_to_titles[token].append(db_title)
-                break
-
-    return {
-        "author_to_titles": author_to_titles,
-        "title_lower_map": title_lower_map,
-        "all_titles": list(papers_metadata.keys()),
-    }
 
 
 def list_distinct_authors(papers_metadata: dict) -> list[dict[str, Any]]:
@@ -131,35 +102,8 @@ def extract_quoted_paper_titles(query: str) -> list[str]:
 
 
 def _fuzzy_title_match(query: str, papers_metadata: dict) -> list[str]:
-    """Match paper titles via quoted strings or distinctive title-token overlap."""
-    quoted = extract_quoted_paper_titles(query)
-    matches: list[str] = []
-    for q in quoted:
-        ql = q.lower().strip()
-        for title in papers_metadata:
-            tl = title.lower()
-            if ql in tl or tl in ql:
-                if title not in matches:
-                    matches.append(title)
-
-    if matches:
-        return matches
-
-    tokens = _significant_query_tokens(query)
-    if not tokens:
-        return []
-
-    scored: list[tuple[int, str]] = []
-    for title, meta in papers_metadata.items():
-        hay = f"{title} {meta.get('authors', '')}".lower()
-        score = sum(1 for t in tokens if t in hay)
-        if score >= 2 or (len(tokens) == 1 and tokens[0] in title.lower()):
-            scored.append((score, title))
-    if not scored:
-        return []
-    scored.sort(reverse=True)
-    best_score = scored[0][0]
-    return [t for s, t in scored if s == best_score and s >= 2]
+    """Backward-compatible alias for paper title resolution."""
+    return fuzzy_match_paper_titles(query, papers_metadata)
 
 
 def _papers_matching_topic_tokens(
@@ -211,9 +155,15 @@ def resolve_query_scope(
             )
         return QueryScope(requires_entity=True, entity_kind="filter")
 
-    author_phrase = extract_author_search_phrase(query)
+    author_phrase = extract_author_search_phrase(query) or infer_library_author_phrase(
+        query, papers_metadata
+    )
     if author_phrase or query_expects_named_author(query):
-        titles = resolve_matching_paper_titles(query, papers_metadata)
+        titles = resolve_papers_for_author_phrase(author_phrase, papers_metadata) if author_phrase else []
+        if not titles and author_phrase:
+            titles = resolve_matching_paper_titles(f"papers by {author_phrase}", papers_metadata)
+        if not titles and query_expects_named_author(query):
+            titles = resolve_matching_paper_titles(query, papers_metadata)
         return QueryScope(
             scoped_titles=titles,
             requires_entity=True,
@@ -221,15 +171,6 @@ def resolve_query_scope(
             author_phrase=author_phrase,
         )
 
-    paper_titles = _fuzzy_title_match(query, papers_metadata)
-    if paper_titles:
-        return QueryScope(
-            scoped_titles=paper_titles,
-            requires_entity=True,
-            entity_kind="paper",
-        )
-
-    # Topic-style queries: require at least one library paper to mention the topic.
     topic_tokens = _significant_query_tokens(query)
     q_lower = (query or "").lower()
     topic_cues = (
@@ -245,10 +186,38 @@ def resolve_query_scope(
             topic_tokens=topic_tokens,
         )
 
-    # General library question — no hard lock, but verification still applies.
-    matched = resolve_matching_paper_titles(query, papers_metadata)
+    if query_has_paper_focus(query):
+        paper_titles = fuzzy_match_paper_titles(query, papers_metadata)
+        if paper_titles:
+            return QueryScope(
+                scoped_titles=paper_titles,
+                requires_entity=True,
+                entity_kind="paper",
+            )
+
+    paper_titles = fuzzy_match_paper_titles(query, papers_metadata)
+    if len(paper_titles) == 1:
+        return QueryScope(
+            scoped_titles=paper_titles,
+            requires_entity=False,
+            entity_kind="paper",
+        )
+
+    # Implicit author match from library metadata (surname / name in query).
+    phrase = infer_library_author_phrase(query, papers_metadata)
+    if phrase:
+        titles = resolve_papers_for_author_phrase(phrase, papers_metadata)
+        if titles:
+            return QueryScope(
+                scoped_titles=titles,
+                requires_entity=False,
+                entity_kind="author",
+                author_phrase=phrase,
+                topic_tokens=topic_tokens,
+            )
+
     return QueryScope(
-        scoped_titles=matched,
+        scoped_titles=[],
         requires_entity=False,
         entity_kind="none",
         topic_tokens=topic_tokens,
@@ -290,6 +259,17 @@ def allowed_evidence_from_chunks(
     return titles, authors
 
 
+# Common title words that must not alone trigger an out-of-scope paper match.
+_TITLE_WORD_STOP = frozenset({
+    "about", "based", "using", "approach", "system", "systems", "study",
+    "analysis", "review", "model", "models", "method", "methods", "framework",
+    "detection", "security", "cybersecurity", "network", "networks", "internet",
+    "things", "smart", "cities", "learning", "deep", "machine", "traffic",
+    "monitoring", "enhanced", "novel", "hybrid", "secure", "routing", "cloud",
+    "computing", "internet", "enabled", "research", "design", "application",
+})
+
+
 def verify_answer_against_scope(
     answer: str,
     *,
@@ -297,6 +277,7 @@ def verify_answer_against_scope(
     papers_metadata: dict,
     chunks: list[dict[str, Any]],
     strict: bool = True,
+    scope_locked: bool = False,
 ) -> tuple[bool, str]:
     """
     Return (ok, reason). When not ok, caller should replace answer with refusal.
@@ -307,11 +288,26 @@ def verify_answer_against_scope(
     if TABLE_TRUNCATION_RE.search(answer):
         return False, "table_truncation"
 
-    allowed_titles, allowed_author_tokens = allowed_evidence_from_chunks(
-        chunks, scoped_titles, papers_metadata
-    )
-    if not allowed_titles and scoped_titles:
+    locked = scope_locked or bool(scoped_titles)
+
+    if locked and scoped_titles:
+        # Scoped answers may only cite papers in the resolved corpus (not semantic noise).
         allowed_titles = set(scoped_titles)
+        allowed_author_tokens: set[str] = set()
+        for t in scoped_titles:
+            allowed_author_tokens |= _author_tokens_from_string(
+                (papers_metadata.get(t) or {}).get("authors", "")
+            )
+        chunks = [
+            c for c in chunks
+            if (c.get("metadata") or {}).get("title", "").strip() in allowed_titles
+        ]
+    else:
+        allowed_titles, allowed_author_tokens = allowed_evidence_from_chunks(
+            chunks, scoped_titles, papers_metadata
+        )
+        if not allowed_titles and scoped_titles:
+            allowed_titles = set(scoped_titles)
 
     answer_lower = answer.lower()
 
@@ -319,14 +315,16 @@ def verify_answer_against_scope(
         if title in allowed_titles:
             continue
         tl = title.lower()
-        if len(tl) < 12:
+        # Require a long, distinctive title substring — not generic keyword overlap.
+        min_len = 28 if locked else 36
+        if len(tl) < min_len:
             continue
-        # Distinctive title substring appeared but paper not in scope.
         if tl in answer_lower:
             return False, f"out_of_scope_title:{title[:60]}"
-        words = [w for w in re.findall(r"[a-z]{5,}", tl) if w not in {"paper", "study", "analysis"}]
-        if len(words) >= 2 and all(w in answer_lower for w in words[:3]):
-            return False, f"out_of_scope_title_words:{title[:60]}"
+
+    # Author-token checks only when the query locked to a specific author/paper corpus.
+    if not locked:
+        return True, ""
 
     all_author_tokens: dict[str, set[str]] = {}
     for title, meta in papers_metadata.items():
@@ -336,7 +334,7 @@ def verify_answer_against_scope(
             all_author_tokens.setdefault(token, set()).add(title)
 
     for token, titles in all_author_tokens.items():
-        if len(token) < 5:
+        if len(token) < 5 or token in _TITLE_WORD_STOP:
             continue
         if token in allowed_author_tokens:
             continue
@@ -448,6 +446,7 @@ def apply_verification_or_refuse(
         scoped_titles=scope.scoped_titles,
         papers_metadata=papers_metadata,
         chunks=chunks,
+        scope_locked=scope.is_locked,
     )
     if ok:
         return answer, True
