@@ -1,105 +1,92 @@
-# RAG Test Question Bank
+# RAG Test Question Bank (any author / any paper)
 
-Use after deploying code changes or ingesting papers on **https://cite.aitawfiq.com** (production).  
-Your client ingests via **Upload PDF** and **Paper Discovery** — data lives in **ChromaDB on the server**, not in the GitHub `/papers` folder.
+Production: **cite.aitawfiq.com** — ingest via **Upload** or **Paper Discovery**.  
+The server reads **live ChromaDB metadata** on every question (all papers currently ingested, including new uploads).
 
-**Production corpus (example):** ~86 papers, ~1.3k chunks — Jhanjhi, Humayun, Gouda, medical imaging, smart-city IoT, etc.
-
-Restart the API after deploy, then run tests in the chat UI.
+After **code deploy**: `git pull` + restart API. No code change needed when only adding PDFs.
 
 ---
 
-## 1. Catalog & inventory (deterministic)
+## How author/paper matching works (not name-specific)
 
-| # | Question | Expected |
-|---|----------|----------|
-| 1.1 | How many papers are in my knowledge base? | **86** (or current manifest count) |
-| 1.2 | List all ingested papers | All 86, no truncation |
-| 1.3 | List all authors in my library | Full author list |
-| 1.4 | List papers by Jhanjhi | ~25 papers (all Jhanjhi variants) |
-| 1.5 | List papers by Humayun | Humayun co-authored papers only |
-| 1.6 | List papers by Gouda | Gouda / Walaa Gouda papers |
+1. **Ingest** stores `authors`, `title`, `year`, `venue`, `doi` on every chunk.  
+2. **Each question** rebuilds an **author catalog** from all papers in ChromaDB.  
+3. Your question is matched to **author strings exactly as stored** (e.g. `Noor Zaman Jhanjhi`, `Walaa Gouda`, `Muhammad Sajid Khan`).  
+4. The system loads **text chunks only from those papers**, then Ollama answers from that evidence + the inventory list.  
+5. **Common surnames only** (e.g. `Khan` alone with many different Khans) → refuse or ask for a **full name**.
 
 ---
 
-## 2. Author-scoped synthesis (your real corpus)
+## 1. Catalog (deterministic)
 
-Use authors **in your library**. Do **not** use Hassan unless that name exists on ingested papers.
-
-| # | Question | Expected |
-|---|----------|----------|
-| 2.1 | What are the main contributions of Jhanjhi? | IoT, smart cities, security, ML — **only Jhanjhi papers** |
-| 2.2 | What does Noor Zaman Jhanjhi research? | Same corpus as 2.1 |
-| 2.3 | What are the thoughts of Jhanjhi, what are his main contributions | No false “out of scope” refusal |
-| 2.4 | What does M. Humayun research? | Humayun papers only |
-| 2.5 | Describe the research of Walaa Gouda | Medical imaging / COVID / skin papers |
-| 2.6 | Papers by Jhanjhi — summarize their themes | Scoped list + synthesis |
-| 2.7 | What are the main contributions of Hassan? | **Refusal** if no author named Hassan in KB (not Riskhan/phishing) |
-| 2.8 | What does N. Hassan research? | **Refusal** or “not in library” — must **not** answer about Jhanjhi |
-| 2.9 | Describe the research of Muhammad Sajid Khan | Only if that exact author exists; must **not** attribute N. A. Khan / Fida Khan papers to him |
+| Question | Expected |
+|----------|----------|
+| How many papers are in my knowledge base? | Matches sidebar count |
+| List all ingested papers | Every paper, no truncation |
+| List all authors in my library | All distinct author lines from metadata |
+| List papers by *[any surname in your library]* | Only that author’s papers |
 
 ---
 
-## 3. Topic questions (medical imaging — critical regression)
+## 2. Author synthesis (pick names from **your** author list)
 
-| # | Question | Expected |
-|---|----------|----------|
-| 3.1 | What do my papers say about deep learning in medical imaging? | DR, melanoma, MRI brain, breast cancer, colon histopathology, etc. **No** phishing, barcode UAV, or traffic-only papers |
-| 3.2 | What papers discuss diabetic retinopathy or skin cancer imaging? | Gouda / Alwakid imaging papers |
-| 3.3 | Papers on smart cities and cybersecurity | IoT / smart-city corpus (broad topic) |
-| 3.4 | Federated learning in smart cities | Federated-learning smart-city papers |
+Replace `NAME` with a real author from “List all authors”:
 
----
+| Question | Expected |
+|----------|----------|
+| What are the main contributions of NAME? | Only NAME’s papers cited |
+| What does NAME research? | Same scope |
+| Papers by NAME — summarize their themes | List + synthesis, scoped |
+| Describe the research of NAME | Scoped chunks only |
 
-## 4. Single-paper focus
+**Negative tests**
 
-| # | Question | Expected |
-|---|----------|----------|
-| 4.1 | Summarize "Automated Deception Detection in Videos Using 3DCNN" | That paper only |
-| 4.2 | Summarize "Completely Fake Title 2099" | Not in library |
-| 4.3 | Use **Focus on Paper** dropdown + "What is the main contribution?" | Single-paper answer |
-
----
-
-## 5. Tables
-
-| # | Question | Expected |
-|---|----------|----------|
-| 5.1 | Give me a table of all papers with title, year, and venue | 86 rows; venue may be N/A |
-| 5.2 | For each paper by Jhanjhi, extract: (1) title (2) year (3) author | Jhanjhi scope only |
+| Question | Expected |
+|----------|----------|
+| Contributions of NAME_NOT_IN_LIBRARY | Not in library |
+| Papers by Khan *(if many Khans in KB)* | Refuse or require full name |
+| What does N. Hassan research *(if no Hassan in KB)* | Not in library — **not** another author |
 
 ---
 
-## 6. Refusals
+## 3. Topics (cross-corpus)
 
-| # | Question | Expected |
-|---|----------|----------|
-| 6.1 | Give me a recipe for pasta | Off-topic refusal |
-| 6.2 | List papers by Zzzzzzznonexistent | Not in library |
-| 6.3 | What are Einstein's contributions to relativity? | Not in library / no evidence |
-
----
-
-## 7. After client ingests new PDFs (upload or discovery)
-
-1. Manifest count increases (sidebar).  
-2. `How many papers are in my knowledge base?` — new total.  
-3. `List papers by <new author surname>`.  
-4. One synthesis question about that author.  
-
-No GitHub pull required for ingest — only **deploy** when you change Python code.
+| Question | Expected |
+|----------|----------|
+| What do my papers say about deep learning in medical imaging? | Imaging papers only; no phishing/barcode/traffic |
+| What do my papers say about smart cities and cybersecurity? | IoT/smart-city papers |
+| Federated learning in my library | Papers that actually discuss federated learning |
 
 ---
 
-## 8. Pass rubric
+## 4. Single paper
 
-- **Chunks panel:** For author questions, retrieved chunks should be from that author’s papers only.  
-- **Topic 3.1:** No phishing / barcode / pure traffic papers in the answer body.  
-- **Wrong author:** Never attribute Khan A’s paper to Khan B.  
-- **Substring names:** “Hassan” must not match “Riskhan”.  
+| Question | Expected |
+|----------|----------|
+| Summarize "*exact title from your list*" | That paper only |
+| Summarize "Completely Fake Title 2099" | Not in library |
+| **Focus on Paper** dropdown + main contribution? | One paper |
 
 ---
 
-## Deploy note
+## 5. After new ingest
 
-Local dev machines may show **fewer papers** than production if ChromaDB on your laptop is not the same as the server. Always validate on **cite.aitawfiq.com** after `git pull` and server restart.
+1. Sidebar paper count increases.  
+2. `How many papers…` — new total.  
+3. `List papers by <new author>`.  
+4. One synthesis question about that author.
+
+---
+
+## 6. Pass rubric
+
+- **Retrieved chunks** belong to the named author/paper only.  
+- **Inventory** line for each cited paper shows that author.  
+- **New ingest** appears without redeploying code.  
+- **Wrong surname** (Riskhan vs Hassan) never matches.
+
+---
+
+## Deploy
+
+Validate on the **server**, not only a sparse local ChromaDB. Local laptop may have fewer papers than production.

@@ -24,6 +24,7 @@ from rag_context import (
     query_has_paper_focus,
     resolve_matching_paper_titles,
     resolve_papers_for_author_phrase,
+    resolve_author_from_library,
     fuzzy_match_paper_titles,
     build_catalog_indexes,
     detect_topic_profile,
@@ -157,15 +158,12 @@ def resolve_query_scope(
             )
         return QueryScope(requires_entity=True, entity_kind="filter")
 
-    author_phrase = extract_author_search_phrase(query) or infer_library_author_phrase(
-        query, papers_metadata
-    )
-    if author_phrase or query_expects_named_author(query):
-        titles = resolve_papers_for_author_phrase(author_phrase, papers_metadata) if author_phrase else []
-        if not titles and author_phrase:
-            titles = resolve_matching_paper_titles(f"papers by {author_phrase}", papers_metadata)
+    author_phrase, author_titles = resolve_author_from_library(query, papers_metadata)
+    if author_phrase or author_titles or query_expects_named_author(query):
+        if not author_titles and author_phrase:
+            author_titles = resolve_papers_for_author_phrase(author_phrase, papers_metadata)
         return QueryScope(
-            scoped_titles=titles,
+            scoped_titles=author_titles,
             requires_entity=True,
             entity_kind="author",
             author_phrase=author_phrase,
@@ -211,19 +209,6 @@ def resolve_query_scope(
             requires_entity=False,
             entity_kind="paper",
         )
-
-    # Implicit author match from library metadata (surname / name in query).
-    phrase = infer_library_author_phrase(query, papers_metadata)
-    if phrase:
-        titles = resolve_papers_for_author_phrase(phrase, papers_metadata)
-        if titles:
-            return QueryScope(
-                scoped_titles=titles,
-                requires_entity=False,
-                entity_kind="author",
-                author_phrase=phrase,
-                topic_tokens=topic_tokens,
-            )
 
     return QueryScope(
         scoped_titles=[],

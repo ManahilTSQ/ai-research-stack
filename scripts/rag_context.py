@@ -99,12 +99,8 @@ _PAPER_FOCUS_RE = re.compile(
     re.I,
 )
 
-# Tokens that appear as author surnames in many unrelated papers — skip for auto-detect.
-_COMMON_AUTHOR_SURNAME_BLOCKLIST = frozenset({
-    "kumar", "singh", "ahmed", "ali", "khan", "sharma", "patel", "smith",
-    "wang", "chen", "zhang", "li", "kim", "lee", "roy", "das", "islam",
-    "hassan", "hasan", "hossain", "rahman", "khan", "brohi", "humayun",
-})
+# Substrings that must never match inside another name word (e.g. hassan in Riskhan).
+_FORBIDDEN_AUTHOR_SUBSTRINGS = frozenset({"hassan", "hasan"})
 
 # Topic profiles: require domain phrases in paper metadata/abstract, not generic "learning".
 _TOPIC_PROFILES: list[dict[str, Any]] = [
@@ -405,6 +401,126 @@ def _load_ingestion_manifest() -> dict:
         return {}
 
 
+def _split_author_segments(authors: str) -> list[str]:
+    """Split an authors field into individual author name segments (from ingest metadata)."""
+    if not authors or authors.strip().lower() in {"unknown authors", "unknown"}:
+        return []
+    parts = re.split(r",\s*|\s+et al\.?|\s*;\s*|\s+and\s+", authors, flags=re.I)
+    out: list[str] = []
+    for part in parts:
+        part = re.sub(r"\s+", " ", part.strip())
+        if len(part) >= 2:
+            out.append(part)
+    return out
+
+
+def build_author_segment_catalog(papers_metadata: dict) -> dict[str, dict[str, Any]]:
+    """
+    Every distinct author string on ingested papers → list of paper titles.
+    Rebuilt on each request from live ChromaDB metadata (includes newly ingested papers).
+    """
+    catalog: dict[str, dict[str, Any]] = {}
+    for title, meta in (papers_metadata or {}).items():
+        for segment in _split_author_segments(meta.get("authors") or ""):
+            key = segment.lower()
+            if key not in catalog:
+                catalog[key] = {"display": segment, "titles": []}
+            if title not in catalog[key]["titles"]:
+                catalog[key]["titles"].append(title)
+    return catalog
+
+
+def _token_is_ambiguous_surname(token: str, indexes: dict[str, Any], total_papers: int) -> bool:
+    """True when this surname appears on many papers — require a fuller name in the query."""
+    if len(token) < 4:
+        return True
+    count = len(indexes.get("author_to_titles", {}).get(token, []))
+    if count == 0:
+        return True
+    return count > max(2, int(total_papers * 0.12))
+
+
+def _query_mentions_word(query_lower: str, word: str) -> bool:
+    return bool(re.search(rf"\b{re.escape(word)}\b", query_lower))
+
+
+def resolve_author_from_library(
+    query: str,
+    papers_metadata: dict,
+) -> tuple[str | None, list[str]]:
+    """
+    Match the question to author names exactly as stored on ingested papers.
+    Works for any author in the library; updates automatically when new PDFs are ingested.
+    """
+    if not papers_metadata:
+        return None, []
+
+    catalog = build_author_segment_catalog(papers_metadata)
+    indexes = build_catalog_indexes(papers_metadata)
+    total = len(papers_metadata)
+    q_lower = (query or "").lower()
+
+    explicit = extract_author_search_phrase(query)
+    if explicit:
+        titles = resolve_papers_for_author_phrase(
+            explicit, papers_metadata, indexes=indexes
+        )
+        if titles:
+            return explicit, titles
+        ek = explicit.lower().strip()
+        if ek in catalog:
+            return catalog[ek]["display"], list(catalog[ek]["titles"])
+
+    if not query_has_author_intent(query) and not explicit:
+        return None, []
+
+    # Longest author segment whose full name appears in the query (metadata-driven).
+    candidates: list[tuple[int, str, list[str]]] = []
+    for key, entry in catalog.items():
+        words = _author_part_words(key)
+        if not words:
+            continue
+        if key in q_lower:
+            candidates.append((len(words) + 100, entry["display"], entry["titles"]))
+            continue
+        if len(words) >= 2 and all(_query_mentions_word(q_lower, w) for w in words):
+            candidates.append((len(words) + 50, entry["display"], entry["titles"]))
+            continue
+        if len(words) == 1 and _query_mentions_word(q_lower, words[0]):
+            if words[0] in _FORBIDDEN_AUTHOR_SUBSTRINGS:
+                continue
+            candidates.append((1, entry["display"], entry["titles"]))
+
+    if not candidates:
+        return None, []
+
+    candidates.sort(key=lambda x: (-x[0], -len(x[1])))
+    best_score, best_display, best_titles = candidates[0]
+
+    # Single-surname queries: refuse when multiple different authors share that surname in the KB.
+    best_words = _author_part_words(best_display.lower())
+    if len(best_words) == 1 or best_score < 50:
+        surname = best_words[-1]
+        matching = [
+            c for c in candidates
+            if _author_part_words(c[1].lower())[-1] == surname
+        ]
+        if len(matching) > 1 and _token_is_ambiguous_surname(surname, indexes, total):
+            full_in_query = [c for c in matching if c[1].lower() in q_lower]
+            if len(full_in_query) == 1:
+                return full_in_query[0][1], list(full_in_query[0][2])
+            return None, []
+
+    titles: set[str] = set()
+    for score, _disp, tlist in candidates:
+        if score < best_score - 5:
+            break
+        if score >= best_score - 5:
+            titles.update(tlist)
+
+    return best_display, sorted(titles)
+
+
 def build_catalog_indexes(papers_metadata: dict) -> dict[str, Any]:
     """Author token → paper titles and title lookup maps (deterministic, no LLM)."""
     author_to_titles: dict[str, list[str]] = {}
@@ -501,11 +617,21 @@ def resolve_papers_for_author_phrase(
         if author_field_contains_token(authors, surname):
             matched.add(title)
 
-    # Index lookup only for single-token surnames (never union all "khan" papers for full names).
-    if use_surname_only and surname not in _COMMON_AUTHOR_SURNAME_BLOCKLIST:
-        indexes = indexes or build_catalog_indexes(papers_metadata)
-        for title in indexes["author_to_titles"].get(surname, []):
-            matched.add(title)
+    if use_surname_only:
+        catalog = build_author_segment_catalog(papers_metadata)
+        entries = [
+            e for k, e in catalog.items()
+            if _author_part_words(k) and _author_part_words(k)[-1] == surname
+        ]
+        if len(entries) == 1:
+            matched.update(entries[0]["titles"])
+        elif len(entries) > 1:
+            return []
+        else:
+            indexes = indexes or build_catalog_indexes(papers_metadata)
+            if not _token_is_ambiguous_surname(surname, indexes, len(papers_metadata)):
+                for title in indexes["author_to_titles"].get(surname, []):
+                    matched.add(title)
 
     return sorted(matched)
 
@@ -520,37 +646,11 @@ def _expand_author_name_from_query(query: str, token: str) -> str:
 
 
 def infer_library_author_phrase(query: str, papers_metadata: dict) -> str | None:
-    """
-    Detect an author name present in the library from the query text alone.
-    Used when the user did not say 'papers by X' but clearly asks about a researcher.
-    """
-    explicit = extract_author_search_phrase(query)
-    if explicit:
-        return explicit
-    if not query_has_author_intent(query):
-        return None
-
-    indexes = build_catalog_indexes(papers_metadata)
-    total = max(len(papers_metadata), 1)
-    best_token: str | None = None
-    best_count = 0
-
-    for token in _significant_query_tokens(query):
-        if len(token) < 4 or token in _COMMON_AUTHOR_SURNAME_BLOCKLIST:
-            continue
-        papers = indexes["author_to_titles"].get(token, [])
-        if not papers:
-            continue
-        # Skip tokens that match too many papers (likely a topic word, not a surname).
-        if len(papers) > max(5, int(total * 0.35)) and len(token) < 7:
-            continue
-        if len(papers) > best_count:
-            best_count = len(papers)
-            best_token = token
-
-    if not best_token:
-        return None
-    return _expand_author_name_from_query(query, best_token)
+    """Detect an author from live library metadata (any ingested author, not a fixed list)."""
+    phrase, titles = resolve_author_from_library(query, papers_metadata)
+    if titles:
+        return phrase
+    return phrase if phrase else None
 
 
 def detect_topic_profile(query: str) -> dict[str, Any] | None:
@@ -704,10 +804,15 @@ def resolve_matching_paper_titles(query: str, papers_metadata: dict) -> list[str
     if not papers_metadata:
         return []
 
+    if query_has_author_intent(query) or query_expects_named_author(query):
+        _phrase, author_matches = resolve_author_from_library(query, papers_metadata)
+        if author_matches:
+            return author_matches
+        if query_expects_named_author(query) or query_has_author_intent(query):
+            return []
+
     indexes = build_catalog_indexes(papers_metadata)
-    author_phrase = extract_author_search_phrase(query) or infer_library_author_phrase(
-        query, papers_metadata
-    )
+    author_phrase = extract_author_search_phrase(query)
     is_author_scoped = query_expects_named_author(query) or bool(author_phrase)
 
     if author_phrase:
@@ -716,7 +821,7 @@ def resolve_matching_paper_titles(query: str, papers_metadata: dict) -> list[str
         )
         if author_matches:
             return author_matches
-        if is_author_scoped or query_has_author_intent(query):
+        if is_author_scoped:
             return []
 
     # Paper-title focus (quoted title, summarize, etc.)
@@ -747,7 +852,9 @@ def resolve_matching_paper_titles(query: str, papers_metadata: dict) -> list[str
                     matched.append(title)
                 break
 
-    if len(tokens) == 1 and tokens[0] not in _COMMON_AUTHOR_SURNAME_BLOCKLIST:
+    if len(tokens) == 1 and not _token_is_ambiguous_surname(
+        tokens[0], indexes, len(papers_metadata)
+    ):
         for title in indexes["author_to_titles"].get(tokens[0], []):
             if title not in author_matches:
                 author_matches.append(title)
@@ -814,13 +921,12 @@ def retrieve_relevant_chunks(
     # works is represented in the context for exhaustive listing/tabulation queries.
     if inventory_titles:
         author_chunks: list[dict[str, Any]] = []
-        per_paper = max(limit, 10)
+        per_paper = max(limit, 12)
         for title in inventory_titles:
             paper_chunks = vector_store.get_chunks_for_paper(title, max_chunks=per_paper)
             author_chunks = _dedupe_chunks(author_chunks + paper_chunks)
         if author_chunks:
-            # Return all fetched chunks; rag_service will pass an enlarged limit for
-            # listing/tabulation queries so no paper is silently dropped.
+            # Return all chunks for scoped papers (any author in KB — not capped to 15).
             return author_chunks
 
     # ── Standard semantic search path ─────────────────────────────────────────
