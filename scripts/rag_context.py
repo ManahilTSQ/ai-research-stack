@@ -73,6 +73,12 @@ _AUTHOR_PHRASE_PATTERNS = [
     re.compile(r"according to\s+(.+?)(?:\s*[\.,;\?]|$)", re.I),
     re.compile(r"(?:who is|tell me about)\s+(.+?)(?:\s*[\.,;\?]|$)", re.I),
     re.compile(r"about\s+(?:the\s+)?(?:research(?:er)?|work of)\s+(.+?)(?:\s*[\.,;\?]|$)", re.I),
+    re.compile(r"what does\s+(.+?)\s+research\b", re.I),
+    re.compile(
+        r"(?:main\s+)?contributions?\s+of\s+(.+?)(?:\s*[\.,;\?]|$)",
+        re.I,
+    ),
+    re.compile(r"describe\s+(?:the\s+)?research\s+of\s+(.+?)(?:\s*[\.,;\?]|$)", re.I),
 ]
 
 _AUTHOR_INTENT_RE = re.compile(
@@ -97,7 +103,58 @@ _PAPER_FOCUS_RE = re.compile(
 _COMMON_AUTHOR_SURNAME_BLOCKLIST = frozenset({
     "kumar", "singh", "ahmed", "ali", "khan", "sharma", "patel", "smith",
     "wang", "chen", "zhang", "li", "kim", "lee", "roy", "das", "islam",
+    "hassan", "hasan", "hossain", "rahman", "khan", "brohi", "humayun",
 })
+
+# Topic profiles: require domain phrases in paper metadata/abstract, not generic "learning".
+_TOPIC_PROFILES: list[dict[str, Any]] = [
+    {
+        "id": "medical_imaging",
+        "query_patterns": [
+            r"medical\s+imaging",
+            r"medical\s+image",
+            r"radiology",
+            r"histopathology",
+            r"dermoscopy",
+            r"retinopathy",
+            r"mri\s+brain",
+            r"brain\s+tumor",
+            r"chest\s+x-?ray",
+            r"melanoma",
+            r"breast\s+cancer\s+imag",
+            r"colon\s+cancer\s+(?:tissue|image)",
+        ],
+        "paper_markers": [
+            "medical imaging", "medical image", "radiology", "histopathology",
+            "dermoscopy", "retinopathy", "melanoma", "mammogram", "x-ray", "xray",
+            "mri", "brain tumor", "tumor detection", "skin lesion", "skin cancer",
+            "breast cancer", "lung carcinoma", "colon cancer", "pressure ulcer",
+            "retinoblastoma", "diabetic retinopathy", "dermoscopy", "biomedical image",
+            "plant leaf disease",
+        ],
+        "chunk_markers": [
+            "medical", "imaging", "radiolog", "histopath", "dermoscop", "retinopath",
+            "melanoma", "mammogram", "x-ray", "xray", " mri", "tumor", "lesion",
+            "dermatolog", "oncolog", "diagnos", "biopsy", "histolog",
+        ],
+    },
+    {
+        "id": "smart_city_cyber",
+        "query_patterns": [
+            r"smart\s+cit",
+            r"iot\s+cyber",
+            r"cybersecurity.*smart",
+        ],
+        "paper_markers": [
+            "smart cit", "internet of things", " iot", "cybersecurity", "cyber security",
+            "5g-enabled", "v2x", "uav", "blockchain", "federated learning",
+        ],
+        "chunk_markers": [
+            "smart cit", " iot", "internet of things", "cyber", "intrusion",
+            "malware", "phishing", "blockchain", "federated",
+        ],
+    },
+]
 
 _AUTHOR_SCOPED_PATTERNS = [
     r"corpus of\s+",
@@ -384,20 +441,36 @@ def build_catalog_indexes(papers_metadata: dict) -> dict[str, Any]:
     }
 
 
+def _author_part_words(part: str) -> list[str]:
+    return re.findall(r"[a-z]+", (part or "").lower())
+
+
 def author_field_contains_token(authors: str, token: str) -> bool:
-    """True if token appears in an author name segment (handles initials like N. Z. Jhanjhi)."""
+    """
+    True if token is a whole name word in an author segment (not a substring).
+    Prevents false matches like hassan inside Riskhan.
+    """
     token = (token or "").lower()
     if len(token) < 3:
         return False
     for part in re.split(r"[,;&]| and ", (authors or "").lower()):
-        part = part.strip()
-        if not part:
+        words = _author_part_words(part)
+        if not words:
             continue
-        if token in part:
+        if token in words:
             return True
-        # Match surname after initials: "N. Z. Jhanjhi" for token "jhanjhi"
-        words = re.findall(r"[a-z]+", part)
-        if words and words[-1] == token:
+        if words[-1] == token:
+            return True
+    return False
+
+
+def author_field_matches_phrase(authors: str, phrase_tokens: list[str]) -> bool:
+    """All phrase tokens must appear as whole words in the same author segment."""
+    if not phrase_tokens:
+        return False
+    for part in re.split(r"[,;&]| and ", (authors or "").lower()):
+        words = _author_part_words(part)
+        if words and all(t in words for t in phrase_tokens):
             return True
     return False
 
@@ -408,26 +481,30 @@ def resolve_papers_for_author_phrase(
     *,
     indexes: dict[str, Any] | None = None,
 ) -> list[str]:
-    """All library papers whose author field matches the given name / surname."""
+    """Library papers whose author field matches the given name (strict; no substring surnames)."""
     if not phrase or not papers_metadata:
         return []
-    indexes = indexes or build_catalog_indexes(papers_metadata)
     phrase_tokens = author_phrase_tokens(phrase)
     if not phrase_tokens:
         return []
 
     matched: set[str] = set()
     surname = phrase_tokens[-1]
+    use_surname_only = len(phrase_tokens) == 1
 
     for title, meta in papers_metadata.items():
         authors = meta.get("authors") or ""
-        if all(author_field_contains_token(authors, t) for t in phrase_tokens):
-            matched.add(title)
-        elif author_field_contains_token(authors, surname):
+        if len(phrase_tokens) >= 2:
+            if author_field_matches_phrase(authors, phrase_tokens):
+                matched.add(title)
+            continue
+        if author_field_contains_token(authors, surname):
             matched.add(title)
 
-    for token in phrase_tokens:
-        for title in indexes["author_to_titles"].get(token, []):
+    # Index lookup only for single-token surnames (never union all "khan" papers for full names).
+    if use_surname_only and surname not in _COMMON_AUTHOR_SURNAME_BLOCKLIST:
+        indexes = indexes or build_catalog_indexes(papers_metadata)
+        for title in indexes["author_to_titles"].get(surname, []):
             matched.add(title)
 
     return sorted(matched)
@@ -474,6 +551,74 @@ def infer_library_author_phrase(query: str, papers_metadata: dict) -> str | None
     if not best_token:
         return None
     return _expand_author_name_from_query(query, best_token)
+
+
+def detect_topic_profile(query: str) -> dict[str, Any] | None:
+    """Return a domain topic profile when the query asks about a specialized research area."""
+    q = (query or "").lower()
+    for profile in _TOPIC_PROFILES:
+        for pat in profile["query_patterns"]:
+            if re.search(pat, q, re.I):
+                return profile
+    return None
+
+
+def _paper_haystack(title: str, meta: dict) -> str:
+    abstract = ""
+    for _fn, m in _load_ingestion_manifest().items():
+        mt = (m.get("title") or "").lower()
+        if mt == title.lower() or mt in title.lower() or title.lower() in mt:
+            abstract = (m.get("abstract") or "").lower()
+            break
+    return " ".join(
+        [
+            title.lower(),
+            (meta.get("authors") or "").lower(),
+            (meta.get("venue") or "").lower(),
+            abstract,
+        ]
+    )
+
+
+def resolve_topic_scoped_papers(
+    query: str,
+    papers_metadata: dict,
+    profile: dict[str, Any],
+) -> list[str]:
+    """Papers whose title/metadata clearly belong to the topic domain (not generic 'learning')."""
+    if not papers_metadata or not profile:
+        return []
+    markers = [m.lower() for m in profile.get("paper_markers", [])]
+    matched: list[str] = []
+    for title, meta in papers_metadata.items():
+        hay = _paper_haystack(title, meta)
+        if any(m in hay for m in markers):
+            matched.append(title)
+    return sorted(matched)
+
+
+def filter_chunks_for_topic_profile(
+    chunks: list[dict[str, Any]],
+    profile: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Drop chunks that are not about the topic domain (reduces phishing/traffic noise)."""
+    markers = [m.lower() for m in profile.get("chunk_markers", [])]
+    if not markers:
+        return chunks
+    kept: list[dict[str, Any]] = []
+    for chunk in chunks:
+        meta = chunk.get("metadata") or {}
+        hay = " ".join(
+            [
+                chunk.get("text") or "",
+                meta.get("title") or "",
+                meta.get("authors") or "",
+            ]
+        ).lower()
+        hits = sum(1 for m in markers if m in hay)
+        if hits >= 2 or any(m in (meta.get("title") or "").lower() for m in markers):
+            kept.append(chunk)
+    return kept if kept else chunks
 
 
 def fuzzy_match_paper_titles(query: str, papers_metadata: dict) -> list[str]:
@@ -571,7 +716,7 @@ def resolve_matching_paper_titles(query: str, papers_metadata: dict) -> list[str
         )
         if author_matches:
             return author_matches
-        if is_author_scoped:
+        if is_author_scoped or query_has_author_intent(query):
             return []
 
     # Paper-title focus (quoted title, summarize, etc.)
@@ -602,10 +747,8 @@ def resolve_matching_paper_titles(query: str, papers_metadata: dict) -> list[str
                     matched.append(title)
                 break
 
-    for token in tokens:
-        if len(token) < 4:
-            continue
-        for title in indexes["author_to_titles"].get(token, []):
+    if len(tokens) == 1 and tokens[0] not in _COMMON_AUTHOR_SURNAME_BLOCKLIST:
+        for title in indexes["author_to_titles"].get(tokens[0], []):
             if title not in author_matches:
                 author_matches.append(title)
 
@@ -714,6 +857,10 @@ def retrieve_relevant_chunks(
 
     if not chunks and not locked_scope:
         chunks = raw[:limit]
+
+    profile = detect_topic_profile(query)
+    if profile and chunks:
+        chunks = filter_chunks_for_topic_profile(chunks, profile)
 
     return chunks[:limit]
 

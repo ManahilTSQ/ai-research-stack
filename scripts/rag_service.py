@@ -611,6 +611,13 @@ class RAGService:
                 f"({len(matched_titles)} paper(s) in scope). "
                 "Do NOT cite, summarize, or mention any other ingested paper or author.\n"
             )
+        elif scope.entity_kind == "topic":
+            scope_note = (
+                f"TOPIC SCOPE: Answer ONLY using the {len(matched_titles)} paper(s) in scope "
+                "that are clearly about the topic in the question. "
+                "Do NOT describe unrelated papers (e.g. phishing, traffic, barcodes) "
+                "even if they mention 'deep learning'.\n"
+            )
         elif filter_title:
             scope_note = (
                 f"NOTE: This query is scoped to a SINGLE paper: \"{filter_title}\". "

@@ -26,6 +26,8 @@ from rag_context import (
     resolve_papers_for_author_phrase,
     fuzzy_match_paper_titles,
     build_catalog_indexes,
+    detect_topic_profile,
+    resolve_topic_scoped_papers,
     _significant_query_tokens,
 )
 
@@ -162,8 +164,6 @@ def resolve_query_scope(
         titles = resolve_papers_for_author_phrase(author_phrase, papers_metadata) if author_phrase else []
         if not titles and author_phrase:
             titles = resolve_matching_paper_titles(f"papers by {author_phrase}", papers_metadata)
-        if not titles and query_expects_named_author(query):
-            titles = resolve_matching_paper_titles(query, papers_metadata)
         return QueryScope(
             scoped_titles=titles,
             requires_entity=True,
@@ -175,8 +175,17 @@ def resolve_query_scope(
     q_lower = (query or "").lower()
     topic_cues = (
         "about", "on ", " regarding ", " related to ", " topic ", " theme ",
-        "discuss", "discusses", "cover", "covers", "concerning",
+        "discuss", "discusses", "cover", "covers", "concerning", " say about",
     )
+    profile = detect_topic_profile(query)
+    if profile:
+        topic_papers = resolve_topic_scoped_papers(query, papers_metadata, profile)
+        return QueryScope(
+            scoped_titles=topic_papers,
+            requires_entity=True,
+            entity_kind="topic",
+            topic_tokens=topic_tokens,
+        )
     if topic_tokens and any(c in q_lower for c in topic_cues):
         topic_papers = _papers_matching_topic_tokens(topic_tokens, papers_metadata)
         return QueryScope(
