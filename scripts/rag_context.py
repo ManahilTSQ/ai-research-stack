@@ -502,6 +502,11 @@ def classify_query_mode(query: str) -> str:
     if topical_but_underspecified:
         return "ambiguous"
     if has_listing and has_content:
+        # When the user's intent is clearly content-extraction (comparative tables,
+        # per-paper methodology tables, etc.) don't ask for clarification — go straight
+        # to the extraction path so the "Do you want (1) or (2)?" prompt is never shown.
+        if is_content_extraction_query(q):
+            return "content"
         return "ambiguous"
     if has_listing:
         return "listing"

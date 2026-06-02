@@ -624,7 +624,7 @@ class RAGService:
             }
 
         # ── PER-PAPER EXTRACTION TABLE (one LLM call per paper, no truncation) ──
-        if query_mode != "listing" and is_per_paper_extraction_query(query) and inventory_metadata:
+        if is_per_paper_extraction_query(query) and inventory_metadata:
             columns = parse_table_columns_from_query(query)
             return self._generate_per_paper_extraction_table(
                 query, inventory_metadata, columns

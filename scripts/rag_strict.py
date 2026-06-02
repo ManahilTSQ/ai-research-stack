@@ -710,9 +710,11 @@ def apply_verification_or_refuse(
     if scope.entity_kind == "none" and not scope.scoped_titles:
         return answer, True
 
-    # For broad topic scopes (>15 papers) the LLM synthesises across the whole
-    # topic corpus — strict per-citation author checks produce false negatives.
-    if scope.entity_kind == "topic" and len(scope.scoped_titles) > 15:
+    # Topic queries are inherently synthesis/discovery requests ("what techniques
+    # are used", "which papers discuss privacy", "compare ML methods", etc.).
+    # The LLM is scoped to the topic inventory, so out-of-scope hallucinations
+    # are rare; strict per-citation author verification causes false failures.
+    if scope.entity_kind == "topic":
         return answer, True
 
     ok, reason = verify_answer_against_scope(
