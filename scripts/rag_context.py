@@ -56,6 +56,14 @@ CONTENT_EXTRACTION_SIGNALS = (
     "dataset", "performance", "precision", "recall", "benchmark",
     "ml method", "approach used", "method used", "evaluation metric",
     "intrusion detection method", "classification method",
+    # Research analysis / synthesis keywords — prevent misclassification as
+    # simple inventory listings when the query also contains 'papers by'.
+    "pipeline", "step-by-step", "threshold", "parameter", "parameters",
+    "ranking", "criteria", "identify", "analyze", "analyse",
+    "feature selection", "information gain", "exact step",
+    "how did", "how do", "how does", "what did", "what approach",
+    "what method", "what technique", "what strategy", "what threshold",
+    "used for", "applied to", "drop", "weight", "rank",
 )
 
 _AUTHOR_PHRASE_PATTERNS = [
@@ -232,7 +240,11 @@ _BOTH_INTENT_RE = re.compile(
 _CONTENT_INTENT_RE = re.compile(
     r"\bwhat\s+(?:does|did|is|are)\b|\bwhat\s+(?:he|she|they)\s+says?\b|"
     r"\bsays?\s+about\b|\bmain\s+contributions?\b|\bsummarize\b|"
-    r"\bdescribe\s+(?:the\s+)?research\b|\bfindings?\b|\bexplain\b",
+    r"\bdescribe\s+(?:the\s+)?research\b|\bfindings?\b|\bexplain\b|"
+    # Analytical research queries that happen to contain 'papers by'
+    r"\banalyze\b|\banalyse\b|\bidentif\w+\b|\binvestigat\w+\b|"
+    r"\bexamin\w+\b|\bpipeline\b|\bthreshold\b|\bstep-?by-?step\b|"
+    r"\branking\s+criteri\b|\bfeature\s+selection\b|\binformation\s+gain\b",
     re.I,
 )
 

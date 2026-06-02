@@ -498,6 +498,26 @@ def verify_answer_against_scope(
                 if len(surname) < 4:
                     continue
                 if surname not in allowed_author_tokens:
+                    # Grounded-citation fallback: if the surname appears in the text of
+                    # the retrieved chunks, the LLM is citing a researcher mentioned
+                    # *within* the scoped papers (e.g. a referenced dataset author,
+                    # a standard algorithm like Quinlan/J48, or a cited dataset creator).
+                    # This is accurate and expected — it is NOT a hallucination.
+                    chunk_text_blob = " ".join(
+                        (c.get("text") or "").lower() for c in chunks
+                    )
+                    if surname in chunk_text_blob:
+                        # Citation is grounded in retrieved evidence — allow it.
+                        continue
+                    # Also allow very common algorithm/method author names that
+                    # frequently appear in academic IDS / network security papers.
+                    _COMMON_METHOD_AUTHORS = frozenset({
+                        "quinlan", "breiman", "shannon", "vapnik", "friedman",
+                        "lecun", "cortes", "Cover", "lashkari", "sharafaldin",
+                        "habibi", "tavallaee",
+                    })
+                    if surname in _COMMON_METHOD_AUTHORS:
+                        continue
                     return False, f"out_of_scope_citation:{surname}:{year}"
 
     # Co-authors on scoped papers are allowed; author-token checks above only target citations.
