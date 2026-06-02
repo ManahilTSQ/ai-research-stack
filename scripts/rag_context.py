@@ -642,6 +642,63 @@ def _papers_with_surname(surname: str, papers_metadata: dict) -> list[str]:
     return sorted(matched)
 
 
+def _edit_distance_leq1(a: str, b: str) -> bool:
+    """
+    Fast check for Levenshtein edit distance <= 1 (insert/delete/substitute).
+    Used to tolerate small author surname typos (e.g., sitawan -> stiawan).
+    """
+    a = normalize_for_match(a)
+    b = normalize_for_match(b)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    la, lb = len(a), len(b)
+    if abs(la - lb) > 1:
+        return False
+    # Same length: allow one substitution.
+    if la == lb:
+        mismatches = [i for i in range(la) if a[i] != b[i]]
+        if len(mismatches) <= 1:
+            return True
+        # Allow one adjacent transposition (Damerau-style) for common typos:
+        # e.g., "sitawan" vs "stiawan" (swap i and t).
+        if len(mismatches) == 2:
+            i, j = mismatches
+            if j == i + 1:
+                aa = list(a)
+                aa[i], aa[j] = aa[j], aa[i]
+                return "".join(aa) == b
+        return False
+    # Length differs by 1: allow one insertion/deletion.
+    if la > lb:
+        a, b = b, a
+        la, lb = lb, la
+    i = j = 0
+    edits = 0
+    while i < la and j < lb:
+        if a[i] == b[j]:
+            i += 1
+            j += 1
+            continue
+        edits += 1
+        if edits > 1:
+            return False
+        j += 1
+    return True
+
+
+def _library_surnames(papers_metadata: dict) -> set[str]:
+    """All distinct normalized surnames from author segments in the library."""
+    out: set[str] = set()
+    for _title, meta in (papers_metadata or {}).items():
+        for segment in _split_author_segments(meta.get("authors") or ""):
+            words = _author_part_words(normalize_for_match(segment))
+            if words:
+                out.add(words[-1])
+    return out
+
+
 def _given_name_keys_for_surname(surname: str, catalog: dict) -> set[str]:
     """Distinct given-name identities for a surname (to detect Khan vs Khan)."""
     sn = normalize_for_match(surname)
@@ -724,12 +781,18 @@ def resolve_author_from_library(
         return catalog[best_key]["display"], sorted(matched_titles)
 
     # Surname-only: union all papers for that surname (Jhanjhi, Aldughayfiq, etc.).
+    surnames = _library_surnames(papers_metadata)
     for token in sorted(_significant_query_tokens(query), key=len, reverse=True):
         if len(token) < 4 or token in _FORBIDDEN_AUTHOR_SUBSTRINGS:
             continue
         if not re.search(rf"\b{re.escape(token)}\b", q_norm):
             continue
         papers = _papers_with_surname(token, papers_metadata)
+        if not papers:
+            # One-edit fuzzy surname rescue (common typos in user queries).
+            close = [sn for sn in surnames if _edit_distance_leq1(token, sn)]
+            if len(close) == 1:
+                papers = _papers_with_surname(close[0], papers_metadata)
         if not papers:
             continue
         given_keys = _given_name_keys_for_surname(token, catalog)

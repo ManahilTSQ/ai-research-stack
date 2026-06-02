@@ -53,7 +53,12 @@ _KEYWORD_DISCOVERY_RE = re.compile(
     r"\b(?:do|does|are there|which)\s+(?:any\s+)?(?:of\s+)?(?:my\s+)?papers?\s+"
     r"(?:discuss|mention|cover|address|use|include|contain)\b|"
     r"\bwhich\s+papers?\s+(?:discuss|mention|use|cover)\b|"
-    r"\bpapers?\s+(?:on|about|regarding)\s+\w",
+    r"\bpapers?\s+(?:on|about|regarding)\s+\w|"
+    r"\b(?:most\s+)?relevant\s+to\b|"
+    r"\brelated\s+to\b|"
+    r"\bcitation-?worthy\b|"
+    r"\bfor\s+(?:a\s+)?survey\s+on\b|"
+    r"\bbibliograph(?:y|ies)\b",
     re.I,
 )
 
