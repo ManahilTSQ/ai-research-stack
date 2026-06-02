@@ -495,7 +495,7 @@ def classify_query_mode(query: str) -> str:
     wants_both = bool(_BOTH_INTENT_RE.search(q))
     topical_but_underspecified = bool(
         re.search(r"\b(?:about|on|regarding|related to)\b", q, re.I)
-    ) and has_listing and query_has_author_intent(q)
+    ) and has_listing and query_has_author_intent(q) and not is_content_extraction_query(q)
 
     if wants_both:
         return "both"

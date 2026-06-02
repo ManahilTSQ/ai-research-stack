@@ -710,13 +710,6 @@ def apply_verification_or_refuse(
     if scope.entity_kind == "none" and not scope.scoped_titles:
         return answer, True
 
-    # Topic queries are inherently synthesis/discovery requests ("what techniques
-    # are used", "which papers discuss privacy", "compare ML methods", etc.).
-    # The LLM is scoped to the topic inventory, so out-of-scope hallucinations
-    # are rare; strict per-citation author verification causes false failures.
-    if scope.entity_kind == "topic":
-        return answer, True
-
     ok, reason = verify_answer_against_scope(
         answer,
         scoped_titles=scope.scoped_titles,
