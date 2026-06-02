@@ -51,7 +51,9 @@ def run():
         queued += 1
 
         try:
-            pages  = pdf_service.extract_text_by_page(pdf_path)
+            pages, has_full_text = pdf_service.extract_text_by_page(pdf_path)
+            if not has_full_text:
+                print(f"[!] Warning: Extracted minimal text - likely abstract-only or scanned PDF")
             chunks = pdf_service.chunk_text(pages, chunk_size=1000, chunk_overlap=200)
 
             if not chunks:
@@ -65,12 +67,12 @@ def run():
             ok = vector_store.add_paper_chunks(paper_title=title, doi=doi, chunks=chunks, venue=None)
 
             if ok:
-                manifest_svc.mark_as_ingested(filename, title, doi, status="success")
+                manifest_svc.mark_as_ingested(filename, title, doi, status="success", has_full_text=has_full_text)
                 print(f"  [OK] SUCCESS - '{title}' ingested with {len(chunks)} chunks.")
                 success += 1
             else:
                 manifest_svc.mark_as_ingested(filename, title, doi, status="failed",
-                                              error="ChromaDB upsert returned False.")
+                                              error="ChromaDB upsert returned False.", has_full_text=has_full_text)
                 print(f"  [FAIL] FAILED - ChromaDB upsert returned False for '{title}'.")
                 failed += 1
 

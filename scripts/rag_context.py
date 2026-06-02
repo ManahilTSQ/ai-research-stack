@@ -32,8 +32,9 @@ NOT_IN_LIBRARY_REFUSAL = (
 )
 
 # Pattern to detect meta-questions about missing papers/gaps in knowledge base
+# Excludes contextual questions about "above questions" or "this chat"
 _MISSING_PAPERS_QUERY_RE = re.compile(
-    r"\b(?:what|which)\s+(?:papers?|articles?)\s+(?:would\s+(?:you\s+)?(?:have\s+)?(?:wanted|needed|liked)\s+to\s+(?:have|find)|"
+    r"^(?!.*(?:above\s+questions|this\s+chat))\b(?:what|which)\s+(?:papers?|articles?)\s+(?:would\s+(?:you\s+)?(?:have\s+)?(?:wanted|needed|liked)\s+to\s+(?:have|find)|"
     r"are\s+(?:missing|absent|not\s+(?:in|found))|"
     r"you\s+(?:did\s+)?not\s+(?:find|have)|"
     r"would\s+have\s+(?:helped|been\s+(?:useful|helpful|better)))\b",

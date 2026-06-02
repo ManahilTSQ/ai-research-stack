@@ -147,6 +147,7 @@ class ManifestManagerService:
         venue: str | None = None,
         abstract: str | None = None,
         paper_id: str | None = None,
+        has_full_text: bool = True,
     ) -> None:
         """
         Record the ingestion result for a PDF file in the manifest.
@@ -183,7 +184,9 @@ class ManifestManagerService:
             # Semantic Scholar paper ID — used to detect duplicate discovery results
             "paper_id": paper_id or existing_entry.get("paper_id") or "",
             # ISO-format timestamp for human-readable audit trail
-            "ingested_at": datetime.now().isoformat()
+            "ingested_at": datetime.now().isoformat(),
+            # Track whether full PDF text was ingested (vs abstract-only)
+            "has_full_text": has_full_text if status == "success" else False,
         }
 
         self._save_manifest(manifest)
@@ -251,7 +254,7 @@ class ManifestManagerService:
         extracted_doi = None
         if pdf_path.exists():
             try:
-                pages = pdf_service.extract_text_by_page(pdf_path)
+                pages, _ = pdf_service.extract_text_by_page(pdf_path)
                 if pages:
                     first_page_text = pages[0].get("text", "")
                     doi_match = re.search(r"\b(10\.\d{4,9}/[^\s]+)\b", first_page_text, re.IGNORECASE)

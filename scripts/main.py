@@ -182,10 +182,12 @@ def process_paper_pipeline(
 
         print("[4/5] Extracting text with PyMuPDF...")
         try:
-            pages = pdf_service.extract_text_by_page(downloaded_path)
+            pages, has_full_text = pdf_service.extract_text_by_page(downloaded_path)
             total_pages = len(pages)
             total_chars = sum(len(p["text"]) for p in pages)
             print(f"[+] Extracted text from {total_pages} pages ({total_chars:,} chars)")
+            if not has_full_text:
+                print(f"[!] Warning: Extracted minimal text - likely abstract-only or scanned PDF")
         except Exception as e:
             logger.error(f"Text extraction failed: {e}")
             return False
@@ -385,7 +387,9 @@ def run_batch_ingestion(
         print(f"\nProcessing: {pdf_path.name}")
         try:
             # Extract text and create chunks from this PDF
-            pages  = pdf_service.extract_text_by_page(pdf_path)
+            pages, has_full_text = pdf_service.extract_text_by_page(pdf_path)
+            if not has_full_text:
+                print(f"[!] Warning: Extracted minimal text - likely abstract-only or scanned PDF")
             chunks = pdf_service.chunk_text(pages, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
             # Derive a human-readable title from the filename

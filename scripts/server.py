@@ -563,7 +563,9 @@ def download_paper(request: DownloadRequest, background_tasks: BackgroundTasks):
 
             if pdf_path and pdf_path.exists():
                 try:
-                    pages  = pdf_service.extract_text_by_page(pdf_path)
+                    pages, has_full_text = pdf_service.extract_text_by_page(pdf_path)
+                    if not has_full_text:
+                        logger.warning(f"Extracted minimal text from '{title}' - likely abstract-only or scanned PDF")
                     chunks = pdf_service.chunk_text(pages, chunk_size=1000, chunk_overlap=200)
                 except Exception as e:
                     logger.error(f"Text extraction failed for '{title}': {e}")
@@ -839,8 +841,10 @@ async def upload_pdfs(
                     abstract = resolved.get("abstract", "")
                     
                     year = int(year_str) if year_str.isdigit() else None
-                    
-                    pages = pdf_service.extract_text_by_page(pdf_path)
+
+                    pages, has_full_text = pdf_service.extract_text_by_page(pdf_path)
+                    if not has_full_text:
+                        logger.warning(f"Extracted minimal text from '{filename}' - likely abstract-only or scanned PDF")
                     chunks = pdf_service.chunk_text(pages, chunk_size=1000, chunk_overlap=200)
                     if chunks:
                         success = vector_store.add_paper_chunks(
@@ -851,7 +855,7 @@ async def upload_pdfs(
                             rel, title, doi=doi if doi != "N/A" else None,
                             status="success" if success else "failed",
                             authors=authors, year=year, venue=resolved.get("venue"),
-                            abstract=abstract
+                            abstract=abstract, has_full_text=has_full_text
                         )
                         logger.info(f"Auto-ingested '{rel}': {len(chunks)} chunks, success={success}")
                     else:
@@ -912,9 +916,11 @@ def ingest_pending(background_tasks: BackgroundTasks):
                     abstract = resolved.get("abstract", "")
                     
                     year = int(year_str) if year_str.isdigit() else None
-                    
+
                     logger.info(f"Extracting text from: {filename}")
-                    pages  = pdf_service.extract_text_by_page(pdf_path)
+                    pages, has_full_text = pdf_service.extract_text_by_page(pdf_path)
+                    if not has_full_text:
+                        logger.warning(f"Extracted minimal text from '{filename}' - likely abstract-only or scanned PDF")
                     logger.info(f"Chunking text from: {filename} ({len(pages)} pages)")
                     chunks = pdf_service.chunk_text(pages, chunk_size=1000, chunk_overlap=200)
 
@@ -939,7 +945,7 @@ def ingest_pending(background_tasks: BackgroundTasks):
                         filename, title, doi if doi != "N/A" else None,
                         status="success" if success else "failed",
                         authors=authors, year=year, venue=resolved.get("venue"),
-                        abstract=abstract
+                        abstract=abstract, has_full_text=has_full_text
                     )
                     processed += 1
                     if success:

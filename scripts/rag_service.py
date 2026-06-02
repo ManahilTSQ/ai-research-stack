@@ -735,6 +735,52 @@ class RAGService:
             
             # Handle meta-questions about missing papers/gaps in knowledge base
             if is_missing_papers_meta_query(query):
+                # Check if this is a question about papers needing full text
+                if "full text" in query.lower() or "pdf" in query.lower():
+                    from manifest_manager import ManifestManagerService
+                    manifest_mgr = ManifestManagerService()
+                    manifest = manifest_mgr.get_all_entries()
+                    
+                    # Find papers with has_full_text=False
+                    papers_without_full_text = []
+                    for filename, meta in manifest.items():
+                        if meta.get("status") == "success" and meta.get("has_full_text") == False:
+                            papers_without_full_text.append({
+                                "title": meta.get("title", filename),
+                                "authors": meta.get("authors", "Unknown Authors"),
+                                "year": meta.get("year", "N/A"),
+                                "filename": filename
+                            })
+                    
+                    if papers_without_full_text:
+                        lines = []
+                        for i, paper in enumerate(papers_without_full_text, 1):
+                            lines.append(
+                                f"{i}. {paper['authors']} ({paper['year']}). {paper['title']}"
+                            )
+                        answer = (
+                            f"The following papers in your library have minimal text extracted "
+                            f"(likely abstract-only or scanned PDFs). Having the full PDF text would "
+                            f"help provide more complete answers:\n\n" + "\n\n".join(lines)
+                        )
+                        return {
+                            "query": query,
+                            "answer": answer,
+                            "sources": [],
+                            "success": True,
+                        }
+                    else:
+                        answer = (
+                            "All papers in your library have full text extracted. "
+                            "No papers would benefit from re-ingestion with full PDF text."
+                        )
+                        return {
+                            "query": query,
+                            "answer": answer,
+                            "sources": [],
+                            "success": True,
+                        }
+                
                 answer = (
                     "I cannot identify specific missing papers because I only have access to "
                     "the papers you've already ingested. To identify gaps in your knowledge base, "

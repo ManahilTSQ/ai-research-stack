@@ -174,7 +174,9 @@ def reconcile(force_reset: bool = False):
             year = int(year_str) if year_str.isdigit() else None
 
             # 2. Extract and Chunk PDF text
-            pages = pdf_service.extract_text_by_page(full_path)
+            pages, has_full_text = pdf_service.extract_text_by_page(full_path)
+            if not has_full_text:
+                logger.warning(f"  [!] Extracted minimal text from '{rel_path}' - likely abstract-only or scanned PDF")
             chunks = pdf_service.chunk_text(pages, chunk_size=1000, chunk_overlap=200)
 
             if not chunks:
@@ -196,7 +198,7 @@ def reconcile(force_reset: bool = False):
             if ok:
                 manifest_svc.mark_as_ingested(
                     rel_path, title, doi=doi if doi != "N/A" else None, status="success",
-                    authors=authors, year=year, abstract=abstract
+                    authors=authors, year=year, abstract=abstract, has_full_text=has_full_text
                 )
                 logger.info(f"  [✓] SUCCESS: '{title}' ingested with {len(chunks)} chunks.")
                 ingested_count += 1
@@ -204,7 +206,7 @@ def reconcile(force_reset: bool = False):
                 manifest_svc.mark_as_ingested(
                     rel_path, title, doi=doi if doi != "N/A" else None, status="failed",
                     error="ChromaDB vector insertion returned False.",
-                    authors=authors, year=year, abstract=abstract
+                    authors=authors, year=year, abstract=abstract, has_full_text=has_full_text
                 )
                 logger.error(f"  [✗] FAILED: ChromaDB write error for '{title}'.")
                 failed_count += 1

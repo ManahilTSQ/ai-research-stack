@@ -90,7 +90,7 @@ class PDFProcessorService:
     # PUBLIC: Page-Level Text Extraction
     # ──────────────────────────────────────────────────────────────────────────
 
-    def extract_text_by_page(self, pdf_path: Path | str) -> list[dict]:
+    def extract_text_by_page(self, pdf_path: Path | str) -> tuple[list[dict], bool]:
         """
         Open a PDF file and extract cleaned text from every page.
 
@@ -98,9 +98,12 @@ class PDFProcessorService:
             pdf_path: Absolute or relative path to the PDF file.
 
         Returns:
-            List of dicts, one per page, each containing:
-              - "page_number" (int): 1-indexed page number.
-              - "text" (str): Cleaned text content of that page.
+            Tuple of (pages, has_full_text):
+              - pages: List of dicts, one per page, each containing:
+                - "page_number" (int): 1-indexed page number.
+                - "text" (str): Cleaned text content of that page.
+              - has_full_text: bool, True if sufficient text was extracted (likely full PDF),
+                False if text is minimal (likely abstract-only or scan).
 
         Raises:
             FileNotFoundError: If the PDF does not exist at the given path.
@@ -115,6 +118,7 @@ class PDFProcessorService:
 
         logger.info(f"Opening PDF for text extraction: {pdf_path.name}")
         pages = []
+        total_chars = 0
 
         try:
             # fitz.open() returns a Document context manager
@@ -130,14 +134,25 @@ class PDFProcessorService:
                     raw_text = page.get_text("text")
                     # Apply cleaning pipeline to remove PDF extraction noise
                     cleaned_text = self._clean_text(raw_text)
+                    total_chars += len(cleaned_text)
 
                     pages.append({
                         "page_number": page_idx + 1,  # Convert to 1-indexed for humans
                         "text": cleaned_text
                     })
 
-            logger.info(f"Extracted text from {len(pages)} pages of '{pdf_path.name}'")
-            return pages
+            # Determine if this is likely full text or abstract-only
+            # Abstract-only papers typically have < 2000 characters
+            # Full papers typically have > 5000 characters
+            has_full_text = total_chars >= 2000
+            if not has_full_text:
+                logger.warning(
+                    f"Extracted minimal text ({total_chars} chars) from '{pdf_path.name}' "
+                    "- likely abstract-only or scanned PDF. Marking as has_full_text=False."
+                )
+
+            logger.info(f"Extracted text from {len(pages)} pages of '{pdf_path.name}' (has_full_text={has_full_text})")
+            return pages, has_full_text
 
         except Exception as e:
             logger.error(f"Error extracting text from '{pdf_path.name}': {e}")

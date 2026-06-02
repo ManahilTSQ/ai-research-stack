@@ -508,7 +508,7 @@ class CitationAnalyzerService:
                         if downloaded_path and downloaded_path.exists():
                             print("  [+] Extracting text and searching for citation markers...")
                             try:
-                                pages = self.pdf_service.extract_text_by_page(downloaded_path)
+                                pages, _ = self.pdf_service.extract_text_by_page(downloaded_path)
                                 pages = self._strip_references_from_pages(pages)
                                 passages = self._extract_citation_passages_from_text(
                                     pages, author_surnames, target_title
