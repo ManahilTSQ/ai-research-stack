@@ -448,6 +448,55 @@ class RAGService:
         ]
         return any(pat in q for pat in off_topic_patterns)
 
+    def _is_academic_drafting_request(self, query: str) -> bool:
+        """
+        True when the user is asking the assistant to *write* academic text
+        (intro/abstract/conclusion/related work), not to report what the library says.
+
+        These requests should not be routed into library keyword discovery or
+        strict in-scope verification, because the correct behavior is often to
+        produce a well-formed draft even when the library lacks direct evidence.
+        """
+        q = (query or "").strip().lower()
+        if not q:
+            return False
+        drafting_verbs = (
+            "draft", "write", "compose", "generate", "create",
+        )
+        academic_targets = (
+            "introduction", "abstract", "conclusion", "related work",
+            "literature review", "background", "problem statement",
+            "methodology", "discussion",
+        )
+        if not any(v in q for v in drafting_verbs):
+            return False
+        if not any(t in q for t in academic_targets):
+            return False
+        # If the user explicitly asks "based on my library/papers", keep RAG.
+        if any(phrase in q for phrase in ("my library", "my papers", "in my library", "from my library", "ingested")):
+            return False
+        return True
+
+    def _draft_academic_text(self, query: str) -> dict:
+        """
+        Generate an academic draft without RAG grounding.
+        This is intentionally citation-free unless the user provides sources.
+        """
+        system_prompt = (
+            "You are an academic writing assistant.\n"
+            "Write clearly and formally.\n"
+            "Do NOT invent citations, DOIs, authors, or references.\n"
+            "Do NOT claim 'the literature shows' unless the user provided sources.\n"
+            "If needed, use neutral phrasing like 'prior work has explored' without naming papers.\n"
+        )
+        answer = self._ollama_chat(system_prompt, query, temperature=0.4, num_predict=1200)
+        return {
+            "query": query,
+            "answer": answer.strip(),
+            "sources": [],
+            "success": True,
+        }
+
     def generate_answer(
         self,
         query: str,
@@ -492,6 +541,12 @@ class RAGService:
                 "success": False,
                 "error": "Off-topic query blocked by keyword gate.",
             }
+
+        # ── Academic drafting path (non-RAG) ─────────────────────────────────────
+        # Example: "Draft an introduction for a paper on federated learning for IoT security"
+        # This must not trigger keyword discovery ("papers on ...") or strict scope verification.
+        if self._is_academic_drafting_request(query):
+            return self._draft_academic_text(query)
 
         # Fetch library index to support meta-queries
         stats = self.vector_store.get_collection_stats()
