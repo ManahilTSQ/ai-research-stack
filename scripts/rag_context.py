@@ -339,6 +339,16 @@ def query_has_library_topic_cue(query: str) -> bool:
     return any(c in q_lower for c in cues)
 
 
+# Tokens so generic that a single hit should NOT qualify a paper as on-topic.
+_WEAK_TOPIC_TOKENS = frozenset({
+    "data", "based", "using", "approach", "network", "deep",
+    "learning", "model", "system", "detection", "classification",
+    "performance", "result", "proposed", "method", "algorithm",
+    "wireless", "communication", "protocol", "node", "cloud",
+    "mobile", "user", "service", "layer",
+})
+
+
 def find_papers_by_metadata_keywords(
     query: str,
     papers_metadata: dict,
@@ -348,6 +358,13 @@ def find_papers_by_metadata_keywords(
     """
     Match papers by distinctive words in title / authors / manifest abstract.
     Works for any ingested topic — no hardcoded profile required.
+
+    Strictness rules:
+    - When min_token_hits is not given we require at least 2 hits when the
+      query has 2+ distinctive tokens, so that papers matching only a single
+      generic word (e.g. "deep" or "network") are excluded.
+    - Single-token matches are allowed only when the token is long and specific
+      (>=7 characters, not in _WEAK_TOPIC_TOKENS).
     """
     if not papers_metadata:
         return []
@@ -360,7 +377,17 @@ def find_papers_by_metadata_keywords(
         return []
     need = min_token_hits
     if need is None:
-        need = 2 if len(tokens) >= 2 else 1
+        if len(tokens) >= 3:
+            need = 2
+        elif len(tokens) == 2:
+            need = 2
+        else:
+            # Single-token query: only match if the token is specific enough.
+            tok = tokens[0]
+            if len(tok) < 7 or tok in _WEAK_TOPIC_TOKENS:
+                need = 2  # Force no single-generic-token matches.
+            else:
+                need = 1
     matched: list[str] = []
     for title, meta in papers_metadata.items():
         hay = _paper_haystack(title, meta)
@@ -375,10 +402,16 @@ def _refine_topic_papers_by_query(
     paper_titles: list[str],
     papers_metadata: dict,
 ) -> list[str]:
-    """Narrow broad profile matches using distinctive words from the question."""
+    """
+    Narrow broad profile matches using distinctive words from the question.
+    Requires at least 2 token hits when possible so single-word incidental
+    matches (e.g. a medical paper that mentions 'security' once) are dropped.
+    """
     tokens = _topic_specific_tokens(query)
     if not tokens or not paper_titles:
         return paper_titles
+    # Always require at least 2 hits when we have 2+ tokens — never accept
+    # a paper that only matches 1 generic word from the query.
     need = 2 if len(tokens) >= 2 else 1
     refined: list[str] = []
     for title in paper_titles:
@@ -387,6 +420,8 @@ def _refine_topic_papers_by_query(
         hits = sum(1 for t in tokens if t in hay)
         if hits >= need:
             refined.append(title)
+    # If refinement drops everything keep the original list so we don't lose
+    # a legitimate narrow topic (e.g. single-paper query).
     return refined if refined else paper_titles
 
 
@@ -608,6 +643,97 @@ def author_phrase_tokens(phrase: str) -> list[str]:
     stop = _query_stopwords() | {"noor", "dr", "prof", "professor"}
     raw = re.findall(r"[a-z0-9]+", (phrase or "").lower())
     return [t for t in raw if len(t) >= 3 and t not in stop]
+
+
+# ── Multi-author co-authorship (AND intersection) ────────────────────────────
+
+# Patterns for "papers by X and Y", "co-authored by X and Y", etc.
+_MULTI_AUTHOR_PATTERNS = [
+    # "papers by Stiawan and Budiarto"
+    re.compile(
+        r"(?:papers?|articles?|works?)\s+(?:by|co-?authored?\s+by)\s+"
+        r"([A-Za-z][A-Za-z\s\.\-]{1,40}?)\s+and\s+([A-Za-z][A-Za-z\s\.\-]{1,40}?)"
+        r"(?:\s+(?:in|on|about|from|at|to)\b|[.,;?]|$)",
+        re.I,
+    ),
+    # "co-authored papers by X and Y"
+    re.compile(
+        r"co-?authored?\s+(?:papers?|articles?|works?)?\s*by\s+"
+        r"([A-Za-z][A-Za-z\s\.\-]{1,40}?)\s+and\s+([A-Za-z][A-Za-z\s\.\-]{1,40}?)"
+        r"(?:\s+(?:in|on|about|from|at|to)\b|[.,;?]|$)",
+        re.I,
+    ),
+    # "analyze/list/compare ... by X and Y"
+    re.compile(
+        r"(?:analyze|compare|list|show|find|get)\s+(?:all\s+)?(?:co-?authored?\s+)?"
+        r"papers?\s+by\s+"
+        r"([A-Za-z][A-Za-z\s\.\-]{1,40}?)\s+and\s+([A-Za-z][A-Za-z\s\.\-]{1,40}?)"
+        r"(?:\s+(?:in|on|about|from|at|to)\b|[.,;?]|$)",
+        re.I,
+    ),
+]
+
+
+def extract_multi_author_phrases(query: str) -> list[str] | None:
+    """
+    Return [author1, author2] when the query explicitly asks for papers
+    co-authored by two named people.  Returns None for single-author queries.
+
+    Examples that match:
+      - "papers by Stiawan and Budiarto"
+      - "co-authored by Stiawan and Budiarto"
+      - "Analyze co-authored papers by Stiawan and Budiarto"
+    """
+    q = (query or "").strip()
+    for pat in _MULTI_AUTHOR_PATTERNS:
+        m = pat.search(q)
+        if m:
+            a1 = m.group(1).strip().strip("\"',;.")
+            a2 = m.group(2).strip().strip("\"',;.")
+            if a1 and a2 and len(a1) >= 3 and len(a2) >= 3:
+                return [a1, a2]
+    return None
+
+
+def resolve_coauthored_papers(
+    author_phrases: list[str],
+    papers_metadata: dict,
+) -> list[str]:
+    """
+    Return papers that are co-authored by ALL listed author phrases (AND/intersection).
+
+    For a query like "papers by Stiawan and Budiarto" this returns only the
+    subset of papers that have BOTH Stiawan AND Budiarto in their authors field —
+    not the union of all Stiawan papers plus all Budiarto papers.
+    """
+    if not author_phrases or not papers_metadata:
+        return []
+
+    sets: list[set[str]] = []
+    for phrase in author_phrases:
+        # Try full-phrase match first (most precise).
+        titles = set(resolve_papers_for_author_phrase(phrase, papers_metadata))
+        if not titles:
+            # Surname-only fallback for abbreviated author names.
+            tokens = author_phrase_tokens(phrase)
+            if tokens:
+                surname = tokens[-1]
+                titles = {
+                    t
+                    for t, m in papers_metadata.items()
+                    if author_field_contains_token(m.get("authors") or "", surname)
+                }
+        sets.append(titles)
+
+    if not sets:
+        return []
+
+    # Strict AND: keep only papers that appear in every author's paper set.
+    intersection: set[str] = sets[0]
+    for s in sets[1:]:
+        intersection = intersection & s
+
+    return sorted(intersection)
 
 
 def _load_ingestion_manifest() -> dict:
@@ -924,6 +1050,12 @@ def resolve_papers_for_author_phrase(
         if len(phrase_tokens) >= 2:
             if author_field_matches_phrase(authors, phrase_tokens):
                 matched.add(title)
+            else:
+                # Surname-only fallback: catches abbreviated forms like
+                # "N.Z. Jhanjhi" or "Jhanjhi, NZ" where given-name initials
+                # don't spell out "zaman" but the surname is unambiguous.
+                if author_field_contains_token(authors, surname):
+                    matched.add(title)
             continue
         if author_field_contains_token(authors, surname):
             matched.add(title)

@@ -34,6 +34,8 @@ from rag_context import (
     _refine_topic_papers_by_query,
     find_papers_by_metadata_keywords,
     query_has_library_topic_cue,
+    extract_multi_author_phrases,
+    resolve_coauthored_papers,
 )
 
 _COMPARE_QUERY_RE = re.compile(r"\bcompare\b", re.I)
@@ -271,6 +273,27 @@ def resolve_query_scope(
                 entity_kind="filter",
             )
         return QueryScope(requires_entity=True, entity_kind="filter")
+
+    # ── Multi-author co-authorship: "papers by X and Y" → intersection ──────
+    # Must run BEFORE single-author resolution so "Stiawan and Budiarto" is
+    # not accidentally matched as just "Budiarto" (the second surname).
+    multi_authors = extract_multi_author_phrases(query)
+    if multi_authors:
+        coauthored = resolve_coauthored_papers(multi_authors, papers_metadata)
+        if coauthored:
+            return QueryScope(
+                scoped_titles=coauthored,
+                requires_entity=True,
+                entity_kind="author",
+                author_phrase=" & ".join(multi_authors),
+            )
+        # Both authors exist individually but share no papers.
+        return QueryScope(
+            scoped_titles=[],
+            requires_entity=True,
+            entity_kind="author",
+            author_phrase=" & ".join(multi_authors),
+        )
 
     if query_has_paper_focus(query):
         paper_titles = fuzzy_match_paper_titles(query, papers_metadata)
@@ -648,6 +671,34 @@ def answer_catalog_metadata_query(query: str, papers_metadata: dict) -> str | No
     author_phrase = extract_papers_by_author_phrase(query)
     if author_phrase or re.search(r"\bpapers?\s+by\s+|\barticles?\s+by\s+", q):
         phrase = author_phrase or re.split(r"\bby\s+", query, maxsplit=1, flags=re.I)[-1].strip()
+
+        # ── Multi-author AND intersection ─────────────────────────────────────
+        # "papers by Stiawan and Budiarto" must return papers co-authored by
+        # BOTH, not the union of each author's individual paper set.
+        multi = extract_multi_author_phrases(query)
+        if multi:
+            scoped = resolve_coauthored_papers(multi, papers_metadata)
+            if scoped:
+                inv = {t: papers_metadata[t] for t in scoped if t in papers_metadata}
+                lines = []
+                for i, title in enumerate(sorted(inv.keys()), 1):
+                    m = inv[title]
+                    lines.append(
+                        f"{i}. {m.get('authors', 'Unknown')} ({m.get('year', 'N/A')}). {title}"
+                    )
+                label = " & ".join(multi)
+                return _format_numbered_list(
+                    f"Papers co-authored by {label} in your ingested library ({len(lines)} paper(s)):",
+                    lines,
+                )
+            else:
+                return (
+                    f"I could not find any papers in your knowledge base that are "
+                    f"co-authored by both {' and '.join(multi)}. "
+                    "Please check the author spellings or ingest more papers."
+                )
+
+        # ── Single-author listing ─────────────────────────────────────────────
         _ph, scoped = resolve_author_from_library(f"papers by {phrase}", papers_metadata)
         if not scoped:
             scoped = resolve_matching_paper_titles(f"papers by {phrase}", papers_metadata)

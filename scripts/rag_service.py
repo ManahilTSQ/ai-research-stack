@@ -51,7 +51,37 @@ from rag_strict import (
 )
 
 # Maximum papers processed in one batched extraction table (one LLM call per paper).
-MAX_EXTRACTION_TABLE_PAPERS = 40
+MAX_EXTRACTION_TABLE_PAPERS = 60
+
+
+def _parse_user_paper_limit(query: str) -> int | None:
+    """
+    Extract an explicit paper limit from the query, e.g.
+      - "limit to 10 papers"
+      - "show only 5"
+      - "top 10 papers"
+      - "first 15"
+    Returns None when no limit is stated.
+    """
+    patterns = [
+        r"\blimit\s+(?:to|of)?\s*(\d+)\s*papers?",
+        r"\bshow\s+(?:only\s+|me\s+)?(\d+)\s*papers?",
+        r"\btop\s+(\d+)\s*papers?",
+        r"\bfirst\s+(\d+)\s*papers?",
+        r"\bonly\s+(\d+)\s*papers?",
+        r"\bmax(?:imum)?\s+(\d+)\s*papers?",
+        r"\blimited\s+to\s+(\d+)",
+    ]
+    for pat in patterns:
+        m = re.search(pat, (query or ""), re.I)
+        if m:
+            try:
+                n = int(m.group(1))
+                if 1 <= n <= 200:
+                    return n
+            except ValueError:
+                pass
+    return None
 
 
 # ── Logger setup ──────────────────────────────────────────────────────────────
@@ -286,6 +316,13 @@ class RAGService:
                 "success": False,
                 "error": "No papers in scope for extraction table.",
             }
+
+        # Honour explicit user-stated limit (e.g. "limit to 10 papers", "top 5").
+        user_limit = _parse_user_paper_limit(query)
+        if user_limit is not None:
+            titles = titles[:user_limit]
+            inventory_metadata = {t: inventory_metadata[t] for t in titles}
+
         if len(titles) > MAX_EXTRACTION_TABLE_PAPERS:
             return {
                 "query": query,
@@ -771,10 +808,20 @@ class RAGService:
             "=== WHAT YOU ARE ALLOWED TO DO ===\n"
             "- Answer research questions strictly using the Document Context Blocks or Ingested Paper Library Inventory provided.\n"
             "- Summarize, compare, or explain content that is EXPLICITLY present in the context or library inventory.\n"
-            "- List authors, years, titles, DOIs only from the Library Inventory or context.\n"
-            "- If a query asks to list, count, or tabulate papers/articles in the library, use the Ingested Paper Library Inventory to answer exhaustively.\n"
-            "- For questions about a named author: use ONLY papers whose Authors field in the inventory lists that person. "
-            "Never attribute another author's paper to them.\n\n"
+            "- List authors, years, titles, DOIs only from the Library Inventory or context.\n\n"
+            "=== CITATION RULES ===\n"
+            "1. ONLY use facts from the Document Context Blocks or the Ingested Paper Library Inventory. Zero exceptions.\n"
+            "2. NEVER invent author names, paper titles, years, DOIs or references.\n"
+            "3. Use APA7 inline citations: (Author, Year) or (Author et al., Year, p. X).\n"
+            "4. NEVER use (Source 1), [Document 2] or any numbered source labels.\n"
+            "5. NEVER use bracket-number citations like [1], [2], [44] etc. These are FORBIDDEN.\n"
+            "   Bracket citations are NOT APA7. If you write [1] or [44] that is a CRITICAL ERROR.\n"
+            "6. NEVER call papers 'Paper A', 'Study 1' etc. Use (Author, Year) or exact title.\n"
+            "7. End every answer with a References section in full APA7 format (EXCEPT when the user asked for a list).\n"
+            "8. TRUTH GAPS: If the concept asked about is NOT in the context blocks or library inventory, "
+            "say: 'The retrieved context does not contain information about [topic].' DO NOT guess.\n"
+            "9. If context is insufficient, say so explicitly.\n"
+            "10. Formal, neutral academic tone always.\n\n"
             "=== LISTING QUERY RULES — ABSOLUTE REQUIREMENTS ===\n"
             "When the user asks you to LIST, ENUMERATE, or TABULATE papers/articles:\n"
             "1. You MUST output EVERY SINGLE matching paper in your main numbered response.\n"
@@ -783,11 +830,6 @@ class RAGService:
             "4. NEVER put papers in a References section when the user asked for a list.\n"
             "5. If there are 80 papers, you must list all 80. If there are 100 papers, you must list all 100.\n"
             "6. This is a non-negotiable requirement. Do not truncate under any circumstances.\n\n"
-            "=== CITATION RULES ===\n"
-            "1. ONLY use facts from the Document Context Blocks or the Ingested Paper Library Inventory. Zero exceptions.\n"
-            "2. NEVER invent author names, paper titles, years, DOIs or references.\n"
-            "3. Use APA7 inline citations: (Author, Year) or (Author et al., Year, p. X).\n"
-            "4. NEVER use (Source 1), [Document 2] or any numbered source labels.\n"
             "5. NEVER call papers 'Paper A', 'Study 1' etc. Use (Author, Year) or exact title.\n"
             "6. End every answer with a References section in full APA7 format (EXCEPT when the user asked for a list).\n"
             "7. TRUTH GAPS: If the concept asked about is NOT in the context blocks or library inventory, "
