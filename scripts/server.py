@@ -882,63 +882,83 @@ def ingest_pending(background_tasks: BackgroundTasks):
 
     def _bulk_ingest():
         logger.info("Starting background bulk ingestion...")
-        manifest = manifest_service.get_all_entries()
-        pdf_dir  = settings.PDF_DOWNLOAD_DIR
+        try:
+            manifest = manifest_service.get_all_entries()
+            pdf_dir  = settings.PDF_DOWNLOAD_DIR
 
-        processed = 0
-        succeeded = 0
+            processed = 0
+            succeeded = 0
 
-        for filename, meta in manifest.items():
-            if meta.get("status") == "success":
-                continue
+            for filename, meta in manifest.items():
+                if meta.get("status") == "success":
+                    continue
 
-            pdf_path = pdf_dir / filename
-            if not pdf_path.exists():
-                continue
+                pdf_path = pdf_dir / filename
+                if not pdf_path.exists():
+                    logger.warning(f"Skipping missing file: {filename}")
+                    continue
 
-            logger.info(f"Ingesting pending PDF: {filename}")
-            try:
-                title_guess = meta.get("title", pdf_path.stem.replace("_", " ").title())
-                doi_guess = meta.get("doi")
-                
-                # Resolve metadata
-                resolved = manifest_service.resolve_metadata(pdf_path, title_guess, doi_guess)
-                title = resolved["title"]
-                authors = resolved["authors"]
-                year_str = resolved["year"]
-                doi = resolved["doi"]
-                abstract = resolved.get("abstract", "")
-                
-                year = int(year_str) if year_str.isdigit() else None
-                
-                pages  = pdf_service.extract_text_by_page(pdf_path)
-                chunks = pdf_service.chunk_text(pages, chunk_size=1000, chunk_overlap=200)
+                logger.info(f"Ingesting pending PDF: {filename}")
+                try:
+                    title_guess = meta.get("title", pdf_path.stem.replace("_", " ").title())
+                    doi_guess = meta.get("doi")
+                    
+                    # Resolve metadata
+                    resolved = manifest_service.resolve_metadata(pdf_path, title_guess, doi_guess)
+                    title = resolved["title"]
+                    authors = resolved["authors"]
+                    year_str = resolved["year"]
+                    doi = resolved["doi"]
+                    abstract = resolved.get("abstract", "")
+                    
+                    year = int(year_str) if year_str.isdigit() else None
+                    
+                    logger.info(f"Extracting text from: {filename}")
+                    pages  = pdf_service.extract_text_by_page(pdf_path)
+                    logger.info(f"Chunking text from: {filename} ({len(pages)} pages)")
+                    chunks = pdf_service.chunk_text(pages, chunk_size=1000, chunk_overlap=200)
 
-                success = vector_store.add_paper_chunks(
-                    paper_title=title, doi=doi if doi != "N/A" else None, chunks=chunks,
-                    authors=authors, year=year, venue=resolved.get("venue")
-                )
+                    if not chunks:
+                        logger.warning(f"No chunks generated for {filename}, marking as failed")
+                        manifest_service.mark_as_ingested(
+                            filename, title, doi if doi != "N/A" else None,
+                            status="failed", error="No text chunks generated (PDF may be empty or scanned)",
+                            authors=authors, year=year, venue=resolved.get("venue"),
+                            abstract=abstract
+                        )
+                        processed += 1
+                        continue
 
-                manifest_service.mark_as_ingested(
-                    filename, title, doi if doi != "N/A" else None,
-                    status="success" if success else "failed",
-                    authors=authors, year=year, venue=resolved.get("venue"),
-                    abstract=abstract
-                )
-                processed += 1
-                if success:
-                    succeeded += 1
+                    logger.info(f"Adding chunks to vector store: {filename}")
+                    success = vector_store.add_paper_chunks(
+                        paper_title=title, doi=doi if doi != "N/A" else None, chunks=chunks,
+                        authors=authors, year=year, venue=resolved.get("venue")
+                    )
 
-            except Exception as e:
-                logger.error(f"Failed to ingest '{filename}': {e}")
-                manifest_service.mark_as_ingested(
-                    filename, meta.get("title", filename), meta.get("doi"),
-                    status="failed", error=str(e),
-                    authors=meta.get("authors", "Unknown Authors"), year=meta.get("year"),
-                    abstract=meta.get("abstract")
-                )
-                processed += 1
-        logger.info(f"Background bulk ingestion complete. Processed: {processed}, Succeeded: {succeeded}")
+                    manifest_service.mark_as_ingested(
+                        filename, title, doi if doi != "N/A" else None,
+                        status="success" if success else "failed",
+                        authors=authors, year=year, venue=resolved.get("venue"),
+                        abstract=abstract
+                    )
+                    processed += 1
+                    if success:
+                        succeeded += 1
+                    else:
+                        logger.error(f"Vector store returned failure for {filename}")
+
+                except Exception as e:
+                    logger.error(f"Failed to ingest '{filename}': {e}", exc_info=True)
+                    manifest_service.mark_as_ingested(
+                        filename, meta.get("title", filename), meta.get("doi"),
+                        status="failed", error=str(e),
+                        authors=meta.get("authors", "Unknown Authors"), year=meta.get("year"),
+                        abstract=meta.get("abstract")
+                    )
+                    processed += 1
+            logger.info(f"Background bulk ingestion complete. Processed: {processed}, Succeeded: {succeeded}")
+        except Exception as e:
+            logger.error(f"Background bulk ingestion task failed: {e}", exc_info=True)
 
     background_tasks.add_task(_bulk_ingest)
     return {"success": True, "message": "Bulk ingestion started in the background."}
