@@ -99,6 +99,7 @@ _GENERIC_TOPIC_TOKENS = frozenset({
     "systems", "analysis", "review", "reviews", "survey", "surveys", "detection",
     "classification", "learning", "deep", "machine", "framework", "application",
     "applications", "novel", "enhanced", "hybrid", "secure", "security",
+    "optimization", "optimize", "optimizing", "optimal",
     "internet", "things", "smart", "cities", "city", "network", "networks",
 })
 
