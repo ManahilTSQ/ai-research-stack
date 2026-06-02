@@ -1256,6 +1256,9 @@ def query_refers_to_missing_library_paper(query: str, papers_metadata: dict) -> 
     True when the query names a specific author/surname that is not in the library.
     Used to return a clearer refusal than generic 'irrelevant context'.
     """
+    # Allow contextual questions about chat history to pass through
+    if "above questions" in query.lower() or "this chat" in query.lower():
+        return False
     if resolve_matching_paper_titles(query, papers_metadata):
         return False
     tokens = _significant_query_tokens(query)
