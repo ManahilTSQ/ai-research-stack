@@ -485,7 +485,10 @@ def is_catalog_metadata_query(query: str) -> bool:
     q = (query or "").lower()
     if re.search(r"\bpapers?\s+by\s+", q) or re.search(r"\barticles?\s+by\s+", q):
         return True
-    if re.search(r"\b(list|show|name|who|all)\b.{0,40}\b(authors?|writers?)\b", q):
+    # Match "list all authors" / "show all authors" but NOT
+    # "list articles with Jhanjhi as author or co-author" (where 'author' is a role, not the subject).
+    if (re.search(r"\b(list|show|name|who|all)\b.{0,40}\b(all\s+)?(authors?|writers?)\b", q)
+            and not re.search(r"\bas\s+(an?\s+)?(?:author|co-?author)\b", q)):
         return True
     if re.search(r"\bhow many\b.{0,30}\b(papers?|articles?)\b", q):
         return True
@@ -698,6 +701,20 @@ def apply_verification_or_refuse(
     """Returns (final_answer, passed)."""
     if not getattr(settings, "RAG_STRICT_MODE", True):
         return answer, True
+
+    # ── Bypass verification for broad/global queries ──────────────────────
+    # When scope is fully open (no author/paper/topic/filter lock), the LLM
+    # is given the complete library inventory and may legitimately cite any
+    # paper.  Running strict title/citation checks here causes false failures
+    # on synthesis answers (literature reviews, research questions, gap analyses).
+    if scope.entity_kind == "none" and not scope.scoped_titles:
+        return answer, True
+
+    # For broad topic scopes (>15 papers) the LLM synthesises across the whole
+    # topic corpus — strict per-citation author checks produce false negatives.
+    if scope.entity_kind == "topic" and len(scope.scoped_titles) > 15:
+        return answer, True
+
     ok, reason = verify_answer_against_scope(
         answer,
         scoped_titles=scope.scoped_titles,

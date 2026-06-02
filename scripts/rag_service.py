@@ -461,19 +461,30 @@ class RAGService:
         if not q:
             return False
         drafting_verbs = (
-            "draft", "write", "compose", "generate", "create",
+            "draft", "write", "compose", "generate", "create", "suggest", "propose",
         )
         academic_targets = (
+            # Standard academic sections
             "introduction", "abstract", "conclusion", "related work",
             "literature review", "background", "problem statement",
             "methodology", "discussion",
+            # Research planning outputs
+            "gap analysis", "research gap", "research question", "research direction",
+            "future work", "future direction", "open problem",
+            # Professional / communication outputs
+            "linkedin post", "blog post", "survey draft", "bibliograph",
+            "paragraph", "section",
         )
         if not any(v in q for v in drafting_verbs):
             return False
         if not any(t in q for t in academic_targets):
             return False
-        # If the user explicitly asks "based on my library/papers", keep RAG.
-        if any(phrase in q for phrase in ("my library", "my papers", "in my library", "from my library", "ingested")):
+        # If the user explicitly asks "based on my library/papers", keep RAG
+        # so the answer is grounded in actual ingested content.
+        if any(phrase in q for phrase in (
+            "my library", "my papers", "in my library", "from my library",
+            "ingested", "based on my", "from my", "using my",
+        )):
             return False
         return True
 
@@ -638,8 +649,16 @@ class RAGService:
             effective_limit = max(limit, len(matched_titles) * 3, 24)
 
         # Extraction/listing tables must not inherit unrelated prior chat turns.
+        # Drafting / creative requests (draft, write, generate, suggest) also get a
+        # clean slate — a prior LinkedIn-post query must not contaminate a gap-analysis answer.
+        _DRAFTING_VERBS = ("draft", "write", "compose", "generate", "create", "suggest", "propose")
         history_for_llm = conversation_history
-        if is_per_paper_extraction_query(query) or is_simple_inventory_listing(query) or query_mode == "both":
+        if (
+            is_per_paper_extraction_query(query)
+            or is_simple_inventory_listing(query)
+            or query_mode == "both"
+            or any(query.strip().lower().startswith(v) for v in _DRAFTING_VERBS)
+        ):
             history_for_llm = None
 
         # ── Step 1: Retrieve chunks ───────────────────────────────────────────

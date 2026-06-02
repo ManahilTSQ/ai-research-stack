@@ -51,6 +51,11 @@ CONTENT_EXTRACTION_SIGNALS = (
     "mitigation", "challenge", "hypothesis", "objective", "research question",
     "surveillance", "connectivity", "citizens", "problem", "solution",
     "limitation", "open problem", "column", "columns",
+    # Comparative / analytical table keywords
+    "comparative", "comparison", "algorithm", "technique", "accuracy",
+    "dataset", "performance", "precision", "recall", "benchmark",
+    "ml method", "approach used", "method used", "evaluation metric",
+    "intrusion detection method", "classification method",
 )
 
 _AUTHOR_PHRASE_PATTERNS = [
@@ -510,6 +515,14 @@ def is_content_extraction_query(query: str) -> bool:
     if "extract" in q and re.search(r"\bwhat\b.*\bsays?\s+about\b", q):
         return True
     if re.search(r"\b(?:contributions?|findings?|approach|methodology|framework)\b", q):
+        return True
+    # Comparative / ML-method table requests need content extraction, not metadata.
+    # e.g. "Generate a comparative table of ML methods used for intrusion detection"
+    if is_listing_query(query) and re.search(
+        r"\bcompar(?:e|ative|ison)\b|\bml\s*method|\balgorithm\b|\btechnique\b"
+        r"|\baccuracy\b|\bdataset\b|\bperformance\b|\bevaluation\b",
+        q, re.I,
+    ):
         return True
     if not is_listing_query(query):
         return False
