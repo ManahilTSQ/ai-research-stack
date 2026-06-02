@@ -39,7 +39,7 @@ TABLE_TRUNCATION_REFUSAL = (
 
 # Listing keywords used across RAG paths.
 LISTING_QUERY_KEYWORDS = (
-    "list", "table", "tabulate", "extract", "all paper",
+    "list", "table", "tabulate", "all paper",
     "each paper", "for each", "structured", "enumerate",
     "articles with", "papers by", "authored by",
 )
@@ -206,6 +206,20 @@ TABLE_TRUNCATION_RE = re.compile(
     re.IGNORECASE,
 )
 
+_BOTH_INTENT_RE = re.compile(
+    r"\bboth\b|\blist\b.*\b(?:summari[sz]e|explain|describe|what\s+does)\b|"
+    r"\b(?:summari[sz]e|explain|describe)\b.*\band\b.*\blist\b|"
+    r"\bplus\s+(?:a\s+)?(?:summary|synthesis)\b",
+    re.I,
+)
+
+_CONTENT_INTENT_RE = re.compile(
+    r"\bwhat\s+(?:does|did|is|are)\b|\bwhat\s+(?:he|she|they)\s+says?\b|"
+    r"\bsays?\s+about\b|\bmain\s+contributions?\b|\bsummarize\b|"
+    r"\bdescribe\s+(?:the\s+)?research\b|\bfindings?\b|\bexplain\b",
+    re.I,
+)
+
 
 def format_chunk_block(chunk: dict[str, Any], index: int | None = None) -> str:
     """
@@ -299,6 +313,47 @@ def _topic_specific_tokens(query: str) -> list[str]:
     return [t for t in _significant_query_tokens(query) if t not in _GENERIC_TOPIC_TOKENS]
 
 
+def query_has_library_topic_cue(query: str) -> bool:
+    """True for 'what do my papers say about X' style questions."""
+    q_lower = (query or "").lower()
+    cues = (
+        "about", "on ", " regarding ", " related to ", " topic ", " theme ",
+        "discuss", "discusses", "cover", "covers", "concerning", " say about",
+    )
+    return any(c in q_lower for c in cues)
+
+
+def find_papers_by_metadata_keywords(
+    query: str,
+    papers_metadata: dict,
+    *,
+    min_token_hits: int | None = None,
+) -> list[str]:
+    """
+    Match papers by distinctive words in title / authors / manifest abstract.
+    Works for any ingested topic — no hardcoded profile required.
+    """
+    if not papers_metadata:
+        return []
+    tokens = _topic_specific_tokens(query) or _significant_query_tokens(query)
+    # Short tech tokens (6g, v2x, ai) from the raw query.
+    for raw in re.findall(r"[a-z0-9]{2,}", (query or "").lower()):
+        if raw not in tokens and raw not in _GENERIC_TOPIC_TOKENS:
+            tokens.append(raw)
+    if not tokens:
+        return []
+    need = min_token_hits
+    if need is None:
+        need = 2 if len(tokens) >= 2 else 1
+    matched: list[str] = []
+    for title, meta in papers_metadata.items():
+        hay = _paper_haystack(title, meta)
+        hits = sum(1 for t in tokens if t in hay)
+        if hits >= need:
+            matched.append(title)
+    return sorted(matched)
+
+
 def _refine_topic_papers_by_query(
     query: str,
     paper_titles: list[str],
@@ -387,11 +442,64 @@ def _filter_chunks_by_query_term_presence(
 
 def is_listing_query(query: str) -> bool:
     q = (query or "").lower()
-    return any(kw in q for kw in LISTING_QUERY_KEYWORDS)
+    has_listing_verb = any(kw in q for kw in LISTING_QUERY_KEYWORDS)
+    if not has_listing_verb:
+        return False
+    # Inventory listing should be command-like ("list/show/table/..."), not a
+    # semantic "what does X say about Y" question.
+    semantic_qa_patterns = [
+        r"\bwhat\s+(?:does|did|is|are)\b",
+        r"\bwhat\s+(?:he|she|they)\s+says?\b",
+        r"\bsays?\s+about\b",
+        r"\bmain\s+contributions?\b",
+        r"\bdescribe\s+(?:the\s+)?research\b",
+        r"\bsummarize\b",
+    ]
+    if any(re.search(pat, q) for pat in semantic_qa_patterns):
+        return False
+    return True
+
+
+def classify_query_mode(query: str) -> str:
+    """
+    Classify user intent for routing:
+      - listing: metadata inventory/table/list only
+      - content: synthesis/extraction from paper text
+      - both: user explicitly wants list + summary
+      - ambiguous: mixed signals, needs clarification
+    """
+    q = (query or "").strip()
+    if not q:
+        return "content"
+
+    has_listing = is_listing_query(q)
+    has_content = bool(_CONTENT_INTENT_RE.search(q)) or bool(
+        any(sig in q.lower() for sig in CONTENT_EXTRACTION_SIGNALS)
+    )
+    wants_both = bool(_BOTH_INTENT_RE.search(q))
+    topical_but_underspecified = bool(
+        re.search(r"\b(?:about|on|regarding|related to)\b", q, re.I)
+    ) and has_listing and query_has_author_intent(q)
+
+    if wants_both:
+        return "both"
+    if topical_but_underspecified:
+        return "ambiguous"
+    if has_listing and has_content:
+        return "ambiguous"
+    if has_listing:
+        return "listing"
+    return "content"
 
 
 def is_content_extraction_query(query: str) -> bool:
     q = (query or "").lower()
+    # "extract ... what X says about Y" and similar semantic requests should be
+    # handled as content extraction, not metadata inventory listing.
+    if "extract" in q and re.search(r"\bwhat\b.*\bsays?\s+about\b", q):
+        return True
+    if re.search(r"\b(?:contributions?|findings?|approach|methodology|framework)\b", q):
+        return True
     if not is_listing_query(query):
         return False
     if any(sig in q for sig in CONTENT_EXTRACTION_SIGNALS):

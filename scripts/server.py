@@ -58,6 +58,7 @@ from rag_strict import (
     build_catalog_indexes,
     list_distinct_authors,
     answer_catalog_metadata_query,
+    apply_scope_resilience,
 )
 from search_utils import (
     extract_quoted_phrases,
@@ -273,6 +274,7 @@ def _execute_template_rag(request: RAGQueryRequest) -> dict:
         papers_metadata,
         filter_title=request.filter_title or None,
     )
+    scope = apply_scope_resilience(scope, request.query, papers_metadata)
     if scope.requires_entity and not scope.scoped_titles:
         raise HTTPException(status_code=404, detail=scope_refusal_message(scope))
 

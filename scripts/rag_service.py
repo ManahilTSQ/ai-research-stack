@@ -25,9 +25,9 @@ from rag_context import (
     resolve_matching_paper_titles,
     query_refers_to_missing_library_paper,
     query_expects_named_author,
-    is_listing_query,
     is_simple_inventory_listing,
     is_per_paper_extraction_query,
+    classify_query_mode,
     parse_table_columns_from_query,
     answer_has_table_truncation,
     filter_chunks_to_titles,
@@ -46,6 +46,8 @@ from rag_strict import (
     _TOPIC_NOT_FOUND_REFUSAL,
     compare_query_needs_paper_pickers,
     COMPARE_NEEDS_PICKER_MSG,
+    apply_scope_resilience,
+    answer_keyword_discovery_query,
 )
 
 # Maximum papers processed in one batched extraction table (one LLM call per paper).
@@ -197,6 +199,36 @@ class RAGService:
             else:
                 cells.append("—")
         return "| " + " | ".join(cells) + " |"
+
+    def _render_inventory_listing(self, query: str, inventory_metadata: dict) -> str:
+        """Deterministic metadata-only list/table for in-scope papers."""
+        is_table_request = "table" in query.lower() or "tabulate" in query.lower()
+        if is_table_request:
+            table_rows = [
+                "| Title | Year | Venue |",
+                "|-------|------|-------|",
+            ]
+            for title, meta in inventory_metadata.items():
+                year = meta.get("year", "N/A")
+                venue = meta.get("venue", "N/A")
+                title_escaped = title.replace("|", "\\|")
+                venue_escaped = venue.replace("|", "\\|")
+                table_rows.append(f"| {title_escaped} | {year} | {venue_escaped} |")
+            return "\n\n".join(table_rows)
+
+        listing_parts = []
+        for idx, (title, meta) in enumerate(inventory_metadata.items(), 1):
+            authors = meta.get("authors", "Unknown Authors")
+            year = meta.get("year", "N/A")
+            doi = meta.get("doi", "N/A")
+            venue = meta.get("venue", "")
+            entry = f"{idx}. {authors} ({year}). {title}"
+            if venue:
+                entry += f". {venue}"
+            if doi and doi != "N/A":
+                entry += f". doi: {doi}"
+            listing_parts.append(entry)
+        return "Papers in your library:\n\n" + "\n\n".join(listing_parts)
 
     def _extract_single_paper_row(
         self,
@@ -453,6 +485,7 @@ class RAGService:
         scope = resolve_query_scope(
             query, papers_metadata, filter_title=filter_title
         )
+        scope = apply_scope_resilience(scope, query, papers_metadata)
         if compare_query_needs_paper_pickers(query, papers_metadata) and not filter_title:
             return {
                 "query": query,
@@ -462,7 +495,8 @@ class RAGService:
             }
 
         matched_titles = scope.scoped_titles
-        listing_style_query = is_listing_query(query)
+        query_mode = classify_query_mode(query)
+        listing_style_query = (query_mode == "listing")
 
         if scope.requires_entity and not scope.scoped_titles:
             return {
@@ -474,6 +508,25 @@ class RAGService:
             }
 
         inventory_metadata = inventory_for_scope(papers_metadata, scope)
+        if query_mode == "ambiguous":
+            return {
+                "query": query,
+                "answer": (
+                    "I can do either. Do you want (1) a list of papers, "
+                    "or (2) a summary from paper content?"
+                ),
+                "sources": [],
+                "success": True,
+            }
+
+        keyword_answer = answer_keyword_discovery_query(query, papers_metadata)
+        if keyword_answer:
+            return {
+                "query": query,
+                "answer": keyword_answer,
+                "sources": [],
+                "success": True,
+            }
 
         catalog_answer = answer_catalog_metadata_query(query, papers_metadata)
         if catalog_answer:
@@ -485,47 +538,15 @@ class RAGService:
             }
 
         # ── PER-PAPER EXTRACTION TABLE (one LLM call per paper, no truncation) ──
-        if is_per_paper_extraction_query(query) and inventory_metadata:
+        if query_mode != "listing" and is_per_paper_extraction_query(query) and inventory_metadata:
             columns = parse_table_columns_from_query(query)
             return self._generate_per_paper_extraction_table(
                 query, inventory_metadata, columns
             )
 
         # ── CODE-BASED LISTING FOR SIMPLE INVENTORY QUERIES ─────────────────
-        if is_simple_inventory_listing(query) and inventory_metadata:
-            # Detect if user specifically requested a table format
-            is_table_request = "table" in query.lower() or "tabulate" in query.lower()
-            
-            if is_table_request:
-                # Generate markdown table
-                table_rows = []
-                table_rows.append("| Title | Year | Venue |")
-                table_rows.append("|-------|------|-------|")
-                for title, meta in inventory_metadata.items():
-                    year = meta.get("year", "N/A")
-                    venue = meta.get("venue", "N/A")
-                    # Escape pipe characters in title/venue to avoid breaking markdown
-                    title_escaped = title.replace("|", "\\|")
-                    venue_escaped = venue.replace("|", "\\|")
-                    table_rows.append(f"| {title_escaped} | {year} | {venue_escaped} |")
-                answer = "\n\n".join(table_rows)
-            else:
-                # Generate numbered list
-                listing_parts = []
-                for idx, (title, meta) in enumerate(inventory_metadata.items(), 1):
-                    authors = meta.get("authors", "Unknown Authors")
-                    year = meta.get("year", "N/A")
-                    doi = meta.get("doi", "N/A")
-                    venue = meta.get("venue", "")
-                    
-                    entry = f"{idx}. {authors} ({year}). {title}"
-                    if venue:
-                        entry += f". {venue}"
-                    if doi and doi != "N/A":
-                        entry += f". doi: {doi}"
-                    listing_parts.append(entry)
-                answer = "Papers in your library:\n\n" + "\n\n".join(listing_parts)
-            
+        if query_mode == "listing" and is_simple_inventory_listing(query) and inventory_metadata:
+            answer = self._render_inventory_listing(query, inventory_metadata)
             return {
                 "query": query,
                 "answer": answer,
@@ -533,13 +554,17 @@ class RAGService:
                 "success": True
             }
 
+        both_listing_block = ""
+        if query_mode == "both" and inventory_metadata:
+            both_listing_block = self._render_inventory_listing(query, inventory_metadata)
+
         effective_limit = limit
         if matched_titles:
             effective_limit = max(limit, len(matched_titles) * 3, 24)
 
         # Extraction/listing tables must not inherit unrelated prior chat turns.
         history_for_llm = conversation_history
-        if is_per_paper_extraction_query(query) or is_simple_inventory_listing(query):
+        if is_per_paper_extraction_query(query) or is_simple_inventory_listing(query) or query_mode == "both":
             history_for_llm = None
 
         # ── Step 1: Retrieve chunks ───────────────────────────────────────────
@@ -552,15 +577,6 @@ class RAGService:
         )
         if matched_titles and not filter_title:
             chunks = filter_chunks_to_titles(chunks, matched_titles)
-
-        if scope.entity_kind == "topic" and scope.requires_entity and not chunks:
-            return {
-                "query": query,
-                "answer": _TOPIC_NOT_FOUND_REFUSAL,
-                "sources": [],
-                "success": False,
-                "error": "Topic not found in library.",
-            }
 
         if not papers_metadata:
             logger.warning("No papers found in ChromaDB.")
@@ -748,6 +764,11 @@ class RAGService:
                         safe_refs = self._build_safe_references(chunks)
                         if safe_refs:
                             answer = f"{answer}\n\n{safe_refs}"
+                    if query_mode == "both" and both_listing_block:
+                        answer = (
+                            f"{both_listing_block}\n\n"
+                            f"What these papers say:\n\n{answer}"
+                        )
                     answer, verified = apply_verification_or_refuse(
                         answer,
                         scope=scope,

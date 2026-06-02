@@ -32,9 +32,19 @@ from rag_context import (
     _significant_query_tokens,
     _topic_specific_tokens,
     _refine_topic_papers_by_query,
+    find_papers_by_metadata_keywords,
+    query_has_library_topic_cue,
 )
 
 _COMPARE_QUERY_RE = re.compile(r"\bcompare\b", re.I)
+
+_KEYWORD_DISCOVERY_RE = re.compile(
+    r"\b(?:do|does|are there|which)\s+(?:any\s+)?(?:of\s+)?(?:my\s+)?papers?\s+"
+    r"(?:discuss|mention|cover|address|use|include|contain)\b|"
+    r"\bwhich\s+papers?\s+(?:discuss|mention|use|cover)\b|"
+    r"\bpapers?\s+(?:on|about|regarding)\s+\w",
+    re.I,
+)
 
 COMPARE_NEEDS_PICKER_MSG = (
     "To compare two papers, select **Paper A** and **Paper B** in the Focus on Paper "
@@ -149,6 +159,69 @@ def _papers_matching_topic_tokens(
     return matched
 
 
+def is_keyword_discovery_query(query: str) -> bool:
+    """Questions answerable from title/metadata before LLM (any topic)."""
+    return bool(_KEYWORD_DISCOVERY_RE.search(query or ""))
+
+
+def answer_keyword_discovery_query(query: str, papers_metadata: dict) -> str | None:
+    """List papers whose metadata matches question keywords — no profile list needed."""
+    if not papers_metadata or not is_keyword_discovery_query(query):
+        return None
+    titles = find_papers_by_metadata_keywords(query, papers_metadata)
+    if not titles:
+        return _TOPIC_NOT_FOUND_REFUSAL
+    lines = []
+    for i, title in enumerate(titles, 1):
+        m = papers_metadata[title]
+        lines.append(
+            f"{i}. {m.get('authors', 'Unknown')} ({m.get('year', 'N/A')}). {title}"
+        )
+    return _format_numbered_list(
+        f"Papers in your library that match this topic ({len(lines)} paper(s)):",
+        lines,
+    )
+
+
+def apply_scope_resilience(
+    scope: QueryScope,
+    query: str,
+    papers_metadata: dict,
+) -> QueryScope:
+    """
+    Avoid hard failure when scope resolution is empty but the library may still
+    contain relevant papers (new topics, wording variants, no profile match).
+    """
+    if scope.scoped_titles:
+        return scope
+
+    if scope.entity_kind == "author" and scope.requires_entity:
+        # Explicit author name with zero papers → keep refusal path in caller.
+        return scope
+
+    if scope.entity_kind == "filter":
+        return scope
+
+    # Topic profile/token path found nothing — try metadata keywords once.
+    if scope.entity_kind == "topic" or query_has_library_topic_cue(query):
+        rescued = find_papers_by_metadata_keywords(query, papers_metadata)
+        if rescued:
+            return QueryScope(
+                scoped_titles=rescued,
+                requires_entity=True,
+                entity_kind="topic",
+                topic_tokens=_topic_specific_tokens(query),
+            )
+
+    # Open semantic search over full library (never refuse for "unknown topic name").
+    return QueryScope(
+        scoped_titles=[],
+        requires_entity=False,
+        entity_kind="none",
+        topic_tokens=scope.topic_tokens,
+    )
+
+
 def compare_query_needs_paper_pickers(query: str, papers_metadata: dict) -> bool:
     """True when user asked to compare but did not select or quote two papers."""
     if not _COMPARE_QUERY_RE.search(query or ""):
@@ -189,11 +262,19 @@ def resolve_query_scope(
             )
 
     author_phrase, author_titles = resolve_author_from_library(query, papers_metadata)
-    if author_phrase or author_titles or query_expects_named_author(query):
-        if not author_titles and author_phrase:
-            author_titles = resolve_papers_for_author_phrase(author_phrase, papers_metadata)
+    explicit_author = query_expects_named_author(query) or bool(
+        extract_author_search_phrase(query)
+    )
+    if author_titles:
         return QueryScope(
             scoped_titles=author_titles,
+            requires_entity=True,
+            entity_kind="author",
+            author_phrase=author_phrase,
+        )
+    if explicit_author:
+        return QueryScope(
+            scoped_titles=[],
             requires_entity=True,
             entity_kind="author",
             author_phrase=author_phrase,
@@ -201,29 +282,35 @@ def resolve_query_scope(
 
     topic_tokens = _significant_query_tokens(query)
     q_lower = (query or "").lower()
-    topic_cues = (
-        "about", "on ", " regarding ", " related to ", " topic ", " theme ",
-        "discuss", "discusses", "cover", "covers", "concerning", " say about",
-    )
     profile = detect_topic_profile(query)
     if profile:
         topic_papers = resolve_topic_scoped_papers(query, papers_metadata, profile)
-        return QueryScope(
-            scoped_titles=topic_papers,
-            requires_entity=True,
-            entity_kind="topic",
-            topic_tokens=topic_tokens,
-        )
-    if topic_tokens and any(c in q_lower for c in topic_cues):
+        if topic_papers:
+            return QueryScope(
+                scoped_titles=topic_papers,
+                requires_entity=True,
+                entity_kind="topic",
+                topic_tokens=topic_tokens,
+            )
+    if topic_tokens and query_has_library_topic_cue(query):
         specific = _topic_specific_tokens(query) or topic_tokens
         topic_papers = _papers_matching_topic_tokens(specific, papers_metadata)
         topic_papers = _refine_topic_papers_by_query(query, topic_papers, papers_metadata)
-        return QueryScope(
-            scoped_titles=topic_papers,
-            requires_entity=True,
-            entity_kind="topic",
-            topic_tokens=specific,
-        )
+        if topic_papers:
+            return QueryScope(
+                scoped_titles=topic_papers,
+                requires_entity=True,
+                entity_kind="topic",
+                topic_tokens=specific,
+            )
+        rescued = find_papers_by_metadata_keywords(query, papers_metadata)
+        if rescued:
+            return QueryScope(
+                scoped_titles=rescued,
+                requires_entity=True,
+                entity_kind="topic",
+                topic_tokens=specific,
+            )
 
     paper_titles = fuzzy_match_paper_titles(query, papers_metadata)
     if len(paper_titles) == 1:
