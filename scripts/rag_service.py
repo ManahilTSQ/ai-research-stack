@@ -97,7 +97,7 @@ def check_ollama_health() -> bool:
     except requests.exceptions.ConnectionError:
         # The most common case — Ollama is simply not running yet
         print(
-            "\n❌  Ollama is not running or unreachable.\n"
+            "\nERROR: Ollama is not running or unreachable.\n"
             f"    Expected at: {settings.OLLAMA_BASE_URL}\n"
             "    Start it with:  ollama serve\n"
             "    Then retry your command.\n"

@@ -447,27 +447,31 @@ def verify_answer_against_scope(
         if tl in answer_lower:
             return False, f"out_of_scope_title:{title[:60]}"
 
-    # Disallow citations whose author token is not present in allowed evidence.
-    # This blocks invented "Wang et al., 2022" style citations.
-    for m in _APA_CITATION_RE.finditer(answer):
-        author_blob = (m.group(1) or "").strip()
-        year = m.group(2)
-        # Extract candidate surname tokens (ignore "et al.", "&", initials).
-        parts = re.split(r"&|and", author_blob)
-        for part in parts:
-            token = re.sub(r"[^A-Za-z\u00C0-\u017F\-’']", " ", part).strip().lower()
-            if not token:
-                continue
-            # Prefer last word as surname (e.g., "Noor Zaman Jhanjhi" -> "jhanjhi").
-            words = [w for w in re.split(r"\s+", token) if w and w not in {"et", "al"}]
-            if not words:
-                continue
-            surname = words[-1]
-            # Short surnames / initials are ignored.
-            if len(surname) < 4:
-                continue
-            if surname not in allowed_author_tokens:
-                return False, f"out_of_scope_citation:{surname}:{year}"
+    # Only enforce citation author-token scope when the query is locked to a specific
+    # author/paper/topic/filter. For general library-wide questions, retrieved chunks
+    # are a sample and may not include every in-library author token.
+    if locked:
+        # Disallow citations whose author token is not present in allowed evidence.
+        # This blocks invented "Wang et al., 2022" style citations.
+        for m in _APA_CITATION_RE.finditer(answer):
+            author_blob = (m.group(1) or "").strip()
+            year = m.group(2)
+            # Extract candidate surname tokens (ignore "et al.", "&", initials).
+            parts = re.split(r"&|and", author_blob)
+            for part in parts:
+                token = re.sub(r"[^A-Za-z\u00C0-\u017F\-’']", " ", part).strip().lower()
+                if not token:
+                    continue
+                # Prefer last word as surname (e.g., "Noor Zaman Jhanjhi" -> "jhanjhi").
+                words = [w for w in re.split(r"\s+", token) if w and w not in {"et", "al"}]
+                if not words:
+                    continue
+                surname = words[-1]
+                # Short surnames / initials are ignored.
+                if len(surname) < 4:
+                    continue
+                if surname not in allowed_author_tokens:
+                    return False, f"out_of_scope_citation:{surname}:{year}"
 
     # Co-authors on scoped papers are allowed; author-token checks above only target citations.
     return True, ""

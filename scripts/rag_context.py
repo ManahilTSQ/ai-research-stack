@@ -59,6 +59,9 @@ _AUTHOR_PHRASE_PATTERNS = [
     re.compile(r"corpus of\s+(.+?)\s+on\b", re.I),
     re.compile(r"papers?\s+by\s+(.+?)(?:\s+on\b|[\.,;]|$)", re.I),
     re.compile(r"articles?\s+by\s+(.+?)(?:\s+on\b|[\.,;]|$)", re.I),
+    # Author-scoped phrasing: "papers with D. Stiawan", "extract from the papers with <name>"
+    re.compile(r"papers?\s+with\s+(.+?)(?:\s+on\b|[\.,;]|$)", re.I),
+    re.compile(r"extract\s+from\s+the\s+papers?\s+with\s+(.+?)(?:\s+on\b|[\.,;]|$)", re.I),
     re.compile(r"(.+?)(?:'s|\u2019s)\s+(?:articles?|papers?|works?)\s+on\b", re.I),
     # Synthesis / stance questions: "thoughts of Jhanjhi", "contributions by X"
     re.compile(
@@ -132,6 +135,8 @@ def normalize_for_match(text: str) -> str:
     s = unicodedata.normalize("NFKD", text)
     s = s.replace("\ufb01", "fi").replace("\ufb02", "fl")
     s = "".join(c for c in s if not unicodedata.combining(c))
+    # Remove punctuation so "D. Stiawan" == "D Stiawan" in matching.
+    s = re.sub(r"[^0-9A-Za-z\s]+", " ", s)
     return re.sub(r"\s+", " ", s).lower().strip()
 
 # Topic profiles: require domain phrases in paper metadata/abstract, not generic "learning".
@@ -198,6 +203,7 @@ _AUTHOR_SCOPED_PATTERNS = [
     r"\u2019s\s+(work|research)",
     r"articles?\s+with\s+.+?\s+as\s+(author|co-author)",
     r"list\s+(articles?|papers?)\s+with\s+",
+    r"papers?\s+with\s+",
     r"papers?\s+authored?\s+by\s+",
     r".+?\s+authored?\s+(papers?|articles?)",
     r"as\s+(author|co-author)\s+or\s+co-author",
