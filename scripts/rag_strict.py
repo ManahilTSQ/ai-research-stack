@@ -38,6 +38,12 @@ from rag_context import (
 
 _COMPARE_QUERY_RE = re.compile(r"\bcompare\b", re.I)
 
+_YEAR_RANGE_RE = re.compile(
+    r"\b(?:between|from)\s+(20\d{2})\s+(?:and|to|-)\s+(20\d{2})\b|"
+    r"\b(20\d{2})\s*-\s*(20\d{2})\b",
+    re.I,
+)
+
 _KEYWORD_DISCOVERY_RE = re.compile(
     r"\b(?:do|does|are there|which)\s+(?:any\s+)?(?:of\s+)?(?:my\s+)?papers?\s+"
     r"(?:discuss|mention|cover|address|use|include|contain)\b|"
@@ -442,7 +448,36 @@ def is_catalog_metadata_query(query: str) -> bool:
         return True
     if re.search(r"\bwhat\b.{0,20}\b(papers?|articles?)\b.{0,20}\b(library|ingested|knowledge base)\b", q):
         return True
+    if _YEAR_RANGE_RE.search(q) and re.search(r"\b(papers?|articles?|publications?)\b", q):
+        return True
     return False
+
+
+def _extract_year_range(query: str) -> tuple[int, int] | None:
+    """
+    Return an inclusive (start_year, end_year) if the query names a year range.
+    Supports:
+      - between 2021 and 2023
+      - from 2021 to 2023
+      - 2021-2023
+    """
+    q = (query or "").strip()
+    if not q:
+        return None
+    m = _YEAR_RANGE_RE.search(q)
+    if not m:
+        return None
+    years = [y for y in m.groups() if y]
+    if len(years) != 2:
+        return None
+    try:
+        a, b = int(years[0]), int(years[1])
+    except ValueError:
+        return None
+    start, end = (a, b) if a <= b else (b, a)
+    if start < 1900 or end > 2100:
+        return None
+    return start, end
 
 
 def extract_papers_by_author_phrase(query: str) -> str | None:
@@ -472,6 +507,39 @@ def answer_catalog_metadata_query(query: str, papers_metadata: dict) -> str | No
     if not papers_metadata or not is_catalog_metadata_query(query):
         return None
     q = (query or "").lower()
+
+    year_range = _extract_year_range(query)
+    if year_range:
+        start_year, end_year = year_range
+        in_range: list[tuple[str, dict[str, Any]]] = []
+        for title, meta in papers_metadata.items():
+            y = meta.get("year")
+            try:
+                yi = int(y) if y is not None and str(y).strip().isdigit() else None
+            except Exception:
+                yi = None
+            if yi is None:
+                continue
+            if start_year <= yi <= end_year:
+                in_range.append((title, meta))
+
+        # Sort by year then title for stable output.
+        in_range.sort(key=lambda tm: (int(tm[1].get("year") or 0), tm[0].lower()))
+        lines = []
+        for i, (title, meta) in enumerate(in_range, 1):
+            lines.append(
+                f"{i}. {meta.get('authors', 'Unknown')} ({meta.get('year', 'N/A')}). {title}"
+            )
+        header = (
+            f"Papers in your ingested library published between {start_year} and {end_year} "
+            f"({len(lines)} paper(s)):"
+        )
+        if not lines:
+            return (
+                f"I could not find any ingested papers in your knowledge base published between "
+                f"{start_year} and {end_year}."
+            )
+        return _format_numbered_list(header, lines)
 
     author_phrase = extract_papers_by_author_phrase(query)
     if author_phrase or re.search(r"\bpapers?\s+by\s+|\barticles?\s+by\s+", q):
