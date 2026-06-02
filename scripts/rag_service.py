@@ -368,6 +368,26 @@ class RAGService:
         stripped = re.split(r"\n\s*(?:#+\s*|\*+\s*|_+)?references\b[:\s]*", answer, maxsplit=1, flags=re.IGNORECASE)[0]
         return stripped.strip()
 
+    def _is_refusal_answer(self, answer: str) -> bool:
+        """
+        True when the final answer is a refusal / cannot-verify response.
+        In these cases we must NOT append a References section.
+        """
+        a = (answer or "").strip()
+        if not a:
+            return False
+        refusal_markers = (
+            EMPTY_DB_REFUSAL,
+            IRRELEVANT_REFUSAL,
+            NOT_IN_LIBRARY_REFUSAL,
+            TABLE_TRUNCATION_REFUSAL,
+            "This question is outside the scope of your ingested research knowledge base.",
+            "I cannot provide this answer because it references papers or authors that are not in the retrieved scope",
+            "I could not find any ingested papers in your knowledge base that discuss that topic.",
+            "I could not find any relevant papers or context in the local database",
+        )
+        return any(marker and marker in a for marker in refusal_markers)
+
     def _is_unverifiable_sensitive_claim(self, query: str, chunks: list[dict]) -> bool:
         """
         Detect high-risk stance/position questions where retrieved context contains
@@ -760,7 +780,7 @@ class RAGService:
                     answer = TABLE_TRUNCATION_REFUSAL
                 else:
                     answer = self._strip_model_references(answer)
-                    if not listing_style_query:
+                    if (not listing_style_query) and (not self._is_refusal_answer(answer)):
                         safe_refs = self._build_safe_references(chunks)
                         if safe_refs:
                             answer = f"{answer}\n\n{safe_refs}"

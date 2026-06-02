@@ -44,6 +44,11 @@ _YEAR_RANGE_RE = re.compile(
     re.I,
 )
 
+_YEAR_SINGLE_RE = re.compile(
+    r"\b(?:published\s+in|in)\s+(20\d{2})\b|\b(20\d{2})\s+papers?\b",
+    re.I,
+)
+
 _KEYWORD_DISCOVERY_RE = re.compile(
     r"\b(?:do|does|are there|which)\s+(?:any\s+)?(?:of\s+)?(?:my\s+)?papers?\s+"
     r"(?:discuss|mention|cover|address|use|include|contain)\b|"
@@ -450,6 +455,8 @@ def is_catalog_metadata_query(query: str) -> bool:
         return True
     if _YEAR_RANGE_RE.search(q) and re.search(r"\b(papers?|articles?|publications?)\b", q):
         return True
+    if _YEAR_SINGLE_RE.search(q) and re.search(r"\b(papers?|articles?|publications?)\b", q):
+        return True
     return False
 
 
@@ -478,6 +485,32 @@ def _extract_year_range(query: str) -> tuple[int, int] | None:
     if start < 1900 or end > 2100:
         return None
     return start, end
+
+
+def _extract_single_year(query: str) -> int | None:
+    """
+    Return a single year if the query asks for papers published in that year.
+    Supports:
+      - published in 2025
+      - papers in 2025
+      - 2025 papers
+    """
+    q = (query or "").strip()
+    if not q:
+        return None
+    m = _YEAR_SINGLE_RE.search(q)
+    if not m:
+        return None
+    year = next((g for g in m.groups() if g), None)
+    if not year:
+        return None
+    try:
+        yi = int(year)
+    except ValueError:
+        return None
+    if yi < 1900 or yi > 2100:
+        return None
+    return yi
 
 
 def extract_papers_by_author_phrase(query: str) -> str | None:
@@ -538,6 +571,34 @@ def answer_catalog_metadata_query(query: str, papers_metadata: dict) -> str | No
             return (
                 f"I could not find any ingested papers in your knowledge base published between "
                 f"{start_year} and {end_year}."
+            )
+        return _format_numbered_list(header, lines)
+
+    year_single = _extract_single_year(query)
+    if year_single is not None:
+        in_year: list[tuple[str, dict[str, Any]]] = []
+        for title, meta in papers_metadata.items():
+            y = meta.get("year")
+            try:
+                yi = int(y) if y is not None and str(y).strip().isdigit() else None
+            except Exception:
+                yi = None
+            if yi == year_single:
+                in_year.append((title, meta))
+
+        in_year.sort(key=lambda tm: (tm[0].lower(), str(tm[1].get("authors") or "").lower()))
+        lines = []
+        for i, (title, meta) in enumerate(in_year, 1):
+            lines.append(
+                f"{i}. {meta.get('authors', 'Unknown')} ({meta.get('year', 'N/A')}). {title}"
+            )
+        header = (
+            f"Papers in your ingested library published in {year_single} "
+            f"({len(lines)} paper(s)):"
+        )
+        if not lines:
+            return (
+                f"I could not find any ingested papers in your knowledge base published in {year_single}."
             )
         return _format_numbered_list(header, lines)
 
