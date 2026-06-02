@@ -506,6 +506,33 @@ def verify_answer_against_scope(
 
 def is_catalog_metadata_query(query: str) -> bool:
     q = (query or "").lower()
+
+    # ── Content-analysis early exit ───────────────────────────────────────────
+    # Even if the query contains "papers by X", if it also asks for analytical
+    # content (pipelines, thresholds, methodology, etc.) it must NOT be handled
+    # by the deterministic catalog path — route it to LLM content synthesis.
+    _CATALOG_BLOCKERS = [
+        r"\banalyze\b", r"\banalysis\b", r"\banalyzing\b",
+        r"\bidentify\b", r"\bexamine\b", r"\binvestigate\b",
+        r"\bstep-?by-?step\b", r"\bpipeline\b",
+        r"\bthreshold\b", r"\bparameter\b", r"\bmethodolog",
+        r"\bapproach\s+used\b", r"\btechnique\s+used\b",
+        r"\binformation\s+gain\b", r"\bfeature\s+selection\b",
+        r"\bwhat\s+(?:thresholds?|parameters?|criteria|method|approach)\b",
+        r"\bhow\s+(?:did|does|do)\b",
+        r"\bexact\s+(?:step|pipeline|method|parameter)\b",
+        r"\bcompar(?:e|ison|ative)\b",
+        r"\bcontribution\b", r"\bfinding\b", r"\bframework\b",
+        r"\bexplain\b", r"\bdescribe\b", r"\bdetail\b",
+        r"\bsummarize\b", r"\bsynthesize\b", r"\bcompare\b",
+        r"\bevaluate\b", r"\bassess\b", r"\bdetermine\b",
+        r"\bwhich\s+.*\s+(?:use|used|uses|using)\b",
+        r"\bwhat\s+(?:method|approach|technique|strategy)\b",
+        r"\bhow\s+(?:to|do|does|did)\b",
+    ]
+    if any(re.search(pat, q) for pat in _CATALOG_BLOCKERS):
+        return False
+
     if re.search(r"\bpapers?\s+by\s+", q) or re.search(r"\barticles?\s+by\s+", q):
         return True
     # Match "list all authors" / "show all authors" but NOT
@@ -524,6 +551,7 @@ def is_catalog_metadata_query(query: str) -> bool:
     if _YEAR_SINGLE_RE.search(q) and re.search(r"\b(papers?|articles?|publications?)\b", q):
         return True
     return False
+
 
 
 def _extract_year_range(query: str) -> tuple[int, int] | None:
