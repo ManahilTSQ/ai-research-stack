@@ -596,6 +596,9 @@ def is_content_extraction_query(query: str) -> bool:
 
 def is_simple_inventory_listing(query: str) -> bool:
     """Metadata-only list/table (title, year, venue) — safe to generate without LLM."""
+    # Allow contextual questions about chat history to pass through to RAG handler
+    if "above questions" in query.lower() or "this chat" in query.lower():
+        return False
     return is_listing_query(query) and not is_content_extraction_query(query)
 
 
