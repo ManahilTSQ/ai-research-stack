@@ -24,6 +24,7 @@ from rag_context import (
     retrieve_relevant_chunks,
     resolve_matching_paper_titles,
     query_refers_to_missing_library_paper,
+    is_missing_papers_meta_query,
     query_expects_named_author,
     is_simple_inventory_listing,
     is_per_paper_extraction_query,
@@ -731,6 +732,25 @@ class RAGService:
         # Papers exist but nothing in the corpus is similar enough to the query.
         if not chunks:
             logger.warning("No chunks passed relevance threshold for query: %s", query)
+            
+            # Handle meta-questions about missing papers/gaps in knowledge base
+            if is_missing_papers_meta_query(query):
+                answer = (
+                    "I cannot identify specific missing papers because I only have access to "
+                    "the papers you've already ingested. To identify gaps in your knowledge base, "
+                    "you would need to search external databases (like Semantic Scholar) for papers "
+                    "by the authors or topics you're researching, then compare those results against "
+                    "your ingested library. I can only answer questions about the papers currently "
+                    "in your local knowledge base."
+                )
+                return {
+                    "query": query,
+                    "answer": answer,
+                    "sources": [],
+                    "success": False,
+                    "error": "Meta-question about missing papers - requires external search.",
+                }
+            
             named_in_library = resolve_matching_paper_titles(query, papers_metadata)
             if named_in_library:
                 # Paper/author is in inventory but chunk text could not be loaded (ingest issue).

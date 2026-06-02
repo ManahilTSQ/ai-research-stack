@@ -31,6 +31,15 @@ NOT_IN_LIBRARY_REFUSAL = (
     "author or paper name. Please check the spelling or ingest the paper first."
 )
 
+# Pattern to detect meta-questions about missing papers/gaps in knowledge base
+_MISSING_PAPERS_QUERY_RE = re.compile(
+    r"\b(?:what|which)\s+(?:papers?|articles?)\s+(?:would\s+(?:you\s+)?(?:have\s+)?(?:wanted|needed|liked)\s+to\s+(?:have|find)|"
+    r"are\s+(?:missing|absent|not\s+(?:in|found))|"
+    r"you\s+(?:did\s+)?not\s+(?:find|have)|"
+    r"would\s+have\s+(?:helped|been\s+(?:useful|helpful|better)))\b",
+    re.I
+)
+
 TABLE_TRUNCATION_REFUSAL = (
     "The table could not be completed for every paper in scope. "
     "Please try again with a paper filter, a smaller author corpus, or ask for "
@@ -1250,6 +1259,14 @@ def query_refers_to_missing_library_paper(query: str, papers_metadata: dict) -> 
         return False
     tokens = _significant_query_tokens(query)
     return any(len(t) >= 5 for t in tokens)
+
+
+def is_missing_papers_meta_query(query: str) -> bool:
+    """
+    Detect meta-questions about identifying gaps in the knowledge base.
+    Examples: "what papers would you have wanted to have", "which papers are missing"
+    """
+    return bool(_MISSING_PAPERS_QUERY_RE.search(query or ""))
 
 
 def resolve_matching_paper_titles(query: str, papers_metadata: dict) -> list[str]:

@@ -380,6 +380,12 @@ class ManifestManagerService:
                 year_match = re.search(r'\b(19[5-9]\d|20[0-2]\d)\b', title_guess)
             if year_match:
                 resolved["year"] = year_match.group(1)
+            else:
+                # Try to extract year from first page text as last resort
+                if first_page_text:
+                    year_match = re.search(r'\b(19[5-9]\d|20[0-2]\d)\b', first_page_text)
+                    if year_match:
+                        resolved["year"] = year_match.group(1)
 
         if resolved["authors"] == "Unknown Authors" or not resolved["authors"]:
             fn_clean = pdf_path.stem
@@ -390,6 +396,18 @@ class ManifestManagerService:
                 if prefix and len(prefix.split()) <= 4:
                     cleaned_author = re.sub(r'[-_]', ' ', prefix).strip()
                     resolved["authors"] = cleaned_author.title()
+            
+            # If still unknown, try to extract from first page text
+            if resolved["authors"] == "Unknown Authors" and first_page_text:
+                lines = [l.strip() for l in first_page_text.split("\n") if l.strip()]
+                for line in lines[:5]:
+                    # Look for lines that look like author names (contain commas, not too long)
+                    if ',' in line and len(line) < 200 and not any(x in line.lower() for x in ['http', 'doi:', 'vol.', 'no.', 'issn', '@', 'university', 'department']):
+                        # Remove common non-author text
+                        line = re.sub(r'\d+', '', line)  # Remove numbers
+                        if len(line.split(',')) >= 2 and len(line.split(',')) <= 10:
+                            resolved["authors"] = line[:200].strip()
+                            break
 
         # Step 7: Fallback abstract from first page text if empty
         if not resolved["abstract"] and first_page_text:
