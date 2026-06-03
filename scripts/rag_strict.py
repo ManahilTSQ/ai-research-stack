@@ -183,7 +183,12 @@ def _papers_matching_topic_tokens(
 
 def is_keyword_discovery_query(query: str) -> bool:
     """Questions answerable from title/metadata before LLM (any topic)."""
-    return bool(_KEYWORD_DISCOVERY_RE.search(query or ""))
+    q = (query or "").lower()
+    # Exclude meta-questions about missing full text papers
+    if "full text" in q or "pdf" in q:
+        if "did not" in q or "not find" in q or "would have" in q or "wanted" in q:
+            return False
+    return bool(_KEYWORD_DISCOVERY_RE.search(q))
 
 
 def answer_keyword_discovery_query(query: str, papers_metadata: dict) -> str | None:
@@ -526,6 +531,12 @@ def verify_answer_against_scope(
 
 def is_catalog_metadata_query(query: str) -> bool:
     q = (query or "").lower()
+
+    # ── Meta-questions about missing papers/gaps ─────────────────────────────
+    # These should be handled by the missing papers logic, not catalog metadata
+    if "full text" in q or "pdf" in q:
+        if "did not" in q or "not find" in q or "would have" in q or "wanted" in q:
+            return False
 
     # ── Content-analysis early exit ───────────────────────────────────────────
     # Even if the query contains "papers by X", if it also asks for analytical
