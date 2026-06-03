@@ -755,9 +755,6 @@ class RAGService:
                 if "full text" in query.lower() or "pdf" in query.lower():
                     # Check if chat history is provided in the query
                     if "above questions" in query.lower() or "this chat" in query.lower():
-                        # Extract chat history from the query (assuming it's provided after the question)
-                        # For now, we'll use a simple approach: the user should provide chat history
-                        # In a real implementation, this would be passed as a separate parameter
                         from manifest_manager import ManifestManagerService
                         manifest_mgr = ManifestManagerService()
                         manifest = manifest_mgr.get_all_entries()
@@ -774,49 +771,22 @@ class RAGService:
                                     "abstract": meta.get("abstract", "")
                                 }
                         
-                        # Analyze the query for topics and suggest papers
-                        # For the user's specific question about IoT security in smart cities
-                        # and ML methods for intrusion detection, we'll provide contextual suggestions
+                        # Find papers that lack full text - these are the ones that would help
+                        papers_without_full_text = []
+                        for title, meta in library_papers.items():
+                            if not meta["has_full_text"]:
+                                papers_without_full_text.append(f"- {meta['authors']} ({meta['year']}). {meta['title']}")
                         
-                        suggestions = []
-                        
-                        # Check for smart city security topic
-                        if "smart city" in query.lower() or "iot security" in query.lower():
-                            suggestions.append(
-                                "For IoT security in smart cities: Papers on 5G-enabled smart city security, "
-                                "blockchain for smart city IoT, and federated learning in smart cities would help. "
-                                "Your library has IoT security papers but none specifically about smart city contexts."
+                        if papers_without_full_text:
+                            answer = (
+                                "The following papers in your library have minimal text extracted "
+                                "(likely abstract-only or scanned PDFs). Having the full PDF text would "
+                                "help provide more complete answers:\n\n" + "\n\n".join(papers_without_full_text)
                             )
-                        
-                        # Check for ML methods topic
-                        if "ml methods" in query.lower() or "machine learning" in query.lower() or "intrusion detection" in query.lower():
-                            # Find papers in library that are relevant but may lack full text
-                            relevant_papers = []
-                            for title, meta in library_papers.items():
-                                if any(term in title for term in ["intrusion", "detection", "machine learning", "ensemble", "lstm", "random forest"]):
-                                    if not meta["has_full_text"]:
-                                        relevant_papers.append(f"- {meta['authors']} ({meta['year']}). {meta['title']}")
-                            
-                            if relevant_papers:
-                                suggestions.append(
-                                    "For ML methods for intrusion detection: The following papers in your library "
-                                    "are relevant but lack full text, which would help with detailed methodology comparison:\n" +
-                                    "\n".join(relevant_papers)
-                                )
-                            else:
-                                suggestions.append(
-                                    "For ML methods for intrusion detection: Papers comparing ML algorithms "
-                                    "(Random Forest, SVM, Neural Networks) with comprehensive performance metrics "
-                                    "would help provide a more complete comparative table."
-                                )
-                        
-                        if suggestions:
-                            answer = "Based on the topics in your chat history:\n\n" + "\n\n".join(suggestions)
                         else:
                             answer = (
-                                "To provide contextual suggestions, please specify which topics from your chat history "
-                                "you'd like me to analyze. I can suggest papers that would help with specific questions "
-                                "like IoT security in smart cities or ML methods for intrusion detection."
+                                "All papers in your library have full text extracted. "
+                                "No papers would benefit from re-ingestion with full PDF text."
                             )
                         
                         return {
