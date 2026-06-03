@@ -386,12 +386,28 @@ class RAGService:
             authors = (meta.get("authors") or "Unknown Authors").strip()
             year = str(meta.get("year") or "N/A").strip()
             doi = (meta.get("doi") or "N/A").strip()
+            venue = (meta.get("venue") or "").strip()
+            pages = (meta.get("pages") or "").strip()
+            
+            # Skip if metadata is too incomplete (placeholder detection)
+            if title == "Untitled" or authors == "Unknown Authors" or year == "N/A":
+                continue
+            
             key = (title.lower(), authors.lower(), year, doi.lower())
             if key in seen:
                 continue
             seen.add(key)
-            doi_suffix = f" https://doi.org/{doi}" if doi and doi != "N/A" else ""
-            refs.append(f"- {authors} ({year}). {title}.{doi_suffix}")
+            
+            # Build full APA7 reference with venue and pages if available
+            ref_parts = [f"- {authors} ({year}). {title}"]
+            if venue and venue != "N/A":
+                ref_parts.append(venue)
+            if pages and pages != "N/A":
+                ref_parts.append(pages)
+            ref = ". ".join(ref_parts) + "."
+            if doi and doi != "N/A":
+                ref += f" https://doi.org/{doi}"
+            refs.append(ref)
         if not refs:
             return ""
         return "References:\n" + "\n".join(refs)
