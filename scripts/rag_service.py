@@ -1107,20 +1107,20 @@ class RAGService:
                         }
                 
                 # ── Citation binding enforcement ─────────────────────────────────
-                # DOWNGRADED: Use warning mode instead of refusal
-                # Synthesis is normal in RAG - sentences may combine info from multiple chunks
-                # We warn about grounding issues but still allow the answer
-                try:
-                    from citation_binder import CitationBinder
-                    binder = CitationBinder()
-                    answer, is_acceptable = binder.enforce_citation_binding(
-                        answer, chunks, min_grounding_ratio=0.4, strict_mode=False
-                    )
-                    # is_acceptable is ignored in non-strict mode - answer always returned with warning if needed
-                except ImportError:
-                    logger.warning("Citation binder not available, skipping citation binding")
-                except Exception as e:
-                    logger.warning(f"Citation binding failed: {e}")
+                # DISABLED: Warning messages are confusing and not useful
+                # The citation binder adds warnings about sentence grounding, but this
+                # is normal in RAG where synthesis combines information from multiple chunks
+                # try:
+                #     from citation_binder import CitationBinder
+                #     binder = CitationBinder()
+                #     answer, is_acceptable = binder.enforce_citation_binding(
+                #         answer, chunks, min_grounding_ratio=0.4, strict_mode=False
+                #     )
+                #     # is_acceptable is ignored in non-strict mode - answer always returned with warning if needed
+                # except ImportError:
+                #     logger.warning("Citation binder not available, skipping citation binding")
+                # except Exception as e:
+                #     logger.warning(f"Citation binding failed: {e}")
                 
                 logger.info("Successfully received answer from Ollama.")
                 return {
