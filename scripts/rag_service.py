@@ -1105,18 +1105,20 @@ class RAGService:
                         }
                 
                 # ── Citation binding enforcement ─────────────────────────────────
-                try:
-                    from citation_binder import CitationBinder
-                    binder = CitationBinder()
-                    answer, is_acceptable = binder.enforce_citation_binding(
-                        answer, chunks, min_grounding_ratio=0.6
-                    )
-                    if not is_acceptable:
-                        logger.warning("Answer has insufficient citation grounding")
-                except ImportError:
-                    logger.warning("Citation binder not available, skipping citation binding")
-                except Exception as e:
-                    logger.warning(f"Citation binding failed: {e}")
+                # DISABLED: Too strict - rejects valid answers due to word overlap requirements
+                # The LLM may paraphrase or synthesize information without exact word matches
+                # try:
+                #     from citation_binder import CitationBinder
+                #     binder = CitationBinder()
+                #     answer, is_acceptable = binder.enforce_citation_binding(
+                #         answer, chunks, min_grounding_ratio=0.6
+                #     )
+                #     if not is_acceptable:
+                #         logger.warning("Answer has insufficient citation grounding")
+                # except ImportError:
+                #     logger.warning("Citation binder not available, skipping citation binding")
+                # except Exception as e:
+                #     logger.warning(f"Citation binding failed: {e}")
                 
                 logger.info("Successfully received answer from Ollama.")
                 return {
