@@ -564,7 +564,7 @@ def is_catalog_metadata_query(query: str) -> bool:
     if any(re.search(pat, q) for pat in _CATALOG_BLOCKERS):
         return False
 
-    if re.search(r"\bpapers?\s+by\s+", q) or re.search(r"\barticles?\s+by\s+", q):
+    if re.search(r"\bpapers?\s+by\s+", q) or re.search(r"\barticles?\s+by\s+", q) or re.search(r"\bauthored\s+by\s+", q):
         return True
     # Match "list all authors" / "show all authors" but NOT
     # "list articles with Jhanjhi as author or co-author" (where 'author' is a role, not the subject).
