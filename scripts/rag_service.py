@@ -660,23 +660,32 @@ class RAGService:
             for name in authors.split():
                 all_authors.add(name.lower().strip(",."))
         
-        # Extract potential author names from query (capitalized words)
-        query_words = query.split()
-        potential_authors = [w for w in query_words if w[0].isupper() and len(w) > 2]
+        # Extract author name from query using regex for phrases like "written by X", "paper by X"
+        import re
+        author_match = re.search(r"(?:written by|authored by|paper by|paper of)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)", query, re.IGNORECASE)
         
-        for potential_author in potential_authors:
-            if potential_author.lower() not in all_authors:
-                # Check if this looks like an author query (e.g., "paper by X", "X's paper")
-                query_lower = query.lower()
-                if any(phrase in query_lower for phrase in ["paper by", "authored by", "written by", "paper of"]):
-                    logger.warning(f"Author '{potential_author}' not in library, refusing before LLM")
-                    return {
-                        "query": query,
-                        "answer": f"No papers authored by {potential_author} were found in the ingested library.",
-                        "sources": [],
-                        "success": False,
-                        "error": f"Author not in library: {potential_author}",
-                    }
+        if author_match:
+            author_name = author_match.group(1).strip()
+            # Normalize author name for comparison
+            author_normalized = author_name.lower().replace(".", "").replace(",", "")
+            
+            # Check if this author exists in library
+            author_exists = False
+            for lib_author in all_authors:
+                lib_author_normalized = lib_author.replace(".", "").replace(",", "")
+                if author_normalized in lib_author_normalized or lib_author_normalized in author_normalized:
+                    author_exists = True
+                    break
+            
+            if not author_exists:
+                logger.warning(f"Author '{author_name}' not in library, refusing before LLM")
+                return {
+                    "query": query,
+                    "answer": f"No papers authored by {author_name} were found in the ingested library.",
+                    "sources": [],
+                    "success": False,
+                    "error": f"Author not in library: {author_name}",
+                }
 
         if query_mode == "ambiguous":
             return {
