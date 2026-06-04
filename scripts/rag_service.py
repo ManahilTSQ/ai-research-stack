@@ -1125,42 +1125,42 @@ class RAGService:
                 except Exception as e:
                     logger.warning(f"Citation verification failed: {e}")
 
-                # ── External knowledge detection: Refuse answers with entities not in context ──
-                # Extract capitalized words from answer and check if they exist in retrieved chunks
-                # This is a general check that works for any entity, not just hardcoded names
-                try:
-                    # Build set of all words from retrieved chunks (case-insensitive)
-                    chunk_words = set()
-                    for chunk in chunks:
-                        text = chunk.get("text", "").lower()
-                        words = re.findall(r'\b[a-z]{3,}\b', text)
-                        chunk_words.update(words)
-                    
-                    # Also add author names from library inventory
-                    for paper_meta in inventory_metadata.values():
-                        authors = paper_meta.get("authors", "").lower()
-                        author_words = re.findall(r'\b[a-z]{3,}\b', authors)
-                        chunk_words.update(author_words)
-                    
-                    # Extract capitalized words from answer (potential entities)
-                    answer_words = re.findall(r'\b[A-Z][a-z]{3,}\b', answer)
-                    external_entities = []
-                    
-                    for word in answer_words:
-                        if word.lower() not in chunk_words:
-                            external_entities.append(word)
-                    
-                    if external_entities:
-                        logger.warning(f"Answer contains entities not in context: {external_entities}")
-                        return {
-                            "query": query,
-                            "answer": "This question is outside the scope of your ingested research knowledge base. I can only answer questions based on the papers that have been ingested. Please ask a question about the research papers in your library.",
-                            "sources": chunks,
-                            "success": False,
-                            "error": f"External entities detected: {external_entities}",
-                        }
-                except Exception as e:
-                    logger.warning(f"External knowledge detection failed: {e}")
+                # ── External knowledge detection DISABLED ───────────────────────────────
+                # Entity extraction was too aggressive and blocked legitimate technical terms
+                # Relying on system prompt + citation stripping instead
+                # try:
+                #     # Build set of all words from retrieved chunks (case-insensitive)
+                #     chunk_words = set()
+                #     for chunk in chunks:
+                #         text = chunk.get("text", "").lower()
+                #         words = re.findall(r'\b[a-z]{3,}\b', text)
+                #         chunk_words.update(words)
+                #     
+                #     # Also add author names from library inventory
+                #     for paper_meta in inventory_metadata.values():
+                #         authors = paper_meta.get("authors", "").lower()
+                #         author_words = re.findall(r'\b[a-z]{3,}\b', authors)
+                #         chunk_words.update(author_words)
+                #     
+                #     # Extract capitalized words from answer (potential entities)
+                #     answer_words = re.findall(r'\b[A-Z][a-z]{3,}\b', answer)
+                #     external_entities = []
+                #     
+                #     for word in answer_words:
+                #         if word.lower() not in chunk_words:
+                #             external_entities.append(word)
+                #     
+                #     if external_entities:
+                #         logger.warning(f"Answer contains entities not in context: {external_entities}")
+                #         return {
+                #             "query": query,
+                #             "answer": "This question is outside the scope of your ingested research knowledge base. I can only answer questions based on the papers that have been ingested. Please ask a question about the research papers in your library.",
+                #             "sources": chunks,
+                #             "success": False,
+                #             "error": f"External entities detected: {external_entities}",
+                #         }
+                # except Exception as e:
+                #     logger.warning(f"External knowledge detection failed: {e}")
 
                 logger.info("Successfully received answer from Ollama.")
                 return {
