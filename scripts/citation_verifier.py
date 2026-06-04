@@ -371,3 +371,61 @@ class CitationVerifier:
         )
         
         return result
+
+    def strip_unverified_citations(
+        self,
+        answer: str,
+        chunks: list[dict[str, Any]]
+    ) -> str:
+        """
+        Remove citations that don't match retrieved chunk metadata to prevent hallucination.
+
+        Args:
+            answer: The LLM-generated answer.
+            chunks: Retrieved chunks.
+
+        Returns:
+            Answer with unverified citations removed.
+        """
+        # Build set of valid (author, year) pairs from chunks
+        valid_pairs = set()
+        for chunk in chunks:
+            meta = chunk.get("metadata", {})
+            authors = meta.get("authors", "")
+            year = str(meta.get("year", ""))
+            
+            # Extract first author's last name
+            author_parts = authors.split()
+            if author_parts:
+                first_author = author_parts[0].split()[-1]
+                valid_pairs.add((first_author.lower(), year))
+        
+        # Extract all citation patterns
+        citation_pattern = r'\(([A-Z][a-zA-Z]+(?:\s+et\s+al\.)?(?:,\s*[A-Z][a-zA-Z]+)*,\s*\d{4}(?:,\s*p\.?\s*\d+)?\)'
+        citations = re.findall(citation_pattern, answer)
+        
+        if not citations:
+            return answer
+        
+        # Remove unverified citations
+        modified_answer = answer
+        removed_count = 0
+        
+        for citation in citations:
+            match = re.search(r'([A-Z][a-zA-Z]+)(?:\s+et\s+al\.)?,\s*(\d{4})', citation)
+            if match:
+                author = match.group(1).lower()
+                year = match.group(2)
+                
+                if (author, year) not in valid_pairs:
+                    # Remove this citation from the answer
+                    modified_answer = modified_answer.replace(citation, "")
+                    removed_count += 1
+        
+        if removed_count > 0:
+            logger.warning(f"Removed {removed_count} unverified citations from answer")
+            # Clean up double spaces and trailing punctuation
+            modified_answer = re.sub(r'\s+', ' ', modified_answer)
+            modified_answer = re.sub(r'\s+([.,;:])', r'\1', modified_answer)
+        
+        return modified_answer

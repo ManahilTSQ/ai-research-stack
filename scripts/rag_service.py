@@ -1106,22 +1106,18 @@ class RAGService:
                             "error": "Answer failed scope verification.",
                         }
                 
-                # ── Citation binding enforcement ─────────────────────────────────
-                # DISABLED: Warning messages are confusing and not useful
-                # The citation binder adds warnings about sentence grounding, but this
-                # is normal in RAG where synthesis combines information from multiple chunks
-                # try:
-                #     from citation_binder import CitationBinder
-                #     binder = CitationBinder()
-                #     answer, is_acceptable = binder.enforce_citation_binding(
-                #         answer, chunks, min_grounding_ratio=0.4, strict_mode=False
-                #     )
-                #     # is_acceptable is ignored in non-strict mode - answer always returned with warning if needed
-                # except ImportError:
-                #     logger.warning("Citation binder not available, skipping citation binding")
-                # except Exception as e:
-                #     logger.warning(f"Citation binding failed: {e}")
-                
+                # ── Hallucination detection: Strip unverified citations ─────────────
+                # Remove citations that don't match retrieved chunk metadata to prevent
+                # the system from inventing papers that were never retrieved
+                try:
+                    from citation_verifier import CitationVerifier
+                    verifier = CitationVerifier()
+                    answer = verifier.strip_unverified_citations(answer, chunks)
+                except ImportError:
+                    logger.warning("Citation verifier not available, skipping citation check")
+                except Exception as e:
+                    logger.warning(f"Citation verification failed: {e}")
+
                 logger.info("Successfully received answer from Ollama.")
                 return {
                     "query": query,
