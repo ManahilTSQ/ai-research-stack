@@ -66,16 +66,19 @@ class ContextShaper:
         max_chunks_per_paper: int = 8
     ) -> str:
         """
-        Shape chunks into a structured context string with semantic blocks.
+        Shape chunks into a structured context string.
+
+        This module ONLY does ANNOTATION (formatting for display).
+        It does NOT reorder or filter chunks - that must happen elsewhere.
 
         Organization:
-          1. Group by paper
-          2. Within each paper, group by section
+          1. Preserve input order (no reordering)
+          2. Group by paper for display only
           3. Add clear headers and metadata
-          4. Limit chunks per paper to avoid dominance
+          4. Format with chunk_id for provenance
 
         Args:
-            chunks: List of retrieved chunks.
+            chunks: List of retrieved chunks (already ordered by reranker).
             query: Original query (for logging).
             max_chunks_per_paper: Maximum chunks to include per paper.
 
@@ -85,50 +88,37 @@ class ContextShaper:
         if not chunks:
             return "No relevant context found."
 
-        # Group by paper
+        # Group by paper (for display organization only - does not change order within groups)
         papers = self.group_chunks_by_paper(chunks)
         
-        # Sort papers by number of chunks (most relevant first)
-        sorted_papers = sorted(
-            papers.items(),
-            key=lambda x: len(x[1]),
-            reverse=True
-        )
-        
+        # Preserve the original chunk order within each paper group
+        # No sorting - just use the order chunks were received
         context_parts = []
         
-        for paper_title, paper_chunks in sorted_papers:
-            # Limit chunks per paper
+        for paper_title, paper_chunks in papers.items():
+            # Limit chunks per paper (filtering - but this is display-level filtering)
             paper_chunks = paper_chunks[:max_chunks_per_paper]
             
             # Get paper metadata
             meta = paper_chunks[0].get("metadata", {})
             authors = meta.get("authors", "Unknown Authors")
             year = meta.get("year", "N/A")
-            chunk_id = meta.get("chunk_id", "N/A")
             
-            # Group by section within this paper
+            # Group by section within this paper (for display organization only)
             sections = self.group_chunks_by_section(paper_chunks)
-            
-            # Sort sections by relevance (more chunks = more relevant)
-            sorted_sections = sorted(
-                sections.items(),
-                key=lambda x: len(x[1]),
-                reverse=True
-            )
             
             # Build paper section
             paper_header = f"## Paper: {paper_title}\n**{authors} ({year})**\n"
             paper_content = []
             
-            for section_name, section_chunks in sorted_sections:
+            for section_name, section_chunks in sections.items():
                 section_content = []
                 for chunk in section_chunks:
                     text = chunk.get("text", "").strip()
                     pages = chunk.get("metadata", {}).get("pages", "N/A")
                     chunk_id = chunk.get("metadata", {}).get("chunk_id", "")
                     
-                    # Format with chunk_id for provenance tracking
+                    # Format with chunk_id for provenance tracking (annotation)
                     if pages and pages != "N/A":
                         if chunk_id:
                             section_content.append(f"[pp. {pages}] [{chunk_id}] {text}")
@@ -266,10 +256,15 @@ class ContextShaper:
 
     def deduplicate_chunks(self, chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """
-        Remove duplicate chunks based on text similarity.
+        Remove duplicate chunks based on text similarity using coherence scoring.
 
-        Simple exact match deduplication for now.
+        Uses semantic similarity to eliminate near-duplicates while preserving
+        diverse information.
         """
+        if not chunks:
+            return chunks
+        
+        # First pass: exact match deduplication
         seen_texts = set()
         unique_chunks = []
         
@@ -279,10 +274,94 @@ class ContextShaper:
                 seen_texts.add(text)
                 unique_chunks.append(chunk)
         
-        if len(unique_chunks) < len(chunks):
-            logger.info(f"Deduplicated: {len(chunks)} → {len(unique_chunks)} chunks")
+        # Second pass: coherence scoring to eliminate near-duplicates
+        if len(unique_chunks) <= 1:
+            return unique_chunks
         
-        return unique_chunks
+        deduplicated = []
+        seen_signatures = set()
+        
+        for chunk in unique_chunks:
+            # Create a signature for the chunk (first 100 chars + key terms)
+            text = chunk.get("text", "").lower()
+            signature = self._create_chunk_signature(text)
+            
+            # Check if this signature is too similar to existing ones
+            is_duplicate = False
+            for existing_sig in seen_signatures:
+                if self._signature_similarity(signature, existing_sig) > 0.8:
+                    is_duplicate = True
+                    break
+            
+            if not is_duplicate:
+                deduplicated.append(chunk)
+                seen_signatures.add(signature)
+        
+        if len(deduplicated) < len(chunks):
+            logger.info(f"Coherence deduplication: {len(chunks)} → {len(deduplicated)} chunks")
+        
+        return deduplicated
+    
+    def _create_chunk_signature(self, text: str) -> str:
+        """
+        Create a signature for a chunk for similarity comparison.
+        
+        Uses the first 100 characters plus the most significant words.
+        """
+        import re
+        # Get first 100 chars
+        prefix = text[:100] if len(text) > 100 else text
+        
+        # Extract significant words (length > 4)
+        words = re.findall(r'\b[a-z]{5,}\b', text)
+        significant_words = ' '.join(sorted(set(words))[:10]) if words else ''
+        
+        return f"{prefix}|{significant_words}"
+    
+    def _signature_similarity(self, sig1: str, sig2: str) -> float:
+        """
+        Calculate similarity between two chunk signatures.
+        
+        Returns a score between 0 and 1, where 1 means identical.
+        """
+        parts1 = sig1.split('|')
+        parts2 = sig2.split('|')
+        
+        # Compare prefixes
+        prefix1, words1 = parts1[0], parts1[1] if len(parts1) > 1 else ''
+        prefix2, words2 = parts2[0], parts2[1] if len(parts2) > 1 else ''
+        
+        # Prefix similarity (Levenshtein-like)
+        prefix_sim = self._string_similarity(prefix1, prefix2)
+        
+        # Word overlap
+        words1_set = set(words1.split()) if words1 else set()
+        words2_set = set(words2.split()) if words2 else set()
+        
+        if not words1_set or not words2_set:
+            word_sim = 0.0
+        else:
+            overlap = len(words1_set & words2_set)
+            word_sim = overlap / min(len(words1_set), len(words2_set))
+        
+        # Combined similarity
+        return 0.7 * prefix_sim + 0.3 * word_sim
+    
+    def _string_similarity(self, s1: str, s2: str) -> float:
+        """
+        Calculate simple string similarity based on character overlap.
+        """
+        if not s1 or not s2:
+            return 0.0
+        
+        # Simple character overlap
+        s1_set = set(s1.lower())
+        s2_set = set(s2.lower())
+        
+        overlap = len(s1_set & s2_set)
+        total = len(s1_set | s2_set)
+        
+        return overlap / total if total > 0 else 0.0
 
     def estimate_context_quality(
         self,

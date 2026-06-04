@@ -88,13 +88,16 @@ class MetadataFilter:
         """
         Filter papers based on metadata constraints extracted from query.
 
+        This module ONLY does FILTERING (removes papers that don't match constraints).
+        It does NOT reorder or annotate - that must happen elsewhere.
+
         Args:
             papers_metadata: Dict mapping paper titles to metadata dicts.
             query: User's query string.
             constraints: Optional explicit constraints dict.
 
         Returns:
-            List of paper titles that match the constraints.
+            List of paper titles that match the constraints (preserves input order).
         """
         if not papers_metadata:
             return []
@@ -111,10 +114,10 @@ class MetadataFilter:
                 constraints["venue"] = venue_constraint
         
         if not constraints:
-            # No constraints, return all papers
+            # No constraints, return all papers (preserves input order)
             return list(papers_metadata.keys())
         
-        # Apply filters
+        # Apply filters (preserves input order - no sorting)
         filtered_titles = []
         
         for title, meta in papers_metadata.items():

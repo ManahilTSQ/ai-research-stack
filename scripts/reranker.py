@@ -185,6 +185,10 @@ class RerankerService:
     ) -> list[dict[str, Any]]:
         """
         Rerank chunks using multi-signal scoring.
+
+        This module ONLY does REORDERING (based on scores).
+        It is the ONLY ordering authority in the pipeline.
+        Annotates with scores/context_role as part of the reranking process.
         
         Args:
             chunks: List of retrieved chunks from vector search.
@@ -197,7 +201,7 @@ class RerankerService:
                 - diversity: 0.1
         
         Returns:
-            List of top-k reranked chunks.
+            List of top-k reranked chunks (ordered by score, descending).
         """
         if not chunks:
             return []
@@ -239,7 +243,7 @@ class RerankerService:
                 weights["diversity"] * diversity_penalty
             )
             
-            # Classify context role
+            # Classify context role (annotation as part of reranking)
             context_role = self._classify_context_role(chunk, query)
             
             scored_chunks.append({
@@ -254,11 +258,19 @@ class RerankerService:
                 }
             })
         
-        # Sort by score (descending)
+        # Sort by score (descending) - THIS IS THE ONLY REORDERING
         scored_chunks.sort(key=lambda x: x["score"], reverse=True)
         
-        # Return top-k chunks
-        top_chunks = [item["chunk"] for item in scored_chunks[:top_k]]
+        # Return top-k chunks with context_role attached
+        top_chunks = []
+        for item in scored_chunks[:top_k]:
+            chunk = item["chunk"].copy()
+            # Attach context_role to chunk metadata for use by context_shaper
+            if "metadata" not in chunk:
+                chunk["metadata"] = {}
+            chunk["metadata"]["context_role"] = item["context_role"]
+            chunk["rerank_score"] = item["score"]
+            top_chunks.append(chunk)
         
         logger.info(
             f"Reranked {len(chunks)} chunks → {len(top_chunks)} top chunks. "

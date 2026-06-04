@@ -36,6 +36,9 @@ class PipelineState:
     failure_detection: dict[str, Any] | None = None
     evaluation_result: dict[str, Any] | None = None
     weight_config: dict[str, Any] | None = None
+    
+    # Debugging
+    trace_mode: bool = False
 
 
 class PipelineOrchestrator:
@@ -44,9 +47,10 @@ class PipelineOrchestrator:
     overlapping decision logic.
     """
 
-    def __init__(self):
+    def __init__(self, trace_mode: bool = False):
         """Initialize the pipeline orchestrator."""
-        logger.info("Pipeline orchestrator initialized")
+        self.trace_mode = trace_mode
+        logger.info(f"Pipeline orchestrator initialized (trace_mode={trace_mode})")
         
         # Initialize new layers (lazy loading to avoid import errors if modules not available)
         self.evaluator = None
@@ -74,6 +78,45 @@ class PipelineOrchestrator:
         except ImportError:
             logger.warning("Weight calibrator not available")
 
+    def _validate_chunk_schema(self, chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """
+        Validate and enforce chunk schema consistency.
+        
+        Every chunk must have: chunk_id, paper_id, section, year, authors, text
+        If any field is missing, this is a data contract violation.
+        """
+        required_fields = ["chunk_id", "paper_id", "section", "year", "authors", "text"]
+        validated_chunks = []
+        
+        for idx, chunk in enumerate(chunks):
+            metadata = chunk.get("metadata", {})
+            
+            # Check for missing required fields
+            missing_fields = []
+            for field in required_fields:
+                if field not in metadata and field != "text":
+                    missing_fields.append(field)
+                if field == "text" and field not in chunk:
+                    missing_fields.append(field)
+            
+            if missing_fields:
+                logger.error(
+                    f"Chunk schema violation at index {idx}: missing fields {missing_fields}. "
+                    f"This will cause unpredictable pipeline behavior."
+                )
+                # Skip invalid chunks
+                continue
+            
+            validated_chunks.append(chunk)
+        
+        if len(validated_chunks) < len(chunks):
+            logger.warning(
+                f"Filtered {len(chunks) - len(validated_chunks)} chunks due to schema violations. "
+                f"Only {len(validated_chunks)} valid chunks remain."
+            )
+        
+        return validated_chunks
+
     def execute_pipeline(
         self,
         query: str,
@@ -82,7 +125,6 @@ class PipelineOrchestrator:
         enable_hard_filters: bool = True,
         enable_reranking: bool = True,
         enable_quality_gate: bool = True,
-        enable_query_routing: bool = True,
         enable_failure_handling: bool = True,
         enable_evaluation: bool = False,
         answer: str | None = None
@@ -91,9 +133,10 @@ class PipelineOrchestrator:
         Execute the unified RAG pipeline with clear decision hierarchy.
 
         Pipeline stages:
+          0. Schema validation - enforce data contract
           1. Hard filters (metadata + domain) - only constraints
-          2. Reranking - ALL scoring happens here
-          3. Quality gate - validation only
+          2. Reranking - ALL scoring happens here (ONLY ordering authority)
+          3. Quality gate - REAL gate (refuse when quality is low)
           4. Failure detection - safety logic
           5. Final selection
           6. Evaluation - performance measurement (optional)
@@ -104,7 +147,6 @@ class PipelineOrchestrator:
             enable_hard_filters: Enable metadata/domain filtering.
             enable_reranking: Enable reranking.
             enable_quality_gate: Enable quality gate validation.
-            enable_query_routing: Enable query-based pipeline routing.
             enable_failure_handling: Enable failure mode detection.
             enable_evaluation: Enable RAG evaluation (requires answer).
             answer: Generated answer for evaluation (required if enable_evaluation=True).
@@ -122,21 +164,41 @@ class PipelineOrchestrator:
             decisions={},
             failure_detection=None,
             evaluation_result=None,
-            weight_config=None
+            weight_config=None,
+            trace_mode=self.trace_mode
         )
+        
+        # Stage 0: Schema validation (enforce data contract)
+        if self.trace_mode:
+            logger.info(f"[TRACE] Stage 0: Schema validation - {len(chunks)} chunks")
+        
+        validated_chunks = self._validate_chunk_schema(chunks)
+        state.original_chunks = validated_chunks  # Use validated chunks
+        
+        if self.trace_mode:
+            logger.info(f"[TRACE] After schema validation: {len(validated_chunks)} chunks")
 
         # Stage 1: Hard filters (only constraints, no scoring)
+        if self.trace_mode:
+            logger.info(f"[TRACE] Stage 1: Hard filters - {len(validated_chunks)} chunks")
+        
         if enable_hard_filters:
             state.hard_filtered_chunks = self._apply_hard_filters(
-                query, chunks
+                query, validated_chunks
             )
             state.decisions["hard_filter_applied"] = True
-            state.decisions["hard_filter_count"] = len(chunks) - len(state.hard_filtered_chunks)
+            state.decisions["hard_filter_count"] = len(validated_chunks) - len(state.hard_filtered_chunks)
         else:
-            state.hard_filtered_chunks = chunks
+            state.hard_filtered_chunks = validated_chunks
             state.decisions["hard_filter_applied"] = False
+        
+        if self.trace_mode:
+            logger.info(f"[TRACE] After hard filters: {len(state.hard_filtered_chunks)} chunks")
 
         # Stage 2: Weight calibration (if available)
+        if self.trace_mode:
+            logger.info(f"[TRACE] Stage 2: Weight calibration")
+        
         if self.weight_calibrator and enable_reranking:
             weight_config = self.weight_calibrator.get_weights_for_query(query)
             state.weight_config = {
@@ -150,7 +212,10 @@ class PipelineOrchestrator:
             state.weight_config = None
             state.decisions["weight_calibration_applied"] = False
 
-        # Stage 3: Reranking (ALL scoring happens here)
+        # Stage 3: Reranking (ALL scoring happens here - ONLY ordering authority)
+        if self.trace_mode:
+            logger.info(f"[TRACE] Stage 3: Reranking (ONLY ordering authority) - {len(state.hard_filtered_chunks)} chunks")
+        
         if enable_reranking:
             state.reranked_chunks = self._apply_reranking(
                 query, state.hard_filtered_chunks,
@@ -160,21 +225,49 @@ class PipelineOrchestrator:
         else:
             state.reranked_chunks = state.hard_filtered_chunks
             state.decisions["reranking_applied"] = False
+        
+        if self.trace_mode:
+            logger.info(f"[TRACE] After reranking: {len(state.reranked_chunks)} chunks")
+            if state.reranked_chunks:
+                top_score = state.reranked_chunks[0].get("rerank_score", 0)
+                logger.info(f"[TRACE] Top rerank score: {top_score:.3f}")
 
-        # Stage 4: Quality gate (validation only, no filtering)
+        # Stage 4: Quality gate (REAL gate - re-retrieve, relax filters, or refuse)
+        if self.trace_mode:
+            logger.info(f"[TRACE] Stage 4: Quality gate (REAL gate) - {len(state.reranked_chunks)} chunks")
+        
         if enable_quality_gate:
             quality_result = self._apply_quality_gate(
                 query, state.reranked_chunks
             )
-            state.quality_checked_chunks = state.reranked_chunks
             state.decisions["quality_gate_passed"] = quality_result["passed"]
             state.decisions["quality_score"] = quality_result["score"]
+            
+            # REAL gate behavior: if quality is too low, take explicit action
+            if not quality_result["passed"]:
+                logger.warning(
+                    f"Quality gate FAILED (score: {quality_result['score']:.3f} < threshold). "
+                    f"Taking explicit action: REFUSE answer"
+                )
+                state.quality_checked_chunks = []  # Clear chunks to refuse answer
+                state.decisions["quality_gate_action"] = "refuse"
+            else:
+                state.quality_checked_chunks = state.reranked_chunks  # Preserve reranker order
+                state.decisions["quality_gate_action"] = "proceed"
         else:
             state.quality_checked_chunks = state.reranked_chunks
             state.decisions["quality_gate_passed"] = True
             state.decisions["quality_score"] = 1.0
+            state.decisions["quality_gate_action"] = "proceed"
+        
+        if self.trace_mode:
+            logger.info(f"[TRACE] After quality gate: {len(state.quality_checked_chunks)} chunks")
+            logger.info(f"[TRACE] Quality gate action: {state.decisions['quality_gate_action']}")
 
         # Stage 5: Failure detection (safety logic)
+        if self.trace_mode:
+            logger.info(f"[TRACE] Stage 5: Failure detection - {len(state.quality_checked_chunks)} chunks")
+        
         if enable_failure_handling and self.failure_handler:
             pipeline_state_for_failure = {
                 "original_chunk_count": len(state.original_chunks),
@@ -212,16 +305,30 @@ class PipelineOrchestrator:
             state.failure_detection = None
             state.decisions["failure_detected"] = False
             state.final_chunks = state.quality_checked_chunks
+        
+        if self.trace_mode:
+            logger.info(f"[TRACE] After failure detection: {len(state.final_chunks)} chunks")
+            if state.decisions.get("failure_detected"):
+                logger.info(f"[TRACE] Failure type: {state.failure_detection.get('failure_type') if state.failure_detection else 'N/A'}")
 
-        # Stage 6: Final selection (if not refused)
+        # Stage 6: Final selection (if not refused) - preserves reranker order
+        if self.trace_mode:
+            logger.info(f"[TRACE] Stage 6: Final selection - {len(state.final_chunks)} chunks")
+        
         if state.final_chunks:
             state.final_chunks = self._select_final_chunks(
                 state.final_chunks,
                 limit=8
             )
+        
+        if self.trace_mode:
+            logger.info(f"[TRACE] After final selection: {len(state.final_chunks)} chunks")
 
         # Stage 7: Evaluation (optional, requires answer)
         if enable_evaluation and self.evaluator and answer:
+            if self.trace_mode:
+                logger.info(f"[TRACE] Stage 7: Evaluation")
+            
             evaluation_result = self.evaluator.evaluate(
                 query=query,
                 answer=answer,
