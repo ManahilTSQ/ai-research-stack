@@ -607,33 +607,6 @@ class RAGService:
                 "error": "Off-topic query blocked by keyword gate.",
             }
 
-        # ── Step 0.5: Author existence check — BEFORE retrieval/LLM ─────────────
-        # If query asks about a specific author, check if they exist in library
-        # If not, refuse immediately without calling LLM
-        all_authors = set()
-        for paper_meta in inventory_metadata.values():
-            authors = paper_meta.get("authors", "")
-            for name in authors.split():
-                all_authors.add(name.lower().strip(",."))
-        
-        # Extract potential author names from query (capitalized words)
-        query_words = query.split()
-        potential_authors = [w for w in query_words if w[0].isupper() and len(w) > 2]
-        
-        for potential_author in potential_authors:
-            if potential_author.lower() not in all_authors:
-                # Check if this looks like an author query (e.g., "paper by X", "X's paper")
-                query_lower = query.lower()
-                if any(phrase in query_lower for phrase in ["paper by", "authored by", "written by", "paper of"]):
-                    logger.warning(f"Author '{potential_author}' not in library, refusing before LLM")
-                    return {
-                        "query": query,
-                        "answer": f"No papers authored by {potential_author} were found in the ingested library.",
-                        "sources": [],
-                        "success": False,
-                        "error": f"Author not in library: {potential_author}",
-                    }
-
         # ── Academic drafting path (non-RAG) ─────────────────────────────────────
         # Example: "Draft an introduction for a paper on federated learning for IoT security"
         # This must not trigger keyword discovery ("papers on ...") or strict scope verification.
@@ -677,6 +650,34 @@ class RAGService:
         #     }
 
         inventory_metadata = inventory_for_scope(papers_metadata, scope)
+
+        # ── Author existence check — BEFORE retrieval/LLM ─────────────────────
+        # If query asks about a specific author, check if they exist in library
+        # If not, refuse immediately without calling LLM
+        all_authors = set()
+        for paper_meta in inventory_metadata.values():
+            authors = paper_meta.get("authors", "")
+            for name in authors.split():
+                all_authors.add(name.lower().strip(",."))
+        
+        # Extract potential author names from query (capitalized words)
+        query_words = query.split()
+        potential_authors = [w for w in query_words if w[0].isupper() and len(w) > 2]
+        
+        for potential_author in potential_authors:
+            if potential_author.lower() not in all_authors:
+                # Check if this looks like an author query (e.g., "paper by X", "X's paper")
+                query_lower = query.lower()
+                if any(phrase in query_lower for phrase in ["paper by", "authored by", "written by", "paper of"]):
+                    logger.warning(f"Author '{potential_author}' not in library, refusing before LLM")
+                    return {
+                        "query": query,
+                        "answer": f"No papers authored by {potential_author} were found in the ingested library.",
+                        "sources": [],
+                        "success": False,
+                        "error": f"Author not in library: {potential_author}",
+                    }
+
         if query_mode == "ambiguous":
             return {
                 "query": query,
