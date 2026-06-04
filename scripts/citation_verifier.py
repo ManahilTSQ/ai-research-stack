@@ -436,8 +436,8 @@ class CitationVerifier:
         
         if removed_count > 0:
             logger.warning(f"Removed {removed_count} unverified citations from answer")
-            # Clean up double spaces and trailing punctuation
-            modified_answer = re.sub(r'\s+', ' ', modified_answer)
+            # Clean up double spaces but preserve newlines
+            modified_answer = re.sub(r'[ \t]+', ' ', modified_answer)
             modified_answer = re.sub(r'\s+([.,;:])', r'\1', modified_answer)
         
         return modified_answer
