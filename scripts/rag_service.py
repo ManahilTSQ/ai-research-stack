@@ -726,6 +726,36 @@ class RAGService:
         if matched_titles and not filter_title:
             chunks = filter_chunks_to_titles(chunks, matched_titles)
 
+        # ── EARLY QUALITY GATE (immediately after retrieval/reranking) ───────────
+        # Moved here to save compute - fail fast before any further processing
+        if chunks:
+            try:
+                from context_coherence import ContextCoherence
+                coherence = ContextCoherence()
+                coherence_metrics = coherence.calculate_coherence_score(chunks)
+                
+                # Quality threshold: if coherence is too low, refuse
+                quality_threshold = 0.4
+                if coherence_metrics["overall_coherence"] < quality_threshold and not locked_scope:
+                    logger.warning(
+                        f"Context coherence too low: {coherence_metrics['overall_coherence']:.2f} "
+                        f"(threshold: {quality_threshold})"
+                    )
+                    # If we have contradictions or high fragmentation, refuse
+                    if (coherence_metrics["contradiction_count"] > 0 or 
+                        coherence_metrics["fragmentation_score"] > 0.7):
+                        return {
+                            "query": query,
+                            "answer": IRRELEVANT_REFUSAL,
+                            "sources": chunks,
+                            "success": False,
+                            "error": f"Context coherence gate failed: score {coherence_metrics['overall_coherence']:.2f}"
+                        }
+            except ImportError:
+                logger.warning("Context coherence module not available, skipping early quality gate")
+            except Exception as e:
+                logger.warning(f"Early quality gate failed: {e}")
+
         if not papers_metadata:
             logger.warning("No papers found in ChromaDB.")
             return {
@@ -878,6 +908,34 @@ class RAGService:
             }
 
         library_inventory_str = build_library_inventory(inventory_metadata)
+        
+        # ── Context quality gate before LLM ───────────────────────────────────
+        try:
+            from context_shaper import ContextShaper
+            shaper = ContextShaper()
+            quality_metrics = shaper.estimate_context_quality(chunks, query)
+            
+            # Quality threshold: if quality is too low, refuse or retry
+            quality_threshold = 0.3
+            if quality_metrics["quality_score"] < quality_threshold and not locked_scope:
+                logger.warning(
+                    f"Context quality too low: {quality_metrics['quality_score']:.2f} "
+                    f"(threshold: {quality_threshold})"
+                )
+                # If we have very few chunks or they're not relevant, refuse
+                if quality_metrics["chunk_count"] < 2 or quality_metrics["avg_distance"] > 1.2:
+                    return {
+                        "query": query,
+                        "answer": IRRELEVANT_REFUSAL,
+                        "sources": chunks,
+                        "success": False,
+                        "error": f"Context quality gate failed: score {quality_metrics['quality_score']:.2f}"
+                    }
+        except ImportError:
+            logger.warning("Context shaper not available, skipping quality gate")
+        except Exception as e:
+            logger.warning(f"Context quality gate failed: {e}")
+        
         context_str = chunks_to_context_string(chunks)
 
         # ── Step 3: Build structured prompts ──────────────────────────────────
@@ -1045,6 +1103,21 @@ class RAGService:
                             "success": False,
                             "error": "Answer failed scope verification.",
                         }
+                
+                # ── Citation binding enforcement ─────────────────────────────────
+                try:
+                    from citation_binder import CitationBinder
+                    binder = CitationBinder()
+                    answer, is_acceptable = binder.enforce_citation_binding(
+                        answer, chunks, min_grounding_ratio=0.6
+                    )
+                    if not is_acceptable:
+                        logger.warning("Answer has insufficient citation grounding")
+                except ImportError:
+                    logger.warning("Citation binder not available, skipping citation binding")
+                except Exception as e:
+                    logger.warning(f"Citation binding failed: {e}")
+                
                 logger.info("Successfully received answer from Ollama.")
                 return {
                     "query": query,

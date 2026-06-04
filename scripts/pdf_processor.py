@@ -223,47 +223,88 @@ class PDFProcessorService:
 
         return full_text
 
+    def _detect_section_boundaries(self, full_text: str) -> list[tuple[int, str]]:
+        """
+        Detect section headings in the document text.
+
+        Returns a list of (position, section_name) tuples for detected sections.
+        Common academic section headings are detected.
+        """
+        section_patterns = [
+            r'\n\s*(?:Abstract|ABSTRACT)\s*\n',
+            r'\n\s*(?:Introduction|INTRODUCTION)\s*\n',
+            r'\n\s*(?:Background|BACKGROUND)\s*\n',
+            r'\n\s*(?:Related Work|RELATED WORK|Literature Review|LITERATURE REVIEW)\s*\n',
+            r'\n\s*(?:Methodology|METHODOLOGY|Methods|METHODS)\s*\n',
+            r'\n\s*(?:Method|METHOD)\s*\n',
+            r'\n\s*(?:Experimental Setup|EXPERIMENTAL SETUP)\s*\n',
+            r'\n\s*(?:Results|RESULTS)\s*\n',
+            r'\n\s*(?:Discussion|DISCUSSION)\s*\n',
+            r'\n\s*(?:Conclusion|CONCLUSION|Conclusions|CONCLUSIONS)\s*\n',
+            r'\n\s*(?:Future Work|FUTURE WORK)\s*\n',
+            r'\n\s*(?:References|REFERENCES)\s*\n',
+        ]
+        
+        boundaries = []
+        for pattern in section_patterns:
+            for match in re.finditer(pattern, full_text, re.IGNORECASE):
+                section_name = match.group(0).strip()
+                boundaries.append((match.start(), section_name))
+        
+        # Sort by position
+        boundaries.sort(key=lambda x: x[0])
+        return boundaries
+
+    def _split_into_paragraphs(self, text: str) -> list[str]:
+        """
+        Split text into paragraphs based on double newlines.
+        Filters out empty paragraphs and very short ones.
+        """
+        paragraphs = text.split('\n\n')
+        cleaned = []
+        for para in paragraphs:
+            para = para.strip()
+            if len(para) >= 50:  # Keep only substantial paragraphs
+                cleaned.append(para)
+        return cleaned
+
     def chunk_text(
         self,
         pages: list[dict],
         chunk_size: int = 1000,
-        chunk_overlap: int = 200
+        chunk_overlap: int = 200,
+        use_structure_aware: bool = True
     ) -> list[dict]:
         """
         Chunk the full document text into overlapping segments.
 
-        Why overlap? Sliding the window with overlap ensures that context
-        spanning a chunk boundary is captured in at least one chunk.
-        This prevents important passages from being split mid-sentence and
-        lost between chunks during retrieval.
+        Structure-aware mode (default):
+          - Detects section headings (Abstract, Introduction, Methodology, etc.)
+          - Splits by sections first to preserve semantic boundaries
+          - Within sections, splits by paragraphs (not fixed character count)
+          - Overlap preserves last complete paragraph/sentence, not just characters
 
-        Algorithm:
-          1. Concatenate all page texts into one big string.
-          2. Strip the references/bibliography section from the end (prevents
-             reference list entries from becoming retrievable chunks that the
-             LLM falsely cites as ingested papers).
-          3. Track which page number each character position belongs to
-             (so we can annotate each chunk with its source pages).
-          4. Slide a window of 'chunk_size' characters across the full text,
-             advancing by (chunk_size - chunk_overlap) each step.
+        Legacy character-based mode (use_structure_aware=False):
+          - Original sliding window approach by character count
+          - Kept for backward compatibility
 
         Args:
             pages: List of page dicts as returned by extract_text_by_page().
-            chunk_size: Maximum character length of each chunk (default: 1000).
-            chunk_overlap: Characters of overlap between adjacent chunks (default: 200).
+            chunk_size: Target chunk size in characters (soft limit in structure-aware mode).
+            chunk_overlap: Overlap in characters (used in legacy mode).
+            use_structure_aware: If True, use semantic section-aware chunking.
 
         Returns:
             List of chunk dicts, each containing:
               - "chunk_index" (int): Sequential chunk number.
               - "text" (str): The chunk text content.
-              - "metadata" (dict): Pages spanned, character offsets, and length.
+              - "metadata" (dict): Pages spanned, section name, character offsets, and length.
         """
         if not pages:
             return []
 
         # ── Step 1: Build the full concatenated text with a character→page map ──
         full_text = ""
-        # char_to_page[i] = page_number that character i belongs to
         char_to_page = []
 
         for page in pages:
@@ -271,16 +312,13 @@ class PDFProcessorService:
             page_text = page["text"]
 
             if not page_text:
-                continue  # Skip blank pages (e.g., cover pages with only images)
+                continue
 
-            # Separate pages with a double newline so paragraph context is preserved
             if full_text:
                 spacer = "\n\n"
                 full_text += spacer
-                # Map the spacer characters to the current page (arbitrary but consistent)
                 char_to_page.extend([page_num] * len(spacer))
 
-            # Append this page's text and map every char to its page number
             full_text += page_text
             char_to_page.extend([page_num] * len(page_text))
 
@@ -290,10 +328,7 @@ class PDFProcessorService:
             return []
 
         # ── Step 2: Strip references section to prevent false LLM citations ───
-        # Reference list entries, if chunked into ChromaDB, get retrieved and
-        # the LLM cites them as if they are separately ingested papers.
         full_text = self._strip_references_section(full_text)
-        # Rebuild char_to_page to match the (possibly shortened) full_text
         char_to_page = char_to_page[:len(full_text)]
         text_len = len(full_text)
 
@@ -301,61 +336,286 @@ class PDFProcessorService:
             logger.warning("Document was entirely a reference list — nothing to chunk.")
             return []
 
-        # ── Step 3: Validate and sanitize chunking parameters ─────────────────
-        if chunk_size <= 0:
-            chunk_size = 1000  # Enforce a sensible minimum
+        # ── Step 3: Choose chunking strategy ────────────────────────────────
+        if use_structure_aware:
+            return self._chunk_structure_aware(full_text, char_to_page, chunk_size)
+        else:
+            return self._chunk_character_based(full_text, char_to_page, chunk_size, chunk_overlap)
 
-        if chunk_overlap >= chunk_size or chunk_overlap < 0:
-            # If overlap is invalid (negative or larger than chunk), default to 20%
-            chunk_overlap = int(chunk_size * 0.2)
-            logger.warning(f"Invalid chunk_overlap — reset to 20% of chunk_size: {chunk_overlap}")
+    def _chunk_structure_aware(
+        self,
+        full_text: str,
+        char_to_page: list[int],
+        target_chunk_size: int = 1000
+    ) -> list[dict]:
+        """
+        Structure-aware chunking that respects document sections.
 
-        # ── Step 4: Slide the window across the full text ─────────────────────
+        Algorithm:
+          1. Detect section boundaries (Abstract, Introduction, etc.)
+          2. Split document into sections
+          3. Within each section, split into paragraphs
+          4. Group paragraphs into chunks that respect target size
+          5. Add semantic overlap (last complete paragraph/sentence)
+        """
+        # Detect section boundaries
+        section_boundaries = self._detect_section_boundaries(full_text)
+        
+        # If no sections detected, fall back to paragraph-based chunking
+        if not section_boundaries:
+            logger.info("No clear section boundaries detected, using paragraph-based chunking")
+            return self._chunk_paragraph_based(full_text, char_to_page, target_chunk_size)
+        
+        # Build sections
+        sections = []
+        prev_pos, prev_section = 0, "Introduction"
+        
+        for pos, section_name in section_boundaries:
+            if pos > prev_pos:
+                section_text = full_text[prev_pos:pos].strip()
+                if section_text:
+                    sections.append({
+                        "name": prev_section,
+                        "start": prev_pos,
+                        "end": pos,
+                        "text": section_text
+                    })
+            prev_pos = pos
+            prev_section = section_name
+        
+        # Add final section
+        if prev_pos < len(full_text):
+            section_text = full_text[prev_pos:].strip()
+            if section_text:
+                sections.append({
+                    "name": prev_section,
+                    "start": prev_pos,
+                    "end": len(full_text),
+                    "text": section_text
+                })
+        
+        # Chunk each section
         chunks = []
-        start = 0       # Current window start position (character index)
-        chunk_idx = 0   # Sequential chunk counter
+        chunk_idx = 0
+        
+        for section in sections:
+            section_chunks = self._chunk_section(
+                section["text"],
+                char_to_page,
+                section["start"],
+                section["name"],
+                target_chunk_size,
+                chunk_idx
+            )
+            chunks.extend(section_chunks)
+            chunk_idx = len(chunks)
+        
+        logger.info(f"Structure-aware chunking: {len(chunks)} chunks across {len(sections)} sections")
+        return chunks
 
-        while start < text_len:
-            # Determine the end of this chunk (bounded by the total length)
-            end = min(start + chunk_size, text_len)
-
-            # Skip creating a tiny tail chunk (< 100 chars) at the very end
-            # to avoid near-empty vectors that add noise to retrieval results
-            if len(chunks) > 0 and (end - start) < 100:
-                break
-
-            # Extract the chunk text from the full concatenated document
-            chunk_text_content = full_text[start:end]
-
-            # Determine which page numbers this chunk spans
-            # Using a set ensures each page is listed only once, even if the
-            # chunk straddles a page boundary.
-            chunk_pages = sorted(set(char_to_page[start:end]))
-
+    def _chunk_section(
+        self,
+        section_text: str,
+        char_to_page: list[int],
+        section_start: int,
+        section_name: str,
+        target_size: int,
+        start_chunk_idx: int
+    ) -> list[dict]:
+        """
+        Chunk a single section by paragraphs with semantic overlap.
+        """
+        paragraphs = self._split_into_paragraphs(section_text)
+        if not paragraphs:
+            return []
+        
+        chunks = []
+        current_chunk = []
+        current_length = 0
+        chunk_idx = start_chunk_idx
+        
+        # Track paragraph positions for metadata
+        para_start = 0
+        
+        for i, para in enumerate(paragraphs):
+            para_len = len(para)
+            
+            # If adding this paragraph would exceed target size and we have content,
+            # create a chunk
+            if current_length + para_len > target_size and current_chunk:
+                # Create chunk with current paragraphs
+                chunk_text = "\n\n".join(current_chunk)
+                chunk_end = section_start + para_start
+                
+                # Get pages for this chunk
+                chunk_pages = sorted(set(char_to_page[max(0, chunk_end - current_length):chunk_end]))
+                
+                chunks.append({
+                    "chunk_index": chunk_idx,
+                    "text": chunk_text.strip(),
+                    "metadata": {
+                        "section": section_name,
+                        "pages": chunk_pages,
+                        "char_start": chunk_end - current_length,
+                        "char_end": chunk_end,
+                        "length": current_length
+                    }
+                })
+                
+                chunk_idx += 1
+                
+                # Semantic overlap: keep last 1-2 paragraphs for context
+                overlap_paras = current_chunk[-2:] if len(current_chunk) >= 2 else current_chunk[-1:] if current_chunk else []
+                current_chunk = overlap_paras
+                current_length = sum(len(p) for p in overlap_paras)
+            
+            # Add current paragraph
+            current_chunk.append(para)
+            current_length += para_len
+            para_start += para_len + 2  # +2 for \n\n
+        
+        # Don't forget the last chunk
+        if current_chunk:
+            chunk_text = "\n\n".join(current_chunk)
+            chunk_end = section_start + para_start
+            chunk_pages = sorted(set(char_to_page[max(0, chunk_end - current_length):chunk_end]))
+            
             chunks.append({
                 "chunk_index": chunk_idx,
-                "text": chunk_text_content.strip(),  # Remove leading/trailing whitespace
+                "text": chunk_text.strip(),
                 "metadata": {
-                    "pages": chunk_pages,       # List of page numbers this chunk spans
-                    "char_start": start,         # Start character offset in the full text
-                    "char_end": end,             # End character offset in the full text
-                    "length": len(chunk_text_content)  # Actual character count
+                    "section": section_name,
+                    "pages": chunk_pages,
+                    "char_start": chunk_end - current_length,
+                    "char_end": chunk_end,
+                    "length": current_length
                 }
             })
+        
+        return chunks
 
+    def _chunk_paragraph_based(
+        self,
+        full_text: str,
+        char_to_page: list[int],
+        target_size: int
+    ) -> list[dict]:
+        """
+        Fallback paragraph-based chunking when no clear sections are detected.
+        """
+        paragraphs = self._split_into_paragraphs(full_text)
+        if not paragraphs:
+            return []
+        
+        chunks = []
+        current_chunk = []
+        current_length = 0
+        chunk_idx = 0
+        para_start = 0
+        
+        for para in paragraphs:
+            para_len = len(para)
+            
+            if current_length + para_len > target_size and current_chunk:
+                chunk_text = "\n\n".join(current_chunk)
+                chunk_end = para_start
+                chunk_pages = sorted(set(char_to_page[max(0, chunk_end - current_length):chunk_end]))
+                
+                chunks.append({
+                    "chunk_index": chunk_idx,
+                    "text": chunk_text.strip(),
+                    "metadata": {
+                        "section": "Unknown",
+                        "pages": chunk_pages,
+                        "char_start": chunk_end - current_length,
+                        "char_end": chunk_end,
+                        "length": current_length
+                    }
+                })
+                
+                chunk_idx += 1
+                
+                # Keep last paragraph for overlap
+                overlap_paras = current_chunk[-1:] if current_chunk else []
+                current_chunk = overlap_paras
+                current_length = sum(len(p) for p in overlap_paras)
+            
+            current_chunk.append(para)
+            current_length += para_len
+            para_start += para_len + 2
+        
+        if current_chunk:
+            chunk_text = "\n\n".join(current_chunk)
+            chunk_end = para_start
+            chunk_pages = sorted(set(char_to_page[max(0, chunk_end - current_length):chunk_end]))
+            
+            chunks.append({
+                "chunk_index": chunk_idx,
+                "text": chunk_text.strip(),
+                "metadata": {
+                    "section": "Unknown",
+                    "pages": chunk_pages,
+                    "char_start": chunk_end - current_length,
+                    "char_end": chunk_end,
+                    "length": current_length
+                }
+            })
+        
+        logger.info(f"Paragraph-based chunking: {len(chunks)} chunks")
+        return chunks
+
+    def _chunk_character_based(
+        self,
+        full_text: str,
+        char_to_page: list[int],
+        chunk_size: int,
+        chunk_overlap: int
+    ) -> list[dict]:
+        """
+        Legacy character-based chunking (original implementation).
+        Kept for backward compatibility.
+        """
+        text_len = len(full_text)
+        
+        if chunk_size <= 0:
+            chunk_size = 1000
+        
+        if chunk_overlap >= chunk_size or chunk_overlap < 0:
+            chunk_overlap = int(chunk_size * 0.2)
+            logger.warning(f"Invalid chunk_overlap — reset to 20% of chunk_size: {chunk_overlap}")
+        
+        chunks = []
+        start = 0
+        chunk_idx = 0
+        
+        while start < text_len:
+            end = min(start + chunk_size, text_len)
+            
+            if len(chunks) > 0 and (end - start) < 100:
+                break
+            
+            chunk_text_content = full_text[start:end]
+            chunk_pages = sorted(set(char_to_page[start:end]))
+            
+            chunks.append({
+                "chunk_index": chunk_idx,
+                "text": chunk_text_content.strip(),
+                "metadata": {
+                    "section": "Unknown",
+                    "pages": chunk_pages,
+                    "char_start": start,
+                    "char_end": end,
+                    "length": len(chunk_text_content)
+                }
+            })
+            
             chunk_idx += 1
-
-            # If we've consumed the entire document, we're done
+            
             if end == text_len:
                 break
-
-            # Advance the start position by (chunk_size - overlap)
-            # The overlapping portion will be re-included in the next chunk
+            
             start += (chunk_size - chunk_overlap)
-
-        logger.info(
-            f"Chunked document into {len(chunks)} chunks "
-            f"(chunk_size={chunk_size}, overlap={chunk_overlap})"
-        )
+        
+        logger.info(f"Character-based chunking: {len(chunks)} chunks (chunk_size={chunk_size}, overlap={chunk_overlap})")
         return chunks
 

@@ -109,7 +109,8 @@ class VectorStoreService:
         chunks: list[dict],
         authors: str | None = None,
         year: int | None = None,
-        venue: str | None = None
+        venue: str | None = None,
+        domain: str | None = None
     ) -> bool:
         """
         Upsert (insert or update) all text chunks for a single paper into ChromaDB.
@@ -131,6 +132,7 @@ class VectorStoreService:
             authors: Formatted string of authors. May be None.
             year: Publication year. May be None.
             venue: Publication venue (journal/conference name). May be None.
+            domain: Research domain (e.g., "computer_science", "medical_imaging"). May be None.
 
         Returns:
             True on successful upsert, False if no chunks were provided or on error.
@@ -165,6 +167,7 @@ class VectorStoreService:
                 "authors": authors or "Unknown Authors",
                 "year": str(year) if year else "N/A",
                 "venue": venue or "N/A",
+                "domain": domain or "unknown",
                 # Convert the list of page numbers to a comma-separated string
                 "pages": ",".join(map(str, chunk_meta.get("pages", []))),
                 "char_start": int(chunk_meta.get("char_start", 0)),
@@ -248,7 +251,13 @@ class VectorStoreService:
     # PUBLIC: Vector Similarity Search
     # ──────────────────────────────────────────────────────────────────────────
 
-    def query_similar_chunks(self, query: str, limit: int = 4, filter_title: str | None = None) -> list[dict]:
+    def query_similar_chunks(
+        self,
+        query: str,
+        limit: int = 4,
+        filter_title: str | None = None,
+        filter_domain: str | None = None
+    ) -> list[dict]:
         """
         Perform a cosine-similarity vector search across all ingested paper chunks.
 
@@ -261,19 +270,29 @@ class VectorStoreService:
             query: The researcher's natural language question or search phrase.
             limit: Maximum number of similar chunks to return (default: 4).
             filter_title: If set, restricts search to chunks from this paper title only.
+            filter_domain: If set, restricts search to chunks from this research domain only.
 
         Returns:
             List of result dicts, each containing:
               - "id": The vector ID string
               - "text": The chunk text content
-              - "metadata": dict with title, doi, pages, char offsets, length
+              - "metadata": dict with title, doi, pages, char offsets, length, domain
               - "distance": Float cosine distance (lower = more similar, range: 0–2)
         """
-        logger.info(f"Querying ChromaDB: '{query}' (top {limit} chunks, filter={filter_title!r})")
+        logger.info(
+            f"Querying ChromaDB: '{query}' (top {limit} chunks, "
+            f"filter_title={filter_title!r}, filter_domain={filter_domain!r})"
+        )
 
         try:
-            # Build optional where clause to restrict to a specific paper
-            where_clause = {"title": filter_title} if filter_title else None
+            # Build optional where clause to restrict to a specific paper or domain
+            where_conditions = {}
+            if filter_title:
+                where_conditions["title"] = filter_title
+            if filter_domain:
+                where_conditions["domain"] = filter_domain
+
+            where_clause = where_conditions if where_conditions else None
 
             # query() accepts a list of query texts (we always pass exactly one)
             query_kwargs = {

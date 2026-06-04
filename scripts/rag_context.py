@@ -296,10 +296,39 @@ def build_library_inventory(papers_metadata: dict) -> str:
     return "\n".join(blocks)
 
 
-def chunks_to_context_string(chunks: list[dict[str, Any]], *, header: str = "Context Chunks") -> str:
-    """Join formatted chunk blocks; empty list yields a clear message."""
+def chunks_to_context_string(
+    chunks: list[dict[str, Any]],
+    *,
+    header: str = "Context Chunks",
+    use_structured_shaping: bool = True
+) -> str:
+    """
+    Join formatted chunk blocks; empty list yields a clear message.
+
+    Args:
+        chunks: List of retrieved chunks.
+        header: Header for the context section.
+        use_structured_shaping: If True, use context shaper for paper/section grouping.
+
+    Returns:
+        Formatted context string.
+    """
     if not chunks:
         return "No relevant text passage chunks found for this query."
+
+    # Use structured context shaping if enabled
+    if use_structured_shaping:
+        try:
+            from context_shaper import ContextShaper
+            shaper = ContextShaper()
+            shaped_context = shaper.shape_context(chunks, query="")
+            return f"{header}:\n{shaped_context}"
+        except ImportError:
+            logger.warning("Context shaper not available, using legacy formatting")
+        except Exception as e:
+            logger.warning(f"Context shaping failed: {e}, using legacy formatting")
+
+    # Legacy formatting
     blocks = [format_chunk_block(c, i) for i, c in enumerate(chunks)]
     return f"{header}:\n" + "\n\n".join(blocks)
 
@@ -1372,18 +1401,61 @@ def retrieve_relevant_chunks(
     filter_title: str | None = None,
     *,
     scope_titles: list[str] | None = None,
+    use_reranking: bool = True,
+    over_retrieve_multiplier: float = 3.0,
+    use_domain_filtering: bool = True,
+    use_query_routing: bool = True,
 ) -> list[dict[str, Any]]:
     """
-    Retrieve context chunks for RAG with author/paper-aware isolation.
+    Retrieve context chunks for RAG with author/paper-aware isolation and optional reranking.
 
     Pipeline:
-      1. Detect if the query names a specific author/paper already in the library.
-      2. Author-scoped path: fetch chunks EXCLUSIVELY from those papers — no semantic
+      1. Query understanding (optional): classify intent and determine pipeline routing
+      2. Detect if the query names a specific author/paper already in the library.
+      3. Author-scoped path: fetch chunks EXCLUSIVELY from those papers — no semantic
          mixing that could contaminate results with other authors' papers.
-      3. Unscoped path: standard semantic search → distance filter → token filter.
+      4. Unscoped path: standard semantic search → distance filter → token filter.
+      5. (Optional) Over-retrieve more chunks and apply reranking for better accuracy.
+      6. (Optional) Apply domain filtering to prevent cross-topic contamination.
+
+    Args:
+        vector_store: ChromaDB vector store instance.
+        query: User's research question.
+        limit: Final number of chunks to return.
+        filter_title: Optional paper title filter.
+        scope_titles: Optional list of paper titles to scope retrieval.
+        use_reranking: If True, apply hybrid reranking after retrieval.
+        over_retrieve_multiplier: Multiplier for initial retrieval (e.g., 3.0 = retrieve 3x limit).
+        use_domain_filtering: If True, detect query domain and filter by domain metadata.
+        use_query_routing: If True, use query understanding to control pipeline routing.
+
+    Returns:
+        List of retrieved and optionally reranked chunks.
     """
     stats = vector_store.get_collection_stats()
     papers_metadata = stats.get("papers_metadata", {})
+
+    # ── Query understanding for pipeline routing ─────────────────────────────
+    routing_config = {}
+    if use_query_routing and not filter_title and not scope_titles:
+        try:
+            from query_understanding import QueryUnderstanding
+            query_understanding = QueryUnderstanding()
+            analysis = query_understanding.understand_query(query)
+            routing_config = query_understanding.get_pipeline_routing(analysis)
+            
+            # Apply routing configuration
+            if routing_config.get("retrieval_limit_multiplier"):
+                over_retrieve_multiplier *= routing_config["retrieval_limit_multiplier"]
+            
+            if routing_config.get("strict_metadata_filter"):
+                # Enforce strict metadata filtering
+                if "paper_title" in analysis.constraints:
+                    filter_title = analysis.constraints["paper_title"]
+        except ImportError:
+            logger.warning("Query understanding not available, skipping pipeline routing")
+        except Exception as e:
+            logger.warning(f"Pipeline routing failed: {e}")
 
     inventory_titles = list(scope_titles) if scope_titles else resolve_matching_paper_titles(
         query, papers_metadata
@@ -1395,6 +1467,42 @@ def retrieve_relevant_chunks(
     # Lock retrieval whenever we resolved specific paper(s) — prevents cross-paper contamination.
     locked_scope = bool(scope_titles) or bool(inventory_titles) or bool(filter_title)
 
+    # ── Domain filtering for multi-topic separation ───────────────────────────
+    filter_domain = None
+    if use_domain_filtering and not locked_scope:
+        try:
+            from topic_classifier import TopicClassifier
+            classifier = TopicClassifier()
+            filter_domain = classifier.get_domain_filter(query)
+            if filter_domain:
+                logger.info(f"Query detected as domain-specific: {filter_domain}")
+        except ImportError:
+            logger.warning("Topic classifier not available, skipping domain filtering")
+        except Exception as e:
+            logger.warning(f"Domain filtering failed: {e}")
+
+    # ── Metadata-driven pre-filtering ───────────────────────────────────────
+    metadata_constraints = {}
+    try:
+        from metadata_filter import MetadataFilter
+        metadata_filter = MetadataFilter()
+        if metadata_filter.should_apply_metadata_filtering(query) or routing_config.get("strict_metadata_filter"):
+            filtered_titles = metadata_filter.filter_papers_by_metadata(
+                papers_metadata, query
+            )
+            if filtered_titles and len(filtered_titles) < len(papers_metadata):
+                # Apply metadata filtering as an additional scope
+                if inventory_titles:
+                    # Intersect with existing inventory titles
+                    inventory_titles = list(set(inventory_titles) & set(filtered_titles))
+                else:
+                    inventory_titles = filtered_titles
+                logger.info(f"Metadata filtering applied: {len(inventory_titles)} papers in scope")
+    except ImportError:
+        logger.warning("Metadata filter not available, skipping metadata filtering")
+    except Exception as e:
+        logger.warning(f"Metadata filtering failed: {e}")
+
     # ── Author / Paper-scoped retrieval ───────────────────────────────────────
     # When the query names a specific author or paper that is already in the library,
     # pull chunks EXCLUSIVELY from those matched papers.  This prevents topically
@@ -1405,18 +1513,29 @@ def retrieve_relevant_chunks(
     if inventory_titles:
         author_chunks: list[dict[str, Any]] = []
         n_papers = max(1, len(inventory_titles))
-        per_paper = max(3, min(12, (limit * 2) // n_papers))
+        # Over-retrieve for author-scoped queries too
+        per_paper = max(3, min(12, int((limit * over_retrieve_multiplier) // n_papers)))
         for title in inventory_titles:
             paper_chunks = vector_store.get_chunks_for_paper(title, max_chunks=per_paper)
             author_chunks = _dedupe_chunks(author_chunks + paper_chunks)
         if author_chunks:
+            # Apply reranking to author-scoped chunks if enabled
+            if use_reranking and len(author_chunks) > limit:
+                try:
+                    from reranker import RerankerService
+                    reranker = RerankerService()
+                    author_chunks = reranker.rerank(author_chunks, query, top_k=limit)
+                except ImportError:
+                    logger.warning("Reranker not available, skipping reranking")
+                except Exception as e:
+                    logger.warning(f"Reranking failed: {e}, using original chunks")
             return rank_and_cap_chunks(author_chunks, query, limit=limit)
 
-    # ── Standard semantic search path ─────────────────────────────────────────
-    # Request extra candidates so post-filters still leave enough context.
-    search_limit = max(limit * 3, limit + 8)
+    # ── Standard semantic search path with over-retrieval ─────────────────────
+    # Over-retrieve: request extra candidates so reranking has more to work with
+    search_limit = max(int(limit * over_retrieve_multiplier), limit + 8)
     raw = vector_store.query_similar_chunks(
-        query, limit=search_limit, filter_title=filter_title
+        query, limit=search_limit, filter_title=filter_title, filter_domain=filter_domain
     )
 
     chunks = filter_chunks_by_relevance(raw, max_distance=settings.RAG_MAX_DISTANCE)
@@ -1438,7 +1557,17 @@ def retrieve_relevant_chunks(
 
     # Strict mode: never return unscoped semantic noise when the query is entity-locked.
     if strict and locked_scope:
-        return filter_chunks_to_titles(chunks, inventory_titles)[:limit]
+        filtered = filter_chunks_to_titles(chunks, inventory_titles)
+        if use_reranking and len(filtered) > limit:
+            try:
+                from reranker import RerankerService
+                reranker = RerankerService()
+                return reranker.rerank(filtered, query, top_k=limit)
+            except ImportError:
+                logger.warning("Reranker not available, skipping reranking")
+            except Exception as e:
+                logger.warning(f"Reranking failed: {e}, using original chunks")
+        return filtered[:limit]
 
     if not chunks and inventory_titles and not strict:
         chunks = raw[:limit]
@@ -1450,6 +1579,18 @@ def retrieve_relevant_chunks(
     profile = detect_topic_profile(query)
     if profile and chunks:
         chunks = filter_chunks_for_topic_profile(chunks, profile)
+
+    # Apply reranking if enabled and we have enough chunks
+    if use_reranking and len(chunks) > limit:
+        try:
+            from reranker import RerankerService
+            reranker = RerankerService()
+            chunks = reranker.rerank(chunks, query, top_k=limit)
+            logger.info(f"Reranking applied: returned {len(chunks)} chunks")
+        except ImportError:
+            logger.warning("Reranker not available, skipping reranking")
+        except Exception as e:
+            logger.warning(f"Reranking failed: {e}, using original chunks")
 
     return rank_and_cap_chunks(chunks, query, limit=limit)
 
