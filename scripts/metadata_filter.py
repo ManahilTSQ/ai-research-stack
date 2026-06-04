@@ -31,12 +31,15 @@ class MetadataFilter:
             "papers from 2020" → 2020
             "recent papers after 2019" → None (range not supported yet)
             "2021 papers" → 2021
+            "only 2024 papers" → 2024
+            "papers in 2024" → 2024
         """
-        # Pattern: "papers from/in YEAR" or "YEAR papers"
+        # Pattern: "papers from/in YEAR" or "YEAR papers" - enhanced patterns
         patterns = [
-            r"\b(?:papers?|articles?|studies?)\s+(?:from|in|of)\s*(\d{4})\b",
-            r"\b(\d{4})\s*(?:papers?|articles?|studies?)\b",
+            r"\b(?:papers?|articles?|studies?)\s+(?:from|in|of|published\s+in)\s*(\d{4})\b",
+            r"\b(?:only|just|strictly)?\s*(\d{4})\s*(?:papers?|articles?|studies?)\b",
             r"\bpublished\s+in\s+(\d{4})\b",
+            r"\b(?:show|list|display)?\s*(\d{4})\s*(?:papers?|articles?|studies?)\b",
         ]
         
         for pattern in patterns:

@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import re
 import unicodedata
+import logging
 from typing import Any
 
 from config import settings
+
+logger = logging.getLogger(__name__)
 
 
 # Standard refusal when vector search finds nothing sufficiently similar.
@@ -1476,6 +1479,28 @@ def retrieve_relevant_chunks(
             filter_domain = classifier.get_domain_filter(query)
             if filter_domain:
                 logger.info(f"Query detected as domain-specific: {filter_domain}")
+                
+                # HARD CONSTRAINT: Filter inventory to only papers in this domain
+                domain_filtered_titles = []
+                for title, meta in papers_metadata.items():
+                    paper_domain = meta.get("domain", "").lower()
+                    if paper_domain == filter_domain.lower():
+                        domain_filtered_titles.append(title)
+                
+                if domain_filtered_titles:
+                    if inventory_titles:
+                        # Intersect with existing inventory titles
+                        inventory_titles = list(set(inventory_titles) & set(domain_filtered_titles))
+                    else:
+                        inventory_titles = domain_filtered_titles
+                    logger.info(f"Domain filtering applied: {len(inventory_titles)} papers in domain '{filter_domain}'")
+                    
+                    # HARD CONSTRAINT: If no papers match domain, return empty
+                    if not inventory_titles:
+                        logger.warning(f"No papers match domain constraint '{filter_domain}' for query: {query}")
+                        return []
+                else:
+                    logger.warning(f"No papers found in domain '{filter_domain}'")
         except ImportError:
             logger.warning("Topic classifier not available, skipping domain filtering")
         except Exception as e:
@@ -1498,6 +1523,11 @@ def retrieve_relevant_chunks(
                 else:
                     inventory_titles = filtered_titles
                 logger.info(f"Metadata filtering applied: {len(inventory_titles)} papers in scope")
+                
+                # HARD CONSTRAINT: If no papers match metadata constraints, return empty
+                if not inventory_titles:
+                    logger.warning(f"No papers match metadata constraints for query: {query}")
+                    return []
     except ImportError:
         logger.warning("Metadata filter not available, skipping metadata filtering")
     except Exception as e:
@@ -1534,8 +1564,22 @@ def retrieve_relevant_chunks(
     # ── Standard semantic search path with over-retrieval ─────────────────────
     # Over-retrieve: request extra candidates so reranking has more to work with
     search_limit = max(int(limit * over_retrieve_multiplier), limit + 8)
+    
+    # CRITICAL FIX: Apply domain filter at vector search level, not post-filter
+    # This prevents vector search from retrieving irrelevant domains
+    effective_filter_domain = filter_domain
+    if not effective_filter_domain and inventory_titles:
+        # If we have inventory_titles from metadata filtering, try to infer domain
+        # to prevent cross-domain leakage
+        first_title = inventory_titles[0] if inventory_titles else None
+        if first_title and first_title in papers_metadata:
+            paper_domain = papers_metadata[first_title].get("domain", "")
+            if paper_domain:
+                effective_filter_domain = paper_domain
+                logger.info(f"Inferred domain from inventory_titles: {effective_filter_domain}")
+    
     raw = vector_store.query_similar_chunks(
-        query, limit=search_limit, filter_title=filter_title, filter_domain=filter_domain
+        query, limit=search_limit, filter_title=filter_title, filter_domain=effective_filter_domain
     )
 
     chunks = filter_chunks_by_relevance(raw, max_distance=settings.RAG_MAX_DISTANCE)

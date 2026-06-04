@@ -187,7 +187,8 @@ class CitationBinder:
         self,
         answer: str,
         chunks: list[dict[str, Any]],
-        min_grounding_ratio: float = 0.7
+        min_grounding_ratio: float = 0.7,
+        strict_mode: bool = True
     ) -> tuple[str, bool]:
         """
         Enforce citation binding by checking grounding and flagging issues.
@@ -196,29 +197,40 @@ class CitationBinder:
             answer: The LLM-generated answer.
             chunks: Retrieved chunks.
             min_grounding_ratio: Minimum acceptable grounding ratio.
+            strict_mode: If True, rejects answers below threshold instead of adding warning.
 
         Returns:
             Tuple of (answer, is_acceptable).
-            If grounding is below threshold, adds a warning to the answer.
+            If strict_mode=True and grounding is below threshold, returns refusal message.
+            If strict_mode=False and grounding is below threshold, adds a warning to the answer.
         """
         analysis = self.analyze_answer_grounding(answer, chunks)
         
         if analysis["grounding_ratio"] >= min_grounding_ratio:
             return answer, True
         
-        # Grounding is below threshold - add warning
-        warning = (
-            f"\n\n[Note: {analysis['ungrounded_sentences']} of {analysis['total_sentences']} "
-            f"sentences could not be traced to the provided sources. "
-            f"Please verify these claims against the original papers.]"
-        )
-        
         logger.warning(
             f"Citation binding failed: grounding ratio {analysis['grounding_ratio']:.2%} "
             f"below threshold {min_grounding_ratio:.2%}"
         )
         
-        return answer + warning, False
+        if strict_mode:
+            # HARD CONSTRAINT: Return refusal instead of ungrounded answer
+            refusal = (
+                f"I cannot provide a complete answer because {analysis['ungrounded_sentences']} "
+                f"of {analysis['total_sentences']} sentences could not be traced to the provided sources. "
+                f"This indicates the answer would contain ungrounded claims. "
+                f"Please try a more specific question or ingest more relevant papers."
+            )
+            return refusal, False
+        else:
+            # Soft constraint: add warning
+            warning = (
+                f"\n\n[Note: {analysis['ungrounded_sentences']} of {analysis['total_sentences']} "
+                f"sentences could not be traced to the provided sources. "
+                f"Please verify these claims against the original papers.]"
+            )
+            return answer + warning, False
 
     def add_missing_citations(
         self,
