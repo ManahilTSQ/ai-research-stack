@@ -638,14 +638,16 @@ class RAGService:
         query_mode = classify_query_mode(query)
         listing_style_query = (query_mode == "listing")
 
-        if scope.requires_entity and not scope.scoped_titles:
-            return {
-                "query": query,
-                "answer": scope_refusal_message(scope),
-                "sources": [],
-                "success": False,
-                "error": f"Entity not in library ({scope.entity_kind}).",
-            }
+        # DISABLED: Too strict - blocks valid semantic search queries
+        # Allow semantic search to find papers even when exact entity matching fails
+        # if scope.requires_entity and not scope.scoped_titles:
+        #     return {
+        #         "query": query,
+        #         "answer": scope_refusal_message(scope),
+        #         "sources": [],
+        #         "success": False,
+        #         "error": f"Entity not in library ({scope.entity_kind}).",
+        #     }
 
         inventory_metadata = inventory_for_scope(papers_metadata, scope)
         if query_mode == "ambiguous":
