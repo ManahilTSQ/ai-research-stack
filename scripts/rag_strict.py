@@ -680,6 +680,31 @@ def answer_catalog_metadata_query(query: str, papers_metadata: dict) -> str | No
         return None
     q = (query or "").lower()
 
+    # ── Author existence check — refuse queries about authors not in library ──
+    author_match = re.search(r"(?:written by|authored by|paper by|paper of)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)", query, re.IGNORECASE)
+    if author_match:
+        author_name = author_match.group(1).strip()
+        # Build set of all authors from library
+        all_authors = set()
+        for paper_meta in papers_metadata.values():
+            authors = paper_meta.get("authors", "")
+            for name in authors.split():
+                all_authors.add(name.lower().strip(",."))
+        
+        # Normalize author name for comparison
+        author_normalized = author_name.lower().replace(".", "").replace(",", "")
+        
+        # Check if this author exists in library
+        author_exists = False
+        for lib_author in all_authors:
+            lib_author_normalized = lib_author.replace(".", "").replace(",", "")
+            if author_normalized in lib_author_normalized or lib_author_normalized in author_normalized:
+                author_exists = True
+                break
+        
+        if not author_exists:
+            return f"No papers authored by {author_name} were found in the ingested library."
+
     year_range = _extract_year_range(query)
     if year_range:
         start_year, end_year = year_range
