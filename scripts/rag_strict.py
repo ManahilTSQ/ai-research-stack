@@ -578,7 +578,26 @@ def is_catalog_metadata_query(query: str) -> bool:
     if any(re.search(pat, q) for pat in _CATALOG_BLOCKERS):
         return False
 
-    if re.search(r"\bpapers?\s+by\s+", q) or re.search(r"\barticles?\s+by\s+", q) or re.search(r"\bauthored\s+by\s+", q):
+    # Author query patterns - match any query asking about papers by a specific author
+    author_patterns = [
+        r"\bpapers?\s+by\s+",
+        r"\barticles?\s+by\s+",
+        r"\bauthored\s+by\s+",
+        r"\bwritten\s+by\s+",
+        r"\bwho\s+wrote\s+",
+        r"\bwhich\s+paper\s+was\s+written\s+by\s+",
+        r"\bwhich\s+paper\s+by\s+",
+        r"\bwhich\s+article\s+by\s+",
+        r"\bfind\s+papers?\s+by\s+",
+        r"\bfind\s+articles?\s+by\s+",
+        r"\bshow\s+papers?\s+by\s+",
+        r"\bshow\s+articles?\s+by\s+",
+        r"\blist\s+papers?\s+by\s+",
+        r"\blist\s+articles?\s+by\s+",
+        r"\bpapers?\s+from\s+",
+        r"\barticles?\s+from\s+",
+    ]
+    if any(re.search(pat, q) for pat in author_patterns):
         return True
     # Match "list all authors" / "show all authors" but NOT
     # "list articles with Jhanjhi as author or co-author" (where 'author' is a role, not the subject).
@@ -681,7 +700,19 @@ def answer_catalog_metadata_query(query: str, papers_metadata: dict) -> str | No
     q = (query or "").lower()
 
     # ── Author existence check — refuse queries about authors not in library ──
-    author_match = re.search(r"(?:written by|authored by|paper by|paper of)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)", query, re.IGNORECASE)
+    # Match multiple author query patterns
+    author_patterns = [
+        r"(?:written by|authored by|paper by|paper of)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
+        r"(?:who wrote|who authored)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
+        r"(?:papers? by|articles? by|papers? from|articles? from)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
+        r"(?:which paper was written by|which article was written by)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
+    ]
+    author_match = None
+    for pattern in author_patterns:
+        match = re.search(pattern, query, re.IGNORECASE)
+        if match:
+            author_match = match
+            break
     if author_match:
         author_name = author_match.group(1).strip()
         # Build set of all authors from library
