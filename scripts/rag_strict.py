@@ -253,6 +253,20 @@ def compare_query_needs_paper_pickers(query: str, papers_metadata: dict) -> bool
     """True when user asked to compare but did not select or quote two papers."""
     if not _COMPARE_QUERY_RE.search(query or ""):
         return False
+    
+    # Detect corpus-level comparison queries (comparing methodologies/topics across all papers)
+    # These should NOT require paper pickers
+    q = (query or "").lower()
+    corpus_comparison_patterns = [
+        r"\bacross\s+(all\s+)?(papers?|articles?|library)",
+        r"\ball\s+(papers?|articles?|library)",
+        r"\bmethodolog",
+        r"\bapproaches?\s+across",
+        r"\btechnolog",
+    ]
+    if any(re.search(pat, q) for pat in corpus_comparison_patterns):
+        return False
+    
     quoted = extract_quoted_paper_titles(query)
     if len(quoted) >= 2:
         resolved = fuzzy_match_paper_titles(query, papers_metadata)
