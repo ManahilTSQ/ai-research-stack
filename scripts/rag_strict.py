@@ -878,31 +878,50 @@ def apply_verification_or_refuse(
     papers_metadata: dict,
     chunks: list[dict[str, Any]],
 ) -> tuple[str, bool]:
-    """Returns (final_answer, passed)."""
-    # DISABLED: Too strict - blocks valid answers due to citation/title matching
-    # The verification logic rejects answers when they cite papers not in exact scope,
-    # but this is too restrictive for synthesis and comparative queries
-    # if not getattr(settings, "RAG_STRICT_MODE", True):
-    #     return answer, True
-
+    """
+    Returns (final_answer, passed).
+    
+    Enforces strict citation grounding: answers may only cite papers that are
+    either in the retrieved chunks or in the resolved scope. This prevents
+    hallucinated citations like citing PyTorch when asking about Ada Lovelace.
+    """
     # ── Bypass verification for broad/global queries ──────────────────────
     # When scope is fully open (no author/paper/topic/filter lock), the LLM
     # is given the complete library inventory and may legitimately cite any
-    # paper.  Running strict title/citation checks here causes false failures
+    # paper. Running strict title/citation checks here causes false failures
     # on synthesis answers (literature reviews, research questions, gap analyses).
-    # if scope.entity_kind == "none" and not scope.scoped_titles:
-    #     return answer, True
+    if scope.entity_kind == "none" and not scope.scoped_titles:
+        return answer, True
 
-    # ok, reason = verify_answer_against_scope(
-    #     answer,
-    #     scoped_titles=scope.scoped_titles,
-    #     papers_metadata=papers_metadata,
-    #     chunks=chunks,
-    #     scope_locked=scope.is_locked,
-    # )
-    # if ok:
-    #     return answer, True
-    # return VERIFICATION_FAILED_REFUSAL, False
+    # ── For locked scopes (author/paper/topic/filter), enforce strict verification ──
+    # This prevents the Ada Lovelace problem where the model invents explanations
+    # and supports them with unrelated citations from the context window.
+    if scope.is_locked:
+        ok, reason = verify_answer_against_scope(
+            answer,
+            scoped_titles=scope.scoped_titles,
+            papers_metadata=papers_metadata,
+            chunks=chunks,
+            scope_locked=True,
+        )
+        if ok:
+            return answer, True
+        logger.warning(f"Citation verification failed: {reason}")
+        return VERIFICATION_FAILED_REFUSAL, False
 
-    # Always allow answers through - rely on citation binder warnings instead
+    # For unlocked but non-empty scopes, apply lighter verification
+    if scope.scoped_titles:
+        ok, reason = verify_answer_against_scope(
+            answer,
+            scoped_titles=scope.scoped_titles,
+            papers_metadata=papers_metadata,
+            chunks=chunks,
+            scope_locked=False,
+        )
+        if ok:
+            return answer, True
+        logger.warning(f"Citation verification failed (unlocked scope): {reason}")
+        # Don't refuse for unlocked scopes, just log the warning
+        return answer, True
+
     return answer, True

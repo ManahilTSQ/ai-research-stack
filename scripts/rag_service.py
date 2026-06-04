@@ -638,44 +638,77 @@ class RAGService:
         query_mode = classify_query_mode(query)
         listing_style_query = (query_mode == "listing")
 
-        # DISABLED: Too strict - blocks valid semantic search queries
-        # Allow semantic search to find papers even when exact entity matching fails
-        # if scope.requires_entity and not scope.scoped_titles:
-        #     return {
-        #         "query": query,
-        #         "answer": scope_refusal_message(scope),
-        #         "sources": [],
-        #         "success": False,
-        #         "error": f"Entity not in library ({scope.entity_kind}).",
-        #     }
+        # ── Scope refusal for explicit author/paper queries ─────────────────────
+        # When the query explicitly names an author or paper (not just a topic),
+        # and that entity is not in the library, refuse immediately.
+        # This prevents the Ada Lovelace problem where the system falls back to
+        # semantic search and returns unrelated papers.
+        if scope.requires_entity and not scope.scoped_titles:
+            # Only refuse for explicit author/paper queries, not topic queries
+            if scope.entity_kind in ("author", "paper") and query_expects_named_author(query):
+                return {
+                    "query": query,
+                    "answer": scope_refusal_message(scope),
+                    "sources": [],
+                    "success": False,
+                    "error": f"Entity not in library ({scope.entity_kind}).",
+                }
+            # For topic queries, allow semantic search fallback
+            if scope.entity_kind == "topic":
+                # Topic not found - let semantic search try to find relevant papers
+                pass
 
         inventory_metadata = inventory_for_scope(papers_metadata, scope)
 
         # ── Author existence check — BEFORE retrieval/LLM ─────────────────────
         # If query asks about a specific author, check if they exist in library
         # If not, refuse immediately without calling LLM
+        # IMPORTANT: Check against FULL library, not just scoped inventory
         all_authors = set()
-        for paper_meta in inventory_metadata.values():
+        for paper_meta in papers_metadata.values():
             authors = paper_meta.get("authors", "")
             for name in authors.split():
                 all_authors.add(name.lower().strip(",."))
         
-        # Extract author name from query using regex for phrases like "written by X", "paper by X"
+        # Extract author name from query using expanded regex patterns
         import re
-        author_match = re.search(r"(?:written by|authored by|paper by|paper of)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)", query, re.IGNORECASE)
+        author_patterns = [
+            r"(?:written by|authored by|paper by|paper of)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
+            r"(?:which\s+(?:paper|article)\s+(?:in\s+my\s+library\s+)?)?(?:was|is)?\s*(?:written|authored)\s+by\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
+            r"(?:who\s+wrote|who\s+authored)\s+(?:the\s+)?(?:paper|article)\s+(?:by\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
+            r"(?:papers?|articles?)\s+by\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
+        ]
+        author_match = None
+        for pattern in author_patterns:
+            match = re.search(pattern, query, re.IGNORECASE)
+            if match:
+                author_match = match
+                break
         
         if author_match:
-            author_name = author_match.group(1).strip()
+            # Find which capture group matched (group 1 or group 2 depending on pattern)
+            author_name = None
+            for i in range(1, len(author_match.groups()) + 1):
+                if author_match.group(i):
+                    author_name = author_match.group(i).strip()
+                    break
+            
+            if not author_name:
+                author_name = author_match.group(1).strip() if author_match.group(1) else author_match.group(2).strip()
+            
             # Normalize author name for comparison
             author_normalized = author_name.lower().replace(".", "").replace(",", "")
             
-            # Check if this author exists in library
+            # Check if this author exists in library using more robust matching
             author_exists = False
             for lib_author in all_authors:
                 lib_author_normalized = lib_author.replace(".", "").replace(",", "")
+                # Check for substring match in either direction
                 if author_normalized in lib_author_normalized or lib_author_normalized in author_normalized:
-                    author_exists = True
-                    break
+                    # Ensure it's not just a partial match (e.g., "ada" matching "adam")
+                    if len(author_normalized) >= 4 or len(lib_author_normalized) >= 4:
+                        author_exists = True
+                        break
             
             if not author_exists:
                 logger.warning(f"Author '{author_name}' not in library, refusing before LLM")
