@@ -400,9 +400,13 @@ class CitationVerifier:
                 first_author = author_parts[0].split()[-1]
                 valid_pairs.add((first_author.lower(), year))
         
-        # Extract all citation patterns
+        logger.info(f"Valid citation pairs from chunks: {valid_pairs}")
+        
+        # Extract all citation patterns - more flexible pattern
         citation_pattern = r'\(([A-Z][a-zA-Z]+(?:\s+et\s+al\.)?(?:,\s*[A-Z][a-zA-Z]+)*,\s*\d{4}(?:,\s*p\.?\s*\d+)?\)'
         citations = re.findall(citation_pattern, answer)
+        
+        logger.info(f"Citations found in answer: {citations}")
         
         if not citations:
             return answer
@@ -417,10 +421,13 @@ class CitationVerifier:
                 author = match.group(1).lower()
                 year = match.group(2)
                 
+                logger.info(f"Checking citation: {citation} -> author={author}, year={year}")
+                
                 if (author, year) not in valid_pairs:
                     # Remove this citation from the answer
                     modified_answer = modified_answer.replace(citation, "")
                     removed_count += 1
+                    logger.warning(f"Removed unverified citation: {citation}")
         
         if removed_count > 0:
             logger.warning(f"Removed {removed_count} unverified citations from answer")
