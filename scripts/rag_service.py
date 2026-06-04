@@ -717,31 +717,6 @@ class RAGService:
         ):
             history_for_llm = None
 
-        # ── Pre-check: Author existence validation ─────────────────────────────
-        # If query asks about a specific author not in library, refuse immediately
-        author_names = set()
-        for paper_meta in inventory_metadata.values():
-            authors = paper_meta.get("authors", "")
-            for name in authors.split():
-                author_names.add(name.lower().strip(",."))
-        
-        # Extract potential author names from query (capitalized words)
-        query_words = query.split()
-        potential_authors = [w for w in query_words if w[0].isupper() and len(w) > 2]
-        
-        for potential_author in potential_authors:
-            if potential_author.lower() not in author_names:
-                # Check if this might be a real author name (last name + first initial pattern)
-                if len(potential_author) > 3 and potential_author[0].isupper():
-                    logger.warning(f"Query asks about author '{potential_author}' not in library")
-                    return {
-                        "query": query,
-                        "answer": f"The author '{potential_author}' is not in your ingested paper library. I can only answer questions about papers and authors that have been ingested. Please ask about a paper or author from your library.",
-                        "sources": [],
-                        "success": False,
-                        "error": f"Author not in library: {potential_author}",
-                    }
-
         # ── Step 1: Retrieve chunks ───────────────────────────────────────────
         chunks = retrieve_relevant_chunks(
             self.vector_store,
