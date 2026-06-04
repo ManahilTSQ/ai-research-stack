@@ -403,7 +403,8 @@ class CitationVerifier:
         logger.info(f"Valid citation pairs from chunks: {valid_pairs}")
         
         # Extract all citation patterns - more flexible pattern
-        citation_pattern = r'\(([A-Z][a-zA-Z]+(?:\s+et\s+al\.)?(?:,\s*[A-Z][a-zA-Z]+)*,\s*\d{4}(?:,\s*p\.?\s*\d+)?\)'
+        # Match both (Author, 2017) and (Author (2017)) formats
+        citation_pattern = r'\(?([A-Z][a-zA-Z]+(?:\s+et\s+al\.)?(?:,\s*[A-Z][a-zA-Z]+)*)\s*\(?,\s*(\d{4})\)?'
         citations = re.findall(citation_pattern, answer)
         
         logger.info(f"Citations found in answer: {citations}")
@@ -414,20 +415,24 @@ class CitationVerifier:
         # Remove unverified citations
         modified_answer = answer
         removed_count = 0
-        
-        for citation in citations:
-            match = re.search(r'([A-Z][a-zA-Z]+)(?:\s+et\s+al\.)?,\s*(\d{4})', citation)
-            if match:
-                author = match.group(1).lower()
-                year = match.group(2)
-                
-                logger.info(f"Checking citation: {citation} -> author={author}, year={year}")
-                
-                if (author, year) not in valid_pairs:
-                    # Remove this citation from the answer
-                    modified_answer = modified_answer.replace(citation, "")
-                    removed_count += 1
-                    logger.warning(f"Removed unverified citation: {citation}")
+
+        for author, year in citations:
+            author_lower = author.lower()
+            logger.info(f"Checking citation: ({author}, {year}) -> author={author_lower}, year={year}")
+
+            if (author_lower, year) not in valid_pairs:
+                # Remove this citation from the answer (multiple formats)
+                citation_variants = [
+                    f"({author}, {year})",
+                    f"({author} ({year}))",
+                    f"{author} ({year})",
+                    f"{author}, {year}"
+                ]
+                for variant in citation_variants:
+                    if variant in modified_answer:
+                        modified_answer = modified_answer.replace(variant, "")
+                        removed_count += 1
+                        logger.warning(f"Removed unverified citation: {variant}")
         
         if removed_count > 0:
             logger.warning(f"Removed {removed_count} unverified citations from answer")
