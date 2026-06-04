@@ -1105,20 +1105,20 @@ class RAGService:
                         }
                 
                 # ── Citation binding enforcement ─────────────────────────────────
-                # DISABLED: Too strict - rejects valid answers due to word overlap requirements
-                # The LLM may paraphrase or synthesize information without exact word matches
-                # try:
-                #     from citation_binder import CitationBinder
-                #     binder = CitationBinder()
-                #     answer, is_acceptable = binder.enforce_citation_binding(
-                #         answer, chunks, min_grounding_ratio=0.6
-                #     )
-                #     if not is_acceptable:
-                #         logger.warning("Answer has insufficient citation grounding")
-                # except ImportError:
-                #     logger.warning("Citation binder not available, skipping citation binding")
-                # except Exception as e:
-                #     logger.warning(f"Citation binding failed: {e}")
+                # DOWNGRADED: Use warning mode instead of refusal
+                # Synthesis is normal in RAG - sentences may combine info from multiple chunks
+                # We warn about grounding issues but still allow the answer
+                try:
+                    from citation_binder import CitationBinder
+                    binder = CitationBinder()
+                    answer, is_acceptable = binder.enforce_citation_binding(
+                        answer, chunks, min_grounding_ratio=0.4, strict_mode=False
+                    )
+                    # is_acceptable is ignored in non-strict mode - answer always returned with warning if needed
+                except ImportError:
+                    logger.warning("Citation binder not available, skipping citation binding")
+                except Exception as e:
+                    logger.warning(f"Citation binding failed: {e}")
                 
                 logger.info("Successfully received answer from Ollama.")
                 return {
