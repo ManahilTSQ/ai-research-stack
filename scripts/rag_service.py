@@ -378,7 +378,41 @@ class RAGService:
             "success": True,
         }
 
-    def _build_safe_references(self, chunks: list[dict]) -> str:
+    def _sanitize_metadata_field(self, field_name: str, value: str, papers_metadata: dict | None) -> str:
+        if not value or value.strip().upper() == "N/A":
+            return ""
+        val = value.strip()
+        
+        if not papers_metadata:
+            return val
+            
+        # 1. Clean up pages: should only contain digits, commas, hyphens, spaces, or "p"/"pp"
+        if field_name == "pages":
+            if not re.match(r"^[0-9\s,\-p\.]+$", val, re.IGNORECASE):
+                # Try to search for page numbers like "1-12" or "pp. 6-7"
+                m = re.search(r"\b(?:pp\.?|p\.?)\s*(\d+(?:\s*-\s*\d+)?)\b", val, re.I)
+                if m:
+                    return m.group(1)
+                return ""
+                
+        # 2. Clean up venue/authors: should not contain titles of other papers
+        if field_name in ("venue", "authors"):
+            val_lower = val.lower()
+            # If venue/authors is long and matches another paper's title or contains parts of it, clean it
+            for other_title in papers_metadata.keys():
+                if len(other_title) > 20 and other_title.lower() in val_lower:
+                    idx = val_lower.find(other_title.lower())
+                    val = val[:idx].strip()
+                    val_lower = val.lower()
+            # Remove trailing dots, commas, spaces
+            val = val.rstrip(".,; ")
+            # If a venue is extremely long (>120 chars), it is likely stitched/corrupted metadata
+            if field_name == "venue" and len(val) > 120:
+                return ""
+                
+        return val
+
+    def _build_safe_references(self, chunks: list[dict], papers_metadata: dict | None = None) -> str:
         """
         Build a deterministic References section from retrieved chunk metadata only.
         This prevents the model from inventing bibliography entries that were never retrieved.
@@ -394,8 +428,13 @@ class RAGService:
             venue = (meta.get("venue") or "").strip()
             pages = (meta.get("pages") or "").strip()
             
+            # Sanitize metadata fields to prevent stitched entries
+            authors = self._sanitize_metadata_field("authors", authors, papers_metadata)
+            venue = self._sanitize_metadata_field("venue", venue, papers_metadata)
+            pages = self._sanitize_metadata_field("pages", pages, papers_metadata)
+            
             # Skip if metadata is too incomplete (placeholder detection)
-            if title == "Untitled" or authors == "Unknown Authors" or year == "N/A":
+            if not title or title == "Untitled" or not authors or authors == "Unknown Authors" or year == "N/A":
                 continue
             
             key = (title.lower(), authors.lower(), year, doi.lower())
@@ -405,13 +444,14 @@ class RAGService:
             
             # Build full APA7 reference with venue and pages if available
             ref_parts = [f"- {authors} ({year}). {title}"]
-            if venue and venue != "N/A":
+            if venue:
                 ref_parts.append(venue)
-            if pages and pages != "N/A":
+            if pages:
                 ref_parts.append(pages)
             ref = ". ".join(ref_parts) + "."
             if doi and doi != "N/A":
-                ref += f" https://doi.org/{doi}"
+                clean_doi = doi.replace("https://doi.org/", "").replace("doi.org/", "").strip()
+                ref += f" https://doi.org/{clean_doi}"
             refs.append(ref)
         if not refs:
             return ""
@@ -590,6 +630,161 @@ class RAGService:
             "sources": [],
             "success": True,
         }
+
+    def _has_keyword_match_in_chunks(self, query: str, chunks: list[dict]) -> bool:
+        if not chunks:
+            return False
+        ignore_words = {"paper", "papers", "summarize", "summary", "list", "show", "describe", "all", "related"}
+        words = re.findall(r"\b[a-z]{3,}\b", (query or "").lower())
+        keywords = [w for w in words if w not in ignore_words]
+        if not keywords:
+            return False
+            
+        for chunk in chunks:
+            text = chunk.get("text", "").lower()
+            meta = chunk.get("metadata", {}) or {}
+            title = meta.get("title", "").lower()
+            authors = meta.get("authors", "").lower()
+            for kw in keywords:
+                if kw in text or kw in title or kw in authors:
+                    return True
+        return False
+
+    def _build_retrieved_set_summary(self, chunks: list[dict]) -> str:
+        from collections import Counter
+        summary_lines = []
+        seen = set()
+        for idx, chunk in enumerate(chunks, 1):
+            meta = chunk.get("metadata", {}) or {}
+            title = meta.get("title", "Untitled")
+            authors = meta.get("authors", "Unknown Authors")
+            year = meta.get("year", "N/A")
+            
+            # Simple keyword extraction
+            text = chunk.get("text", "")
+            words = re.findall(r"\b[a-zA-Z]{4,}\b", text.lower())
+            stop_words = {"this", "that", "with", "from", "were", "they", "have", "been", "using", "based", "paper", "study", "results", "analysis", "their", "about", "there"}
+            keywords = [w for w, c in Counter(words).most_common(5) if w not in stop_words]
+            kw_str = ", ".join(keywords)
+            
+            key = (title.lower(), authors.lower(), year)
+            if key not in seen:
+                seen.add(key)
+                summary_lines.append(
+                    f"- Document ID: doc_{idx}\n"
+                    f"  Title: {title}\n"
+                    f"  Authors: {authors} ({year})\n"
+                    f"  Keywords in chunk: {kw_str}"
+                )
+        return "\n".join(summary_lines)
+
+    def _build_context_with_ids(self, chunks: list[dict]) -> str:
+        blocks = []
+        for idx, chunk in enumerate(chunks, 1):
+            meta = chunk.get("metadata", {}) or {}
+            title = meta.get("title", "Untitled")
+            authors = meta.get("authors", "Unknown Authors")
+            year = meta.get("year", "N/A")
+            text = chunk.get("text", "")
+            
+            blocks.append(
+                f"=== DOCUMENT ID: doc_{idx} ===\n"
+                f"Title: {title}\n"
+                f"Authors: {authors} ({year})\n"
+                f"Passage:\n{text}\n"
+            )
+        return "\n\n".join(blocks)
+
+    def _enforce_hard_grounding_rules(self, answer: str, chunks: list[dict]) -> str:
+        # Split answer into claims/sentences
+        from citation_verifier import CitationVerifier
+        verifier = CitationVerifier()
+        
+        # Separate references if present
+        answer_body = answer
+        refs_part = ""
+        if "References:" in answer:
+            parts = answer.split("References:", 1)
+            answer_body = parts[0].strip()
+            refs_part = "References:\n" + parts[1].strip()
+            
+        sentences = verifier.split_into_claims(answer_body)
+        kept_sentences = []
+        
+        for sent in sentences:
+            if verifier.is_generic_sentence(sent):
+                kept_sentences.append(sent)
+                continue
+                
+            # Check if sentence contains doc_\d+
+            if re.search(r"\bdoc_(\d+)\b", sent):
+                kept_sentences.append(sent)
+            else:
+                logger.warning(f"Removing sentence because it has no chunk ID reference: '{sent}'")
+                
+        new_body = " ".join(kept_sentences)
+        if refs_part:
+            return f"{new_body}\n\n{refs_part}"
+        return new_body
+
+    def _bind_citations_and_verify(self, answer: str, chunks: list[dict]) -> tuple[str, bool]:
+        # Let's map each doc_X to its clean APA citation
+        def get_clean_citation(doc_num_str):
+            try:
+                idx = int(doc_num_str) - 1
+                if 0 <= idx < len(chunks):
+                    chunk = chunks[idx]
+                    meta = chunk.get("metadata", {}) or {}
+                    authors = meta.get("authors", "Unknown Authors")
+                    year = meta.get("year", "N/A")
+                    
+                    # Clean first author surname
+                    first_author = "Unknown"
+                    for part in re.split(r"[,;&]| and ", authors):
+                        words = [w for w in re.findall(r"[a-zA-Z\u00C0-\u017F]+", part) if w.lower() not in {"et", "al"}]
+                        if words:
+                            first_author = words[-1]
+                            break
+                    
+                    num_authors = len(re.split(r"[,;&]| and ", authors))
+                    if num_authors > 2:
+                        citation = f"{first_author} et al., {year}"
+                    elif num_authors == 2:
+                        second_author = "Unknown"
+                        parts = re.split(r"[,;&]| and ", authors)
+                        if len(parts) >= 2:
+                            words2 = [w for w in re.findall(r"[a-zA-Z\u00C0-\u017F]+", parts[1]) if w.lower() not in {"et", "al"}]
+                            if words2:
+                                second_author = words2[-1]
+                        citation = f"{first_author} & {second_author}, {year}"
+                    else:
+                        citation = f"{first_author}, {year}"
+                    return citation
+            except Exception:
+                pass
+            return None
+
+        # Replace doc_X in text
+        modified_answer = answer
+        has_citations = False
+        
+        pattern = r"\bdoc_(\d+)\b"
+        
+        def repl(match):
+            doc_num = match.group(1)
+            cit = get_clean_citation(doc_num)
+            if cit:
+                nonlocal has_citations
+                has_citations = True
+                return cit
+            return f"doc_{doc_num}"
+            
+        modified_answer = re.sub(pattern, repl, modified_answer)
+        
+        # Clean up double parentheticals if any
+        modified_answer = re.sub(r"\(\(([^()]+)\)\)", r"(\1)", modified_answer)
+        
+        return modified_answer, has_citations
 
     def generate_answer(
         self,
@@ -1087,30 +1282,10 @@ class RAGService:
         # try:
         #     from context_shaper import ContextShaper
         #     shaper = ContextShaper()
-        #     quality_metrics = shaper.estimate_context_quality(chunks, query)
-        #     
-        #     # Quality threshold: if quality is too low, refuse or retry
-        #     quality_threshold = 0.3
-        #     if quality_metrics["quality_score"] < quality_threshold and not scope.is_locked:
-        #         logger.warning(
-        #             f"Context quality too low: {quality_metrics['quality_score']:.2f} "
-        #             f"(threshold: {quality_threshold})"
-        #         )
-        #         # If we have very few chunks or they're not relevant, refuse
-        #         if quality_metrics["chunk_count"] < 2 or quality_metrics["avg_distance"] > 1.2:
-        #             return {
-        #                 "query": query,
-        #                 "answer": IRRELEVANT_REFUSAL,
-        #                 "sources": chunks,
-        #                 "success": False,
-        #                 "error": f"Context quality gate failed: score {quality_metrics['quality_score']:.2f}"
-        #             }
-        # except ImportError:
-        #     logger.warning("Context shaper not available, skipping quality gate")
-        # except Exception as e:
-        #     logger.warning(f"Context quality gate failed: {e}")
-        
-        context_str = chunks_to_context_string(chunks)
+
+        # Build structured retrieved set summary and context blocks with IDs
+        retrieved_summary_str = self._build_retrieved_set_summary(chunks)
+        context_str = self._build_context_with_ids(chunks)
 
         # ── Step 3: Build structured prompts ──────────────────────────────────
         scope_note = ""
@@ -1177,15 +1352,18 @@ class RAGService:
             "- Answer research questions strictly using the Document Context Blocks or Ingested Paper Library Inventory provided.\n"
             "- Summarize, compare, or explain content that is EXPLICITLY present in the context or library inventory.\n"
             "- List authors, years, titles, DOIs only from the Library Inventory or context.\n\n"
+            "=== OPERATING RULES FOR KEYWORDS & GROUNDING ===\n"
+            "1. NEVER say 'none exist', 'no papers exist', or 'there are no papers on this topic' if any papers in the Ingested Paper Library Inventory or the Document Context Blocks match or mention the query keywords (e.g. 'coffee').\n"
+            "2. WEAK RELEVANCE FALLBACK: If the retrieved papers are only partially or weakly related to the query (for example, if you ask about 'coffee evolution' and the papers focus on 'accessibility', 'tourism', 'agroecology', or 'LULC' aspects of the coffee region, or NLP cultural probing), you MUST NOT deny their existence. Instead, clearly state: 'There are partially related studies, but they focus on [X, Y, Z] aspects of [topic]' and summarize what they do say.\n"
+            "3. NO CITATION STITCHING/BLENDING: Each statement or claim you make must map directly to its specific source document/chunk. Do NOT blend findings, titles, or concepts from multiple papers into a single sentence or a single citation. Keep claims from different papers in separate sentences, each with its own specific (Author, Year) inline citation. Maintain clean separation between the sources.\n\n"
             "=== CITATION RULES ===\n"
             "1. ONLY use facts from the Document Context Blocks or the Ingested Paper Library Inventory. Zero exceptions.\n"
             "2. NEVER invent author names, paper titles, years, DOIs or references.\n"
             "3. NEVER cite papers that are not in the Library Inventory or Context Blocks.\n"
-            "4. Use APA7 inline citations: (Author, Year) or (Author et al., Year, p. X).\n"
+            "4. You MUST cite using Document IDs in parentheticals at the end of each sentence or claim. For example: (doc_1) or (doc_3, doc_4). Do NOT write author names or years in parentheticals. Every non-generic sentence MUST contain at least one doc_X reference.\n"
             "5. NEVER use (Source 1), [Document 2] or any numbered source labels.\n"
             "6. NEVER use bracket-number citations like [1], [2], [44] etc. These are FORBIDDEN.\n"
-            "   Bracket citations are NOT APA7. If you write [1] or [44] that is a CRITICAL ERROR.\n"
-            "7. NEVER call papers 'Paper A', 'Study 1' etc. Use (Author, Year) or exact title.\n"
+            "7. NEVER call papers 'Paper A', 'Study 1' etc. Use (doc_X) format.\n"
             "8. End every answer with a References section in full APA7 format (EXCEPT when the user asked for a list).\n"
             "9. TRUTH GAPS: If the concept asked about is NOT in the context blocks or library inventory, "
             "say: 'The retrieved context does not contain information about [topic].' DO NOT guess.\n"
@@ -1203,18 +1381,44 @@ class RAGService:
             "=== BEGIN ANSWERING ONLY FROM CONTEXT/INVENTORY BELOW ==="
         )
 
-        # User prompt: the context blocks + library inventory + the actual research query
+        # ── Step 3b: Detect weak retrieval BEFORE LLM call ─────────────────
+        # If the retrieved chunks have very low rerank scores on average, we are
+        # in "partial evidence" mode — the LLM should describe what IS there,
+        # not attempt to complete an answer from weak signal.
+        _rerank_scores = [c.get("rerank_score", 1.0) for c in chunks if "rerank_score" in c]
+        _weak_retrieval = bool(_rerank_scores) and (sum(_rerank_scores) / len(_rerank_scores)) < 0.35
+        if _weak_retrieval:
+            logger.info(
+                f"Weak retrieval detected (avg rerank score: {sum(_rerank_scores)/len(_rerank_scores):.3f}). "
+                "Switching to partial-evidence mode."
+            )
+
+        # User prompt: library inventory + doc-ID metadata summary + full context passages
         user_prompt = (
             f"Ingested Paper Library Inventory:\n"
             f"{'─' * 80}\n"
             f"{library_inventory_str}\n"
             f"{'─' * 80}\n\n"
-            f"Context from ingested research papers:\n"
+            f"Retrieved Document Set (reference these doc_X IDs in every claim):\n"
+            f"{'─' * 80}\n"
+            f"{retrieved_summary_str}\n"
+            f"{'─' * 80}\n\n"
+            f"Full Context Passages from Retrieved Documents:\n"
             f"{'─' * 80}\n"
             f"{context_str}\n"
             f"{'─' * 80}\n\n"
-            f"Researcher Query: {query}\n\n"
-            "Provide your structured academic answer below (remember to use inline APA7 citations and append a References section):"
+            + (
+                "PARTIAL EVIDENCE NOTICE: The retrieved documents are only weakly or partially "
+                "related to this query. You MUST NOT deny their existence. Instead, state clearly: "
+                "'The library contains partially related studies that address [X] aspects of this topic.' "
+                "Then summarize ONLY what is explicitly stated in the passages above. "
+                "Do NOT extrapolate, generalize, or invent findings beyond what the text says.\n\n"
+                if _weak_retrieval else ""
+            )
+            + f"Researcher Query: {query}\n\n"
+            "Provide your structured academic answer below. "
+            "You MUST cite every factual claim using doc_X IDs from the Retrieved Document Set above "
+            "(e.g. (doc_1), (doc_3, doc_5)). Append a References section at the end."
         )
 
         # ── Step 4: Send to Ollama /api/chat ──────────────────────────────────
@@ -1249,6 +1453,53 @@ class RAGService:
             if response.status_code == 200:
                 data = response.json()
                 answer = data["message"]["content"]
+                
+                # Fallback logic: if the LLM refuses, but we have chunks containing query terms
+                if self._is_refusal_answer(answer) and self._has_keyword_match_in_chunks(query, chunks):
+                    logger.warning("LLM returned refusal, but chunks contain query keywords. Re-querying with fallback grounding prompt...")
+                    fallback_system_prompt = (
+                        f"{system_prompt}\n\n"
+                        "=== CRITICAL INSTRUCTION FOR WEAK RELEVANCE ===\n"
+                        "You previously claimed that no information or papers exist on this topic. This is WRONG.\n"
+                        "There ARE matching papers in the provided library/context blocks.\n"
+                        "You MUST NOT refuse to answer, and you MUST NOT say that no papers exist.\n"
+                        "If the retrieved papers are only partially or weakly related, state that 'partially related papers exist, but they focus on [X, Y, Z] aspects' and summarize their findings.\n"
+                        "Report whatever evidence is present in the context, even if it is a weak match. Do not deny existence.\n"
+                    )
+                    
+                    messages_fallback = [{"role": "system", "content": fallback_system_prompt}]
+                    if history_for_llm:
+                        for turn in history_for_llm[-12:]:
+                            role = (turn.get("role") or "").strip().lower()
+                            content = (turn.get("content") or "").strip()
+                            if role in {"user", "assistant"} and content:
+                                messages_fallback.append({"role": role, "content": content})
+                    messages_fallback.append({"role": "user", "content": user_prompt})
+                    
+                    payload_fallback = {
+                        "model": settings.OLLAMA_MODEL,
+                        "messages": messages_fallback,
+                        "stream": False,
+                        "options": {
+                            "temperature": 0.05,
+                            "top_p": 0.8,
+                            "repeat_penalty": 1.1
+                        }
+                    }
+                    
+                    try:
+                        fallback_response = requests.post(url, json=payload_fallback, timeout=settings.OLLAMA_TIMEOUT)
+                        if fallback_response.status_code == 200:
+                            fallback_data = fallback_response.json()
+                            fallback_answer = fallback_data["message"]["content"]
+                            if not self._is_refusal_answer(fallback_answer):
+                                logger.info("Fallback prompt successfully generated grounded answer.")
+                                answer = fallback_answer
+                            else:
+                                logger.warning("Fallback prompt also returned a refusal.")
+                    except Exception as fe:
+                        logger.warning(f"Fallback generation failed: {fe}")
+
                 # Global guardrail against unsupported sensitive-topic stance claims.
                 if self._is_unverifiable_sensitive_claim(query, chunks):
                     answer = (
@@ -1259,8 +1510,27 @@ class RAGService:
                     answer = TABLE_TRUNCATION_REFUSAL
                 else:
                     answer = self._strip_model_references(answer)
+
+                    # FIX 2: Hard grounding — strip any sentence not backed by a doc_X reference.
+                    # This must run BEFORE citation binding so uncited claims are removed first.
+                    if not listing_style_query and not self._is_refusal_answer(answer):
+                        try:
+                            answer = self._enforce_hard_grounding_rules(answer, chunks)
+                        except Exception as _eg:
+                            logger.warning(f"Hard grounding enforcement failed: {_eg}")
+
+                    # FIX 4: Citation binding — convert doc_X placeholders to APA inline.
+                    # Must run after grounding enforcement, before reference section is appended.
+                    if not listing_style_query and not self._is_refusal_answer(answer):
+                        try:
+                            answer, _had_citations = self._bind_citations_and_verify(answer, chunks)
+                            if not _had_citations:
+                                logger.warning("No doc_X citations found in LLM answer after grounding.")
+                        except Exception as _cb:
+                            logger.warning(f"Citation binding failed: {_cb}")
+
                     if (not listing_style_query) and (not self._is_refusal_answer(answer)):
-                        safe_refs = self._build_safe_references(chunks)
+                        safe_refs = self._build_safe_references(chunks, papers_metadata)
                         if safe_refs:
                             answer = f"{answer}\n\n{safe_refs}"
                     if query_mode == "both" and both_listing_block:

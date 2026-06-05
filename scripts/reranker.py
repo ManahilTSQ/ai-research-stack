@@ -181,71 +181,91 @@ class RerankerService:
         chunks: list[dict[str, Any]],
         query: str,
         top_k: int = 8,
-        weights: dict[str, float] | None = None
+        weights: dict[str, float] | None = None,
+        min_score: float = 0.25,
     ) -> list[dict[str, Any]]:
         """
         Rerank chunks using multi-signal scoring.
 
-        This module ONLY does REORDERING (based on scores).
-        It is the ONLY ordering authority in the pipeline.
-        Annotates with scores/context_role as part of the reranking process.
-        
+        Applies a hard minimum score threshold — chunks that score below
+        `min_score` are DROPPED entirely, regardless of top_k.  This prevents
+        low-relevance noise from reaching the LLM even when over-retrieval
+        returns many candidates.
+
         Args:
             chunks: List of retrieved chunks from vector search.
             query: The original user query.
-            top_k: Number of top chunks to return.
-            weights: Optional weights for different signals. Defaults to:
-                - semantic: 0.4
-                - lexical: 0.3
-                - section: 0.2
-                - diversity: 0.1
-        
+            top_k: Maximum number of top chunks to return.
+            weights: Optional weights for different signals.
+            min_score: Minimum combined score; chunks below are discarded.
+
         Returns:
-            List of top-k reranked chunks (ordered by score, descending).
+            List of top-k reranked chunks above min_score (ordered by score desc).
         """
         if not chunks:
             return []
-        
-        if len(chunks) <= top_k:
-            logger.info(f"Only {len(chunks)} chunks retrieved, no reranking needed")
-            return chunks
-        
-        # Default weights
+
         if weights is None:
             weights = {
                 "semantic": 0.4,
                 "lexical": 0.3,
                 "section": 0.2,
-                "diversity": 0.1
+                "diversity": 0.1,
             }
-        
+
         query_tokens = self._extract_query_tokens(query)
-        
-        # Count papers for diversity penalty
-        paper_counts = Counter()
+        query_lower = query.lower()
+
+        # ── Dynamic boost terms ─────────────────────────────────────────────
+        # Static domain boosts (always active when query matches)
+        static_boost_terms = {
+            "coffee", "culture", "landscape", "colombia", "agroecology",
+            "medical", "cancer", "tumor", "clinical", "diagnosis",
+            "cybersecurity", "malware", "intrusion", "network", "iot",
+            "nlp", "language", "transformer", "bert", "llm",
+            "federated", "privacy", "blockchain",
+        }
+        # Also boost on significant query tokens (≥5 chars, not already boosted)
+        dynamic_boost = {t for t in query_tokens if len(t) >= 5}
+        active_boost_terms = (
+            {term for term in static_boost_terms if term in query_lower}
+            | dynamic_boost
+        )
+
+        paper_counts: Counter = Counter()
         scored_chunks = []
-        
-        # Score each chunk
+
         for chunk in chunks:
             title = chunk.get("metadata", {}).get("title", "")
             paper_counts[title] += 1
-            
+
             semantic = self._semantic_score(chunk)
             lexical = self._lexical_overlap_score(chunk, query_tokens)
             section = self._section_relevance_score(chunk, query)
             diversity_penalty = self._diversity_penalty(chunk, paper_counts)
-            
-            # Combined score
+
+            # Keyword boost: text match +0.15, title match +0.25 per term
+            boost = 0.0
+            if active_boost_terms:
+                chunk_text_lower = chunk.get("text", "").lower()
+                chunk_title_lower = title.lower()
+                for term in active_boost_terms:
+                    if term in chunk_text_lower:
+                        boost += 0.15
+                    if term in chunk_title_lower:
+                        boost += 0.25
+            boost = min(boost, 0.6)  # cap boost to avoid overwhelming other signals
+
             total_score = (
-                weights["semantic"] * semantic +
-                weights["lexical"] * lexical +
-                weights["section"] * section -
-                weights["diversity"] * diversity_penalty
+                weights["semantic"] * semantic
+                + weights["lexical"] * lexical
+                + weights["section"] * section
+                + boost
+                - weights["diversity"] * diversity_penalty
             )
-            
-            # Classify context role (annotation as part of reranking)
+
             context_role = self._classify_context_role(chunk, query)
-            
+
             scored_chunks.append({
                 "chunk": chunk,
                 "score": total_score,
@@ -254,30 +274,43 @@ class RerankerService:
                     "semantic": semantic,
                     "lexical": lexical,
                     "section": section,
-                    "diversity_penalty": diversity_penalty
-                }
+                    "boost": boost,
+                    "diversity_penalty": diversity_penalty,
+                },
             })
-        
-        # Sort by score (descending) - THIS IS THE ONLY REORDERING
+
+        # Sort descending
         scored_chunks.sort(key=lambda x: x["score"], reverse=True)
-        
-        # Return top-k chunks with context_role attached
+
+        # ── Apply hard minimum score threshold ─────────────────────────────
+        # If query has strong boost terms, relax threshold slightly so
+        # on-topic chunks with low semantic distance still pass.
+        effective_min_score = min_score
+        if active_boost_terms & static_boost_terms:  # domain query detected
+            effective_min_score = max(0.15, min_score - 0.05)
+
         top_chunks = []
         for item in scored_chunks[:top_k]:
+            if item["score"] < effective_min_score:
+                logger.debug(
+                    f"Dropping chunk (score {item['score']:.3f} < {effective_min_score:.3f}): "
+                    f"{item['chunk'].get('metadata', {}).get('title', '')[:60]}"
+                )
+                continue
             chunk = item["chunk"].copy()
-            # Attach context_role to chunk metadata for use by context_shaper
             if "metadata" not in chunk:
                 chunk["metadata"] = {}
             chunk["metadata"]["context_role"] = item["context_role"]
             chunk["rerank_score"] = item["score"]
             top_chunks.append(chunk)
-        
+
         logger.info(
-            f"Reranked {len(chunks)} chunks → {len(top_chunks)} top chunks. "
-            f"Top score: {scored_chunks[0]['score']:.3f}, "
-            f"Bottom score: {scored_chunks[top_k-1]['score']:.3f if top_k > 0 else 0:.3f}"
+            f"Reranked {len(chunks)} → {len(top_chunks)} chunks above score "
+            f"{effective_min_score:.2f}. "
+            f"Top: {scored_chunks[0]['score']:.3f} "
+            f"Dropped: {top_k - len(top_chunks)} low-relevance chunks"
         )
-        
+
         return top_chunks
 
     def rerank_with_scores(
@@ -307,6 +340,9 @@ class RerankerService:
         paper_counts = Counter()
         scored_chunks = []
         
+        boost_terms = {"coffee", "culture", "landscape", "colombia", "agroecology"}
+        active_boost_terms = {term for term in boost_terms if term in query.lower()}
+        
         for chunk in chunks:
             title = chunk.get("metadata", {}).get("title", "")
             paper_counts[title] += 1
@@ -316,10 +352,21 @@ class RerankerService:
             section = self._section_relevance_score(chunk, query)
             diversity_penalty = self._diversity_penalty(chunk, paper_counts)
             
+            boost = 0.0
+            if active_boost_terms:
+                chunk_text_lower = chunk.get("text", "").lower()
+                chunk_title_lower = title.lower()
+                for term in active_boost_terms:
+                    if term in chunk_text_lower:
+                        boost += 0.15
+                    if term in chunk_title_lower:
+                        boost += 0.25
+            
             total_score = (
                 weights["semantic"] * semantic +
                 weights["lexical"] * lexical +
-                weights["section"] * section -
+                weights["section"] * section +
+                boost -
                 weights["diversity"] * diversity_penalty
             )
             
@@ -330,6 +377,7 @@ class RerankerService:
                 "semantic": semantic,
                 "lexical": lexical,
                 "section": section,
+                "boost": boost,
                 "diversity_penalty": diversity_penalty
             }
             
