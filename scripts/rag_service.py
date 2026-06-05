@@ -36,6 +36,8 @@ from rag_context import (
     IRRELEVANT_REFUSAL,
     NOT_IN_LIBRARY_REFUSAL,
     TABLE_TRUNCATION_REFUSAL,
+    extract_author_search_phrase,
+    resolve_author_from_library,
 )
 from rag_strict import (
     resolve_query_scope,
@@ -49,6 +51,8 @@ from rag_strict import (
     COMPARE_NEEDS_PICKER_MSG,
     apply_scope_resilience,
     answer_keyword_discovery_query,
+    verify_author_exists_in_library,
+    is_broad_author_query,
 )
 
 # Maximum papers processed in one batched extraction table (one LLM call per paper).
@@ -660,65 +664,38 @@ class RAGService:
 
         inventory_metadata = inventory_for_scope(papers_metadata, scope)
 
-        # ── Author existence check — BEFORE retrieval/LLM ─────────────────────
-        # If query asks about a specific author, check if they exist in library
-        # If not, refuse immediately without calling LLM
-        # IMPORTANT: Check against FULL library, not just scoped inventory
-        all_authors = set()
-        for paper_meta in papers_metadata.values():
-            authors = paper_meta.get("authors", "")
-            for name in authors.split():
-                all_authors.add(name.lower().strip(",."))
-        
-        # Extract author name from query using expanded regex patterns
-        import re
-        author_patterns = [
-            r"(?:written by|authored by|paper by|paper of)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
-            r"(?:which\s+(?:paper|article)\s+(?:in\s+my\s+library\s+)?)?(?:was|is)?\s*(?:written|authored)\s+by\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
-            r"(?:who\s+wrote|who\s+authored)\s+(?:the\s+)?(?:paper|article)\s+(?:by\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
-            r"(?:papers?|articles?)\s+by\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
-        ]
-        author_match = None
-        for pattern in author_patterns:
-            match = re.search(pattern, query, re.IGNORECASE)
-            if match:
-                author_match = match
-                break
-        
-        if author_match:
-            # Find which capture group matched (group 1 or group 2 depending on pattern)
-            author_name = None
-            for i in range(1, len(author_match.groups()) + 1):
-                if author_match.group(i):
-                    author_name = author_match.group(i).strip()
-                    break
+        # ── Author existence check & Broad author query handling — BEFORE retrieval/LLM ──
+        if query_expects_named_author(query):
+            author_phrase = extract_author_search_phrase(query)
+            if not author_phrase:
+                author_phrase, _ = resolve_author_from_library(query, papers_metadata)
             
-            if not author_name:
-                author_name = author_match.group(1).strip() if author_match.group(1) else author_match.group(2).strip()
-            
-            # Normalize author name for comparison
-            author_normalized = author_name.lower().replace(".", "").replace(",", "")
-            
-            # Check if this author exists in library using more robust matching
-            author_exists = False
-            for lib_author in all_authors:
-                lib_author_normalized = lib_author.replace(".", "").replace(",", "")
-                # Check for substring match in either direction
-                if author_normalized in lib_author_normalized or lib_author_normalized in author_normalized:
-                    # Ensure it's not just a partial match (e.g., "ada" matching "adam")
-                    if len(author_normalized) >= 4 or len(lib_author_normalized) >= 4:
-                        author_exists = True
-                        break
-            
-            if not author_exists:
-                logger.warning(f"Author '{author_name}' not in library, refusing before LLM")
-                return {
-                    "query": query,
-                    "answer": f"No papers authored by {author_name} were found in the ingested library.",
-                    "sources": [],
-                    "success": False,
-                    "error": f"Author not in library: {author_name}",
-                }
+            if author_phrase:
+                author_exists = verify_author_exists_in_library(author_phrase, papers_metadata)
+                if not author_exists:
+                    # Double-check
+                    _, resolved_papers = resolve_author_from_library(query, papers_metadata)
+                    if not resolved_papers:
+                        logger.warning(f"Author '{author_phrase}' not in library, refusing before LLM")
+                        return {
+                            "query": query,
+                            "answer": f"No papers authored by {author_phrase} were found in the ingested library.",
+                            "sources": [],
+                            "success": False,
+                            "error": f"Author not in library: {author_phrase}",
+                        }
+                
+                # Check if it's a broad query when they have multiple papers
+                if author_exists:
+                    author_display, resolved_papers = resolve_author_from_library(query, papers_metadata)
+                    if len(resolved_papers) > 3 and is_broad_author_query(query, author_phrase):
+                        logger.warning(f"Broad query on author '{author_phrase}' with {len(resolved_papers)} papers, refusing before LLM")
+                        return {
+                            "query": query,
+                            "answer": f"{author_display} is an author on {len(resolved_papers)} papers in your library. Please specify which paper or topic.",
+                            "sources": [],
+                            "success": True,
+                        }
 
         if query_mode == "ambiguous":
             return {
@@ -808,7 +785,7 @@ class RAGService:
                 
                 # Quality threshold: if coherence is too low, refuse
                 quality_threshold = 0.4
-                if coherence_metrics["overall_coherence"] < quality_threshold and not locked_scope:
+                if coherence_metrics["overall_coherence"] < quality_threshold and not scope.is_locked:
                     logger.warning(
                         f"Context coherence too low: {coherence_metrics['overall_coherence']:.2f} "
                         f"(threshold: {quality_threshold})"
@@ -989,7 +966,7 @@ class RAGService:
             
             # Quality threshold: if quality is too low, refuse or retry
             quality_threshold = 0.3
-            if quality_metrics["quality_score"] < quality_threshold and not locked_scope:
+            if quality_metrics["quality_score"] < quality_threshold and not scope.is_locked:
                 logger.warning(
                     f"Context quality too low: {quality_metrics['quality_score']:.2f} "
                     f"(threshold: {quality_threshold})"
@@ -1183,17 +1160,23 @@ class RAGService:
                             "error": "Answer failed scope verification.",
                         }
                 
-                # ── Hallucination detection: Strip unverified citations ─────────────
-                # Remove citations that don't match retrieved chunk metadata to prevent
-                # the system from inventing papers that were never retrieved
+                # ── Hallucination detection: Strip unverified citations and claims ─────────────
+                # Remove citations and claims that don't match retrieved chunk metadata
                 try:
                     from citation_verifier import CitationVerifier
                     verifier = CitationVerifier()
+                    # 1. Strip unverified citations
                     answer = verifier.strip_unverified_citations(answer, chunks)
+                    # 2. Verify and remove unsupported claim sentences
+                    verification = verifier.verify_answer(answer, chunks)
+                    answer = verifier.regenerate_or_remove_unsupported(answer, verification, action="remove")
+                    # If answer is now empty, fallback to refusal
+                    if not answer.strip():
+                        answer = NOT_IN_LIBRARY_REFUSAL
                 except ImportError:
-                    logger.warning("Citation verifier not available, skipping citation check")
+                    logger.warning("Citation verifier not available, skipping citation and claim check")
                 except Exception as e:
-                    logger.warning(f"Citation verification failed: {e}")
+                    logger.warning(f"Citation and claim verification failed: {e}")
 
                 # ── External knowledge detection DISABLED ───────────────────────────────
                 # Entity extraction was too aggressive and blocked legitimate technical terms

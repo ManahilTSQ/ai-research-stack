@@ -90,6 +90,9 @@ _AUTHOR_PHRASE_PATTERNS = [
     re.compile(r"papers?\s+with\s+(.+?)(?:\s+on\b|[\.,;]|$)", re.I),
     re.compile(r"extract\s+from\s+the\s+papers?\s+with\s+(.+?)(?:\s+on\b|[\.,;]|$)", re.I),
     re.compile(r"(.+?)(?:'s|\u2019s)\s+(?:articles?|papers?|works?)\s+on\b", re.I),
+    # Support 'written by' and 'authored by' phrases
+    re.compile(r"(?:papers?|articles?|works?|publications?)?\s*(?:written|authored)\s+by\s+(.+?)(?:\s+on\b|[\.,;]|$)", re.I),
+    re.compile(r"(?:who\s+wrote|who\s+authored)\s+(?:the\s+)?(?:paper|article|work)?\s*(?:by\s+)?(.+?)(?:\s*[\.,;\?]|$)", re.I),
     # Synthesis / stance questions: "thoughts of Jhanjhi", "contributions by X"
     re.compile(
         r"(?:thoughts?|views?|opinions?|ideas?|perspective|work|research|"
@@ -237,6 +240,8 @@ _AUTHOR_SCOPED_PATTERNS = [
     r"(?:thoughts?|views?|opinions?|contributions?|perspective)\s+(?:of|by)\s+",
     r"main\s+contributions?\s+(?:of|by)\s+",
     r"what\s+are\s+(?:the\s+)?(?:his|her|their)\s+main\s+contributions",
+    r"(?:written|authored)\s+by\s+",
+    r"who\s+(?:wrote|authored)\s+",
 ]
 
 TABLE_TRUNCATION_RE = re.compile(
@@ -1062,7 +1067,7 @@ def author_field_contains_token(authors: str, token: str) -> bool:
     Prevents false matches like hassan inside Riskhan.
     """
     token = (token or "").lower()
-    if len(token) < 3:
+    if len(token) < 2:  # Lowered from 3 to 2 to support short surnames like Li, Ng
         return False
     for part in re.split(r"[,;&]| and ", (authors or "").lower()):
         words = _author_part_words(part)

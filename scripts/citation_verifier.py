@@ -46,9 +46,24 @@ class CitationVerifier:
         Returns:
             Set of key entities (words).
         """
-        # Extract significant words (nouns, numbers, technical terms)
+        # Define standard English and academic stopwords to ignore
+        stopwords = {
+            "that", "this", "these", "those", "have", "has", "had", "having",
+            "with", "about", "against", "between", "into", "through", "during",
+            "before", "after", "above", "below", "from", "down", "then", "once",
+            "here", "there", "when", "where", "why", "how", "all", "any", "both",
+            "each", "few", "more", "most", "other", "some", "such", "only", "own",
+            "same", "so", "than", "too", "very", "can", "will", "just", "should", 
+            "now", "their", "theirs", "them", "themselves", "they", "were", "what", 
+            "which", "who", "whom", "been", "being", "does", "doing", "would", 
+            "could", "should", "brought", "also", "using", "used", "uses", "show", 
+            "shows", "shown", "find", "finds", "found", "based", "presents", 
+            "present", "study", "paper", "article", "author", "authors", "many",
+            "from", "into", "onto", "upon", "within", "without", "throughout"
+        }
+        # Extract significant words (nouns, numbers, technical terms) of 4+ characters
         words = re.findall(r'\b[a-z]{4,}\b|\d+(?:\.\d+)?', claim.lower())
-        return set(words)
+        return {w for w in words if w not in stopwords}
 
     def verify_claim_against_chunks(
         self,
@@ -88,8 +103,12 @@ class CitationVerifier:
             chunk_words = set(re.findall(r'\b[a-z]{4,}\b|\d+(?:\.\d+)?', chunk_text))
             overlap = claim_entities & chunk_words
             
-            # If significant overlap (at least 2 entities or 50% of claim entities)
-            if len(overlap) >= 2 or len(overlap) >= len(claim_entities) * 0.5:
+            # Overlap criteria:
+            # For short claims (1-2 entities): must match all entities
+            # For medium/long claims: must match at least 3 entities OR at least 40% of the entities (with a minimum of 2)
+            min_overlap = len(claim_entities) if len(claim_entities) <= 2 else max(2, min(3, int(len(claim_entities) * 0.4)))
+            
+            if len(overlap) >= min_overlap:
                 supporting_chunks.append(idx)
                 # Extract relevant snippet
                 snippet = self._extract_relevant_snippet(claim, chunk_text)
@@ -379,13 +398,8 @@ class CitationVerifier:
     ) -> str:
         """
         Remove citations that don't match retrieved chunk metadata to prevent hallucination.
-
-        Args:
-            answer: The LLM-generated answer.
-            chunks: Retrieved chunks.
-
-        Returns:
-            Answer with unverified citations removed.
+        Also cleans up broken parentheticals and ensures whole parentheticals are stripped
+        if any of their cited sources are unverified.
         """
         # Build set of valid (author, year) pairs from chunks
         valid_pairs = set()
@@ -394,50 +408,59 @@ class CitationVerifier:
             authors = meta.get("authors", "")
             year = str(meta.get("year", ""))
             
-            # Extract first author's last name
-            author_parts = authors.split()
-            if author_parts:
-                first_author = author_parts[0].split()[-1]
-                valid_pairs.add((first_author.lower(), year))
-        
+            # Extract author name segments and get their last names/surnames
+            for part in re.split(r"[,;&]| and ", authors.lower()):
+                words = [w for w in re.findall(r"[a-z\u00C0-\u017F]+", part) if w not in {"et", "al"}]
+                if words:
+                    valid_pairs.add((words[-1], year))
+                    
         logger.info(f"Valid citation pairs from chunks: {valid_pairs}")
         
-        # Extract all citation patterns - more flexible pattern
-        # Match both (Author, 2017) and (Author (2017)) formats
-        citation_pattern = r'\(?([A-Z][a-zA-Z]+(?:\s+et\s+al\.)?(?:,\s*[A-Z][a-zA-Z]+)*)\s*\(?,\s*(\d{4})\)?'
-        citations = re.findall(citation_pattern, answer)
+        # Find all parentheticals in the answer
+        parentheticals = re.findall(r'\(([^()]+)\)', answer)
         
-        logger.info(f"Citations found in answer: {citations}")
-        
-        if not citations:
-            return answer
-        
-        # Remove unverified citations
         modified_answer = answer
-        removed_count = 0
-
-        for author, year in citations:
-            author_lower = author.lower()
-            logger.info(f"Checking citation: ({author}, {year}) -> author={author_lower}, year={year}")
-
-            if (author_lower, year) not in valid_pairs:
-                # Remove this citation from the answer (multiple formats)
-                citation_variants = [
-                    f"({author}, {year})",
-                    f"({author} ({year}))",
-                    f"{author} ({year})",
-                    f"{author}, {year}"
-                ]
-                for variant in citation_variants:
-                    if variant in modified_answer:
-                        modified_answer = modified_answer.replace(variant, "")
-                        removed_count += 1
-                        logger.warning(f"Removed unverified citation: {variant}")
         
-        if removed_count > 0:
-            logger.warning(f"Removed {removed_count} unverified citations from answer")
-            # Clean up double spaces but preserve newlines
-            modified_answer = re.sub(r'[ \t]+', ' ', modified_answer)
-            modified_answer = re.sub(r'\s+([.,;:])', r'\1', modified_answer)
+        for content in parentheticals:
+            # Check if this parenthetical looks like a citation (contains a 4-digit year)
+            year_match = re.search(r'\b(19\d{2}|20\d{2})\b', content)
+            if not year_match:
+                continue
+                
+            year = year_match.group(1)
+            
+            # Extract potential author surnames: capitalized words
+            # (ignore common citation markers like 'et', 'al', 'and', '&', etc.)
+            author_candidates = re.findall(r'\b([A-Z][a-zA-Z\u00C0-\u017F\-’\']+)\b', content)
+            author_candidates = [a.lower() for a in author_candidates if a.lower() not in {"et", "al", "and"}]
+            
+            if not author_candidates:
+                continue
+                
+            # Verify if all extracted author surnames matched with the year in valid_pairs
+            citation_valid = True
+            for author in author_candidates:
+                if (author, year) not in valid_pairs:
+                    # Check if surname is present in the chunk text to be safe
+                    surname_in_text = False
+                    for chunk in chunks:
+                        if author in chunk.get("text", "").lower():
+                            surname_in_text = True
+                            break
+                    if not surname_in_text:
+                        citation_valid = False
+                        logger.warning(f"Unverified citation author: {author} with year {year}")
+                        break
+            
+            if not citation_valid:
+                # Remove the entire parenthetical citation
+                full_citation = f"({content})"
+                modified_answer = modified_answer.replace(full_citation, "")
+                logger.warning(f"Removed unverified parenthetical citation: {full_citation}")
+                
+        # Clean up any leftover empty parentheticals, double spaces, or leading/trailing punctuation spacing
+        modified_answer = re.sub(r'\(\s*\)', '', modified_answer)
+        modified_answer = re.sub(r'[ \t]+', ' ', modified_answer)
+        modified_answer = re.sub(r'\s+([.,;:])', r'\1', modified_answer)
         
         return modified_answer

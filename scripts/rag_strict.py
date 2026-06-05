@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import json
 import re
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 from config import settings
+
+logger = logging.getLogger(__name__)
 from rag_context import (
     NOT_IN_LIBRARY_REFUSAL,
     IRRELEVANT_REFUSAL,
@@ -36,6 +39,7 @@ from rag_context import (
     query_has_library_topic_cue,
     extract_multi_author_phrases,
     resolve_coauthored_papers,
+    author_field_contains_token,
 )
 
 _COMPARE_QUERY_RE = re.compile(r"\bcompare\b", re.I)
@@ -700,41 +704,19 @@ def answer_catalog_metadata_query(query: str, papers_metadata: dict) -> str | No
     q = (query or "").lower()
 
     # ── Author existence check — refuse queries about authors not in library ──
-    # Match multiple author query patterns
-    author_patterns = [
-        r"(?:written by|authored by|paper by|paper of)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
-        r"(?:who wrote|who authored)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
-        r"(?:papers? by|articles? by|papers? from|articles? from)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
-        r"(?:which paper was written by|which article was written by)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
-    ]
-    author_match = None
-    for pattern in author_patterns:
-        match = re.search(pattern, query, re.IGNORECASE)
-        if match:
-            author_match = match
-            break
-    if author_match:
-        author_name = author_match.group(1).strip()
-        # Build set of all authors from library
-        all_authors = set()
-        for paper_meta in papers_metadata.values():
-            authors = paper_meta.get("authors", "")
-            for name in authors.split():
-                all_authors.add(name.lower().strip(",."))
-        
-        # Normalize author name for comparison
-        author_normalized = author_name.lower().replace(".", "").replace(",", "")
-        
-        # Check if this author exists in library
-        author_exists = False
-        for lib_author in all_authors:
-            lib_author_normalized = lib_author.replace(".", "").replace(",", "")
-            if author_normalized in lib_author_normalized or lib_author_normalized in author_normalized:
-                author_exists = True
-                break
-        
-        if not author_exists:
-            return f"No papers authored by {author_name} were found in the ingested library."
+    if query_expects_named_author(query):
+        author_phrase = extract_author_search_phrase(query)
+        if not author_phrase:
+            # Fallback
+            author_phrase, _ = resolve_author_from_library(query, papers_metadata)
+            
+        if author_phrase:
+            author_exists = verify_author_exists_in_library(author_phrase, papers_metadata)
+            if not author_exists:
+                # Double-check
+                _, resolved_papers = resolve_author_from_library(query, papers_metadata)
+                if not resolved_papers:
+                    return f"No papers authored by {author_phrase} were found in the ingested library."
 
     year_range = _extract_year_range(query)
     if year_range:
@@ -885,6 +867,24 @@ def apply_verification_or_refuse(
     either in the retrieved chunks or in the resolved scope. This prevents
     hallucinated citations like citing PyTorch when asking about Ada Lovelace.
     """
+    if not answer or not answer.strip():
+        return answer, True
+
+    # ── Verify and clean up citations/claims using CitationVerifier ──
+    try:
+        from citation_verifier import CitationVerifier
+        verifier = CitationVerifier()
+        # 1. Strip unverified citations
+        answer = verifier.strip_unverified_citations(answer, chunks)
+        # 2. Verify and remove unsupported claim sentences
+        verification = verifier.verify_answer(answer, chunks)
+        answer = verifier.regenerate_or_remove_unsupported(answer, verification, action="remove")
+        if not answer.strip():
+            return NOT_IN_LIBRARY_REFUSAL, False
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Citation/claim verification failed in strict verification: {e}")
+
     # ── Bypass verification for broad/global queries ──────────────────────
     # When scope is fully open (no author/paper/topic/filter lock), the LLM
     # is given the complete library inventory and may legitimately cite any
@@ -925,3 +925,55 @@ def apply_verification_or_refuse(
         return answer, True
 
     return answer, True
+
+
+def verify_author_exists_in_library(author_name: str, papers_metadata: dict) -> bool:
+    """
+    Check if a named author exists in the library using whole-word matching
+    on normalized author fields. This prevents false positive substring matches
+    (e.g., 'Ada' matching 'Adam', or 'E' matching 'Elon').
+    """
+    if not author_name or not papers_metadata:
+        return False
+        
+    # Extract name tokens (ignore initials / short noise)
+    tokens = [t for t in re.findall(r"[a-zA-Z\u00C0-\u017F]+", author_name.lower()) if len(t) >= 3]
+    if not tokens:
+        tokens = [t for t in re.findall(r"[a-zA-Z\u00C0-\u017F]+", author_name.lower()) if len(t) >= 2]
+    if not tokens:
+        return False
+        
+    # Check if any paper contains the author tokens as whole words
+    for paper_meta in papers_metadata.values():
+        authors_field = paper_meta.get("authors", "")
+        # Check each token in the authors field
+        for token in tokens:
+            if author_field_contains_token(authors_field, token):
+                return True
+                
+    return False
+
+
+def is_broad_author_query(query: str, author_phrase: str) -> bool:
+    """
+    True if the query is a broad synthesis or summary request on an author
+    without any specified topic keywords.
+    """
+    from rag_context import _significant_query_tokens, author_phrase_tokens
+    
+    sig_tokens = _significant_query_tokens(query)
+    author_tokens = set(author_phrase_tokens(author_phrase))
+    
+    # Filter out author tokens from query significant tokens
+    topic_tokens = [t for t in sig_tokens if t not in author_tokens]
+    
+    generic_qa_words = {
+        "say", "says", "said", "write", "wrote", "written", "author", "authored",
+        "work", "research", "paper", "papers", "article", "articles", "contribution",
+        "contributions", "view", "views", "opinion", "opinions", "thought", "thoughts",
+        "perspective", "perspectives", "find", "finding", "findings", "publish",
+        "published", "discuss", "discusses", "discussed", "about", "content"
+    }
+    
+    topic_tokens = [t for t in topic_tokens if t not in generic_qa_words]
+    return len(topic_tokens) == 0
