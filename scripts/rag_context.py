@@ -252,6 +252,7 @@ _TOPIC_PROFILES: list[dict[str, Any]] = [
             r"coffee\s+landscape",
             r"coffee\s+communit",
             r"agroecology\s+coffee",
+            r"\bcoffee\s+(?:related\s+)?papers?\b",
         ],
         "paper_markers": [
             "coffee cultural landscape", "colombian coffee", "coffee landscape",
