@@ -182,7 +182,7 @@ class RerankerService:
         query: str,
         top_k: int = 8,
         weights: dict[str, float] | None = None,
-        min_score: float = 0.40,
+        min_score: float = 0.15,
     ) -> list[dict[str, Any]]:
         """
         Rerank chunks using multi-signal scoring.

@@ -92,7 +92,7 @@ class Settings:
     # 0.85 → only ~57% similarity required (too loose, lets off-topic chunks through)
     # 0.72 → ~64% similarity required (tighter, blocks weak semantic matches)
     # This is the FIRST line of defense before the reranker.
-    RAG_MAX_DISTANCE: float = float(os.getenv("RAG_MAX_DISTANCE", "0.72"))
+    RAG_MAX_DISTANCE: float = float(os.getenv("RAG_MAX_DISTANCE", "0.65"))
 
     # Adaptive thresholds depending on the query type:
     # Aggregation queries ("what do all papers say") require higher precision (lower distance threshold).

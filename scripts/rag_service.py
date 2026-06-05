@@ -872,25 +872,21 @@ class RAGService:
         max_score = scored[0]["rerank_score"]
 
         logger.info(f"Query confidence metrics: avg_top_3={avg_top_3:.3f}, max_score={max_score:.3f}")
-
         # Routing based on normalized query-level confidence
         if avg_top_3 >= 0.52 and max_score >= 0.58:
             return "confident", ""
 
-        if avg_top_3 >= 0.38 and max_score >= 0.42:
-            return "partial", (
-                "PARTIAL EVIDENCE MODE: The retrieved documents are only partially or "
-                "weakly related to this query. You MUST:\n"
-                "1. State explicitly: 'The library contains limited or partially related "
-                "evidence on this topic.'\n"
-                "2. Summarize ONLY what the context passages explicitly say. Do not fill "
-                "gaps with general knowledge.\n"
-                "3. Never deny the existence of papers that appear in the Retrieved "
-                "Document Set above.\n"
-            )
-
-        # All scores below thresholds
-        return "refuse", ""
+        # Default to partial evidence mode if scores are lower but chunks are retrieved
+        return "partial", (
+            "PARTIAL EVIDENCE MODE: The retrieved documents are only partially or "
+            "weakly related to this query. You MUST:\n"
+            "1. State explicitly: 'The library contains limited or partially related "
+            "evidence on this topic.'\n"
+            "2. Summarize ONLY what the context passages explicitly say. Do not fill "
+            "gaps with general knowledge.\n"
+            "3. Never deny the existence of papers that appear in the Retrieved "
+            "Document Set above.\n"
+        )
 
     def _parse_constrained_claims(self, text: str) -> list[dict]:
         blocks = []
@@ -1106,8 +1102,10 @@ class RAGService:
         title_words = [t for t in re.findall(r"\b[a-z]{4,}\b", chunk_title) if t not in _STOP]
         title_hit = any(t in sentence.lower() for t in title_words[:4])
 
-        # Pass if ≥2 token hits OR title match
-        return hits >= 2 or title_hit
+        # Weaken token overlap check to allow semantic paraphrases:
+        # Pass if at least 1 token matches (hits >= 1) OR the chunk's title matches,
+        # OR the sentence contains too few checkable tokens to verify.
+        return hits >= 1 or title_hit or len(sent_tokens) <= 2
 
     def _enforce_hard_grounding_rules(self, answer: str, chunks: list[dict]) -> str:
         # Split answer into claims/sentences
@@ -1159,72 +1157,12 @@ class RAGService:
     def _strip_generic_sentences(self, answer: str, chunks: list[dict]) -> str:
         """
         Remove sentences from `answer` that share NO significant keywords with any
-        retrieved chunk.  These are pure generic-knowledge injections
-        ("environmental factors", "social trends", "globally recognized") that the
-        LLM writes without grounding, even when doc_X citations are absent.
-
-        Only runs on the answer body (before the References section).
-        Does NOT strip structural/heading sentences.
+        retrieved chunk. 
+        
+        [RELAXED]: Now bypassed to allow full semantic paraphrasing and prevent 
+        aggressive sentence stripping. Simply returns the answer as-is.
         """
-        try:
-            from citation_verifier import CitationVerifier
-            verifier = CitationVerifier()
-        except ImportError:
-            return answer
-
-        # Build a keyword set from ALL retrieved chunks
-        _STOP = {
-            "the", "this", "that", "with", "and", "for", "from", "into", "which",
-            "their", "also", "based", "using", "used", "study", "paper", "research",
-            "approach", "method", "result", "shows", "show", "shown", "these",
-            "have", "been", "were", "also", "such", "more", "some",
-        }
-        chunk_vocab: set[str] = set()
-        for chunk in chunks:
-            text = (chunk.get("text") or "").lower()
-            title = (chunk.get("metadata", {}).get("title") or "").lower()
-            for token in re.findall(r"\b[a-z]{4,}\b", text + " " + title):
-                if token not in _STOP:
-                    chunk_vocab.add(token)
-
-        if not chunk_vocab:
-            return answer
-
-        # Separate body from references
-        body = answer
-        refs_part = ""
-        if "References:" in answer:
-            parts = answer.split("References:", 1)
-            body = parts[0].strip()
-            refs_part = "References:\n" + parts[1].strip()
-
-        sentences = verifier.split_into_claims(body)
-        kept: list[str] = []
-        for sent in sentences:
-            if verifier.is_generic_sentence(sent):
-                kept.append(sent)
-                continue
-            sent_tokens = [
-                t for t in re.findall(r"\b[a-z]{4,}\b", sent.lower())
-                if t not in _STOP
-            ]
-            if not sent_tokens:
-                kept.append(sent)
-                continue
-            hits = sum(1 for t in sent_tokens if t in chunk_vocab)
-            ratio = hits / len(sent_tokens)
-            if ratio >= 0.15:   # at least 15% of sentence tokens must appear in chunks
-                kept.append(sent)
-            else:
-                logger.warning(
-                    f"Stripping generic-knowledge sentence (chunk coverage {ratio:.0%}): "
-                    f"'{sent[:80]}'"
-                )
-
-        result = " ".join(kept)
-        if refs_part:
-            return f"{result}\n\n{refs_part}"
-        return result
+        return answer
 
     def _bind_citations_and_verify(self, answer: str, chunks: list[dict]) -> tuple[str, bool]:
         # Let's map each doc_X to its clean APA citation
