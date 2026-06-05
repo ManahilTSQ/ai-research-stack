@@ -690,46 +690,30 @@ class RAGService:
         inventory_metadata = inventory_for_scope(papers_metadata, scope)
 
         # ── Author existence check & Broad author query handling — BEFORE retrieval/LLM ──
-        # IMPORTANT: Only apply author existence check if the query is actually about an author,
-        # NOT if it's about a paper title that might be confused with an author name
-        if query_expects_named_author(query) and scope.entity_kind != "paper":
-            # First check if the query might be about a paper title instead of an author
-            # This prevents false positives like "Deep Learning with Differential Privacy" being treated as an author
-            paper_title_matches = fuzzy_match_paper_titles(query, papers_metadata)
-            if paper_title_matches:
-                # Query is about a paper title, skip author existence check
-                logger.info(f"Query matches paper title '{paper_title_matches[0]}', skipping author existence check")
-            else:
-                author_phrase = extract_author_search_phrase(query)
-                if not author_phrase:
-                    author_phrase, _ = resolve_author_from_library(query, papers_metadata)
+        if scope.entity_kind == "author":
+            author_phrase = scope.author_phrase
+            if author_phrase:
+                author_exists = verify_author_exists_in_library(author_phrase, papers_metadata)
+                if not author_exists:
+                    logger.warning(f"Author '{author_phrase}' not in library, refusing before LLM")
+                    return {
+                        "query": query,
+                        "answer": f"No papers authored by {author_phrase} were found in the ingested library.",
+                        "sources": [],
+                        "success": False,
+                        "error": f"Author not in library: {author_phrase}",
+                    }
                 
-                if author_phrase:
-                    author_exists = verify_author_exists_in_library(author_phrase, papers_metadata)
-                    if not author_exists:
-                        # Double-check
-                        _, resolved_papers = resolve_author_from_library(query, papers_metadata)
-                        if not resolved_papers:
-                            logger.warning(f"Author '{author_phrase}' not in library, refusing before LLM")
-                            return {
-                                "query": query,
-                                "answer": f"No papers authored by {author_phrase} were found in the ingested library.",
-                                "sources": [],
-                                "success": False,
-                                "error": f"Author not in library: {author_phrase}",
-                            }
-                    
-                    # Check if it's a broad query when they have multiple papers
-                    if author_exists:
-                        author_display, resolved_papers = resolve_author_from_library(query, papers_metadata)
-                        if len(resolved_papers) > 3 and is_broad_author_query(query, author_phrase):
-                            logger.warning(f"Broad query on author '{author_phrase}' with {len(resolved_papers)} papers, refusing before LLM")
-                            return {
-                                "query": query,
-                                "answer": f"{author_display} is an author on {len(resolved_papers)} papers in your library. Please specify which paper or topic.",
-                                "sources": [],
-                                "success": True,
-                            }
+                # Check if it's a broad query when they have multiple papers
+                author_display, resolved_papers = resolve_author_from_library(query, papers_metadata)
+                if len(resolved_papers) > 3 and is_broad_author_query(query, author_phrase):
+                    logger.warning(f"Broad query on author '{author_phrase}' with {len(resolved_papers)} papers, refusing before LLM")
+                    return {
+                        "query": query,
+                        "answer": f"{author_display} is an author on {len(resolved_papers)} papers in your library. Please specify which paper or topic.",
+                        "sources": [],
+                        "success": True,
+                    }
 
         if query_mode == "ambiguous":
             return {
@@ -1304,26 +1288,43 @@ class RAGService:
                 try:
                     from citation_verifier import CitationVerifier
                     verifier = CitationVerifier()
+                    
+                    # Isolate references from verification
+                    answer_body = answer
+                    refs_part = ""
+                    if "References:" in answer:
+                        parts = answer.split("References:", 1)
+                        answer_body = parts[0].strip()
+                        refs_part = "References:\n" + parts[1].strip()
+                    
                     # 1. Strip unverified citations (STRICT MODE)
-                    answer_before = answer
-                    answer = verifier.strip_unverified_citations(answer, chunks)
-                    if answer != answer_before:
-                        logger.warning(f"Citation verifier stripped citations, answer changed from {len(answer_before)} to {len(answer)} chars")
+                    answer_before = answer_body
+                    answer_body = verifier.strip_unverified_citations(answer_body, chunks)
+                    if answer_body != answer_before:
+                        logger.warning(f"Citation verifier stripped citations, answer changed from {len(answer_before)} to {len(answer_body)} chars")
+                    
                     # 2. Verify and remove unsupported claim sentences
-                    verification = verifier.verify_answer(answer, chunks)
-                    answer_before = answer
-                    answer = verifier.regenerate_or_remove_unsupported(answer, verification, action="remove")
-                    if answer != answer_before:
-                        logger.warning(f"Claim verifier removed unsupported claims, answer changed from {len(answer_before)} to {len(answer)} chars")
+                    verification = verifier.verify_answer(answer_body, chunks)
+                    answer_before = answer_body
+                    answer_body = verifier.regenerate_or_remove_unsupported(answer_body, verification, action="remove")
+                    if answer_body != answer_before:
+                        logger.warning(f"Claim verifier removed unsupported claims, answer changed from {len(answer_before)} to {len(answer_body)} chars")
+                    
                     # 3. Refuse if too few claims can be grounded
                     support_ratio = verification.get("support_ratio", 1.0)
                     if support_ratio < 0.3 and not scope.is_locked:
                         logger.warning(f"Too few claims grounded ({support_ratio:.2%}), returning refusal")
                         answer = NOT_IN_LIBRARY_REFUSAL
-                    # If answer is now empty, fallback to refusal
-                    if not answer.strip():
-                        logger.warning("Answer became empty after citation/claim verification, returning refusal")
+                    # If answer body is now empty, fallback to refusal
+                    elif not answer_body.strip():
+                        logger.warning("Answer body became empty after citation/claim verification, returning refusal")
                         answer = NOT_IN_LIBRARY_REFUSAL
+                    else:
+                        # Re-append references
+                        if refs_part:
+                            answer = f"{answer_body}\n\n{refs_part}"
+                        else:
+                            answer = answer_body
                 except ImportError:
                     logger.warning("Citation verifier not available, skipping citation and claim check")
                 except Exception as e:

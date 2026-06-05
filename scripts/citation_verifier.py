@@ -244,6 +244,53 @@ class CitationVerifier:
         
         return unsupported
 
+    def is_generic_sentence(self, claim: str) -> bool:
+        """
+        True if the sentence is a generic structural, transition, or introductory statement,
+        meaning it should not be verified or removed by the citation verifier.
+        """
+        c = claim.lower().strip()
+        generic_patterns = [
+            r"^according to",
+            r"^in this paper",
+            r"^the paper",
+            r"^the authors",
+            r"^based on the",
+            r"^here are",
+            r"^several papers",
+            r"^these studies",
+            r"^the study",
+            r"^this study",
+            r"^in conclusion",
+            r"^to summarize",
+            r"^in summary",
+            r"^overall",
+            r"^the retrieved",
+            r"^after conducting",
+            r"^a query that gets",
+            r"gets to the heart",
+            r"^accordingly",
+            r"^consequently",
+            r"^therefore",
+            r"^thus",
+            r"^firstly",
+            r"^secondly",
+            r"^thirdly",
+            r"^finally",
+            r"^additionally",
+            r"^moreover",
+            r"^furthermore",
+            r"^the following",
+            r"^this survey",
+            r"^the research",
+            r"^these papers",
+            r"^to answer",
+            r"^what does",
+            r"^who wrote",
+            r"^which papers",
+        ]
+        return any(re.search(pat, c) for pat in generic_patterns)
+
     def regenerate_or_remove_unsupported(
         self,
         answer: str,
@@ -279,7 +326,7 @@ class CitationVerifier:
             similarity = claim_verif.get("similarity_score", 0.0)
             is_supported = claim_verif.get("is_supported", False)
             
-            if is_supported and similarity >= min_similarity_threshold:
+            if (is_supported and similarity >= min_similarity_threshold) or self.is_generic_sentence(claim):
                 supported_claims.append(claim)
                 if similarity >= 0.7:
                     high_similarity_claims.append(claim)
