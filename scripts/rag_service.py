@@ -414,45 +414,103 @@ class RAGService:
 
     def _build_safe_references(self, chunks: list[dict], papers_metadata: dict | None = None) -> str:
         """
-        Build a deterministic References section from retrieved chunk metadata only.
-        This prevents the model from inventing bibliography entries that were never retrieved.
+        Build a deterministic References section from retrieved chunk metadata.
+
+        Guards applied (in order):
+          1. Pages must be purely numeric ("1", "1-12", "pp. 6-7"); anything else is dropped.
+          2. Venue is capped at 80 characters (first clause only).
+          3. Authors field must not contain other paper titles.
+          4. Each unique *title* appears only once regardless of how many chunks came from it.
+          5. If the assembled reference string exceeds 350 characters the entire entry is
+             dropped — it is almost certainly corrupted / stitched metadata.
         """
-        refs = []
-        seen = set()
+        _PAGES_RE = re.compile(r"^(?:pp?\.?\s*)?\d+(?:\s*[\-\u2013\u2014,]\s*\d+)?$")
+
+        refs: list[str] = []
+        seen_titles: set[str] = set()          # deduplicate by title alone
+
         for chunk in chunks:
             meta = chunk.get("metadata", {}) or {}
-            title = (meta.get("title") or "Untitled").strip()
-            authors = (meta.get("authors") or "Unknown Authors").strip()
-            year = str(meta.get("year") or "N/A").strip()
-            doi = (meta.get("doi") or "N/A").strip()
-            venue = (meta.get("venue") or "").strip()
-            pages = (meta.get("pages") or "").strip()
-            
-            # Sanitize metadata fields to prevent stitched entries
-            authors = self._sanitize_metadata_field("authors", authors, papers_metadata)
-            venue = self._sanitize_metadata_field("venue", venue, papers_metadata)
-            pages = self._sanitize_metadata_field("pages", pages, papers_metadata)
-            
-            # Skip if metadata is too incomplete (placeholder detection)
-            if not title or title == "Untitled" or not authors or authors == "Unknown Authors" or year == "N/A":
+            title  = (meta.get("title")   or "").strip()
+            authors= (meta.get("authors") or "").strip()
+            year   = str(meta.get("year") or "N/A").strip()
+            doi    = (meta.get("doi")     or "N/A").strip()
+            venue  = (meta.get("venue")   or "").strip()
+            pages  = (meta.get("pages")   or "").strip()
+
+            # ── Guard 1: skip obviously incomplete metadata ────────────────
+            if not title or title == "Untitled":
                 continue
-            
-            key = (title.lower(), authors.lower(), year, doi.lower())
-            if key in seen:
+            if not authors or authors in ("Unknown Authors", "N/A"):
                 continue
-            seen.add(key)
-            
-            # Build full APA7 reference with venue and pages if available
-            ref_parts = [f"- {authors} ({year}). {title}"]
-            if venue:
-                ref_parts.append(venue)
+            if year == "N/A":
+                continue
+
+            # ── Guard 2: deduplicate by title ─────────────────────────────
+            title_key = title.lower()
+            if title_key in seen_titles:
+                continue
+            seen_titles.add(title_key)
+
+            # ── Guard 3: sanitize pages — numeric only, max 20 chars ──────
+            pages_clean = ""
             if pages:
-                ref_parts.append(pages)
+                pages_stripped = pages.strip()
+                if _PAGES_RE.match(pages_stripped) and len(pages_stripped) <= 20:
+                    pages_clean = pages_stripped
+                else:
+                    # Try to extract a page range from embedded text
+                    m = re.search(r"\bpp?\.?\s*(\d+(?:\s*[\-–—,]\s*\d+)?)", pages_stripped, re.I)
+                    if m and len(m.group(0)) <= 20:
+                        pages_clean = m.group(1)
+                    # otherwise discard
+
+            # ── Guard 4: sanitize venue — 80 chars, no embedded titles ────
+            venue_clean = ""
+            if venue:
+                # Take only the first clause (split on "." or ":") and cap length
+                first_clause = re.split(r"[.:]\s+", venue)[0].strip()
+                if len(first_clause) <= 80:
+                    venue_clean = first_clause
+                elif len(venue) <= 80:
+                    venue_clean = venue
+                # If papers_metadata provided, check for title contamination
+                if papers_metadata and venue_clean:
+                    v_lower = venue_clean.lower()
+                    for other_title in papers_metadata:
+                        if len(other_title) > 20 and other_title.lower() in v_lower:
+                            venue_clean = ""
+                            break
+
+            # ── Guard 5: sanitize authors — no embedded titles ────────────
+            authors_clean = authors
+            if papers_metadata:
+                a_lower = authors_clean.lower()
+                for other_title in papers_metadata:
+                    if len(other_title) > 20 and other_title.lower() in a_lower:
+                        idx = a_lower.find(other_title.lower())
+                        authors_clean = authors_clean[:idx].strip(", ")
+                        a_lower = authors_clean.lower()
+
+            # ── Assemble reference ────────────────────────────────────────
+            ref_parts = [f"- {authors_clean} ({year}). {title}"]
+            if venue_clean:
+                ref_parts.append(venue_clean)
+            if pages_clean:
+                ref_parts.append(pages_clean)
             ref = ". ".join(ref_parts) + "."
-            if doi and doi != "N/A":
+
+            if doi and doi not in ("N/A", ""):
                 clean_doi = doi.replace("https://doi.org/", "").replace("doi.org/", "").strip()
                 ref += f" https://doi.org/{clean_doi}"
+
+            # ── Guard 6: total length cap — corrupted if > 350 chars ──────
+            if len(ref) > 350:
+                logger.warning(f"Skipping corrupted reference (len={len(ref)}): {ref[:80]}...")
+                continue
+
             refs.append(ref)
+
         if not refs:
             return ""
         return "References:\n" + "\n".join(refs)
@@ -695,11 +753,51 @@ class RAGService:
             )
         return "\n\n".join(blocks)
 
+    def _verify_claim_chunk_support(self, sentence: str, doc_num: int, chunks: list[dict]) -> bool:
+        """
+        Span-level evidence check: verify that the chunk cited by doc_<doc_num> actually
+        contains keyword evidence for the claim made in `sentence`.
+
+        Returns True if at least 2 significant tokens from the sentence appear in the
+        cited chunk’s text, or if the chunk’s title appears in the sentence (title match).
+        Returns False if the citation is being used as a soft/filler reference.
+        """
+        if doc_num < 1 or doc_num > len(chunks):
+            return False
+        chunk = chunks[doc_num - 1]
+        chunk_text = (chunk.get("text") or "").lower()
+        chunk_title = (chunk.get("metadata", {}).get("title") or "").lower()
+
+        # Generic stop-words that should not count as evidence
+        _STOP = {
+            "the", "this", "that", "is", "are", "was", "were", "has", "have",
+            "had", "with", "and", "for", "from", "into", "which", "their",
+            "also", "based", "using", "used", "study", "paper", "research",
+            "approach", "method", "result", "shows", "show", "shown",
+        }
+        # Extract tokens from the sentence (4+ chars, not stop-words)
+        sent_tokens = [
+            t for t in re.findall(r"\b[a-z]{4,}\b", sentence.lower())
+            if t not in _STOP
+        ]
+        if not sent_tokens:
+            return True  # can’t verify, give benefit of doubt
+
+        # Count how many sentence tokens appear in chunk text
+        hits = sum(1 for t in sent_tokens if t in chunk_text)
+
+        # Also accept if chunk title appears directly in sentence
+        title_words = [t for t in re.findall(r"\b[a-z]{4,}\b", chunk_title) if t not in _STOP]
+        title_hit = any(t in sentence.lower() for t in title_words[:4])
+
+        # Pass if ≥2 token hits OR title match
+        return hits >= 2 or title_hit
+
     def _enforce_hard_grounding_rules(self, answer: str, chunks: list[dict]) -> str:
         # Split answer into claims/sentences
         from citation_verifier import CitationVerifier
         verifier = CitationVerifier()
-        
+
         # Separate references if present
         answer_body = answer
         refs_part = ""
@@ -707,25 +805,110 @@ class RAGService:
             parts = answer.split("References:", 1)
             answer_body = parts[0].strip()
             refs_part = "References:\n" + parts[1].strip()
-            
+
         sentences = verifier.split_into_claims(answer_body)
         kept_sentences = []
-        
+
         for sent in sentences:
+            # Always keep generic/structural sentences (headings, transitions)
             if verifier.is_generic_sentence(sent):
                 kept_sentences.append(sent)
                 continue
-                
-            # Check if sentence contains doc_\d+
-            if re.search(r"\bdoc_(\d+)\b", sent):
+
+            # Find all doc_X IDs cited in this sentence
+            doc_ids = re.findall(r"\bdoc_(\d+)\b", sent)
+
+            if not doc_ids:
+                # No citation at all — strip the sentence
+                logger.warning(f"Removing uncited sentence: '{sent[:80]}'")
+                continue
+
+            # Span-level check: at least ONE cited chunk must support this sentence
+            has_support = any(
+                self._verify_claim_chunk_support(sent, int(d), chunks)
+                for d in doc_ids
+            )
+            if has_support:
                 kept_sentences.append(sent)
             else:
-                logger.warning(f"Removing sentence because it has no chunk ID reference: '{sent}'")
-                
+                logger.warning(
+                    f"Removing sentence — cited chunks do not support claim: '{sent[:80]}'"
+                )
+
         new_body = " ".join(kept_sentences)
         if refs_part:
             return f"{new_body}\n\n{refs_part}"
         return new_body
+
+    def _strip_generic_sentences(self, answer: str, chunks: list[dict]) -> str:
+        """
+        Remove sentences from `answer` that share NO significant keywords with any
+        retrieved chunk.  These are pure generic-knowledge injections
+        ("environmental factors", "social trends", "globally recognized") that the
+        LLM writes without grounding, even when doc_X citations are absent.
+
+        Only runs on the answer body (before the References section).
+        Does NOT strip structural/heading sentences.
+        """
+        try:
+            from citation_verifier import CitationVerifier
+            verifier = CitationVerifier()
+        except ImportError:
+            return answer
+
+        # Build a keyword set from ALL retrieved chunks
+        _STOP = {
+            "the", "this", "that", "with", "and", "for", "from", "into", "which",
+            "their", "also", "based", "using", "used", "study", "paper", "research",
+            "approach", "method", "result", "shows", "show", "shown", "these",
+            "have", "been", "were", "also", "such", "more", "some",
+        }
+        chunk_vocab: set[str] = set()
+        for chunk in chunks:
+            text = (chunk.get("text") or "").lower()
+            title = (chunk.get("metadata", {}).get("title") or "").lower()
+            for token in re.findall(r"\b[a-z]{4,}\b", text + " " + title):
+                if token not in _STOP:
+                    chunk_vocab.add(token)
+
+        if not chunk_vocab:
+            return answer
+
+        # Separate body from references
+        body = answer
+        refs_part = ""
+        if "References:" in answer:
+            parts = answer.split("References:", 1)
+            body = parts[0].strip()
+            refs_part = "References:\n" + parts[1].strip()
+
+        sentences = verifier.split_into_claims(body)
+        kept: list[str] = []
+        for sent in sentences:
+            if verifier.is_generic_sentence(sent):
+                kept.append(sent)
+                continue
+            sent_tokens = [
+                t for t in re.findall(r"\b[a-z]{4,}\b", sent.lower())
+                if t not in _STOP
+            ]
+            if not sent_tokens:
+                kept.append(sent)
+                continue
+            hits = sum(1 for t in sent_tokens if t in chunk_vocab)
+            ratio = hits / len(sent_tokens)
+            if ratio >= 0.25:   # at least 25% of sentence tokens must appear in chunks
+                kept.append(sent)
+            else:
+                logger.warning(
+                    f"Stripping generic-knowledge sentence (chunk coverage {ratio:.0%}): "
+                    f"'{sent[:80]}'"
+                )
+
+        result = " ".join(kept)
+        if refs_part:
+            return f"{result}\n\n{refs_part}"
+        return result
 
     def _bind_citations_and_verify(self, answer: str, chunks: list[dict]) -> tuple[str, bool]:
         # Let's map each doc_X to its clean APA citation
@@ -737,25 +920,26 @@ class RAGService:
                     meta = chunk.get("metadata", {}) or {}
                     authors = meta.get("authors", "Unknown Authors")
                     year = meta.get("year", "N/A")
-                    
+
                     # Clean first author surname
                     first_author = "Unknown"
                     for part in re.split(r"[,;&]| and ", authors):
-                        words = [w for w in re.findall(r"[a-zA-Z\u00C0-\u017F]+", part) if w.lower() not in {"et", "al"}]
+                        words = [w for w in re.findall(r"[a-zA-Z\u00C0-\u017F]+", part)
+                                 if w.lower() not in {"et", "al"}]
                         if words:
                             first_author = words[-1]
                             break
-                    
-                    num_authors = len(re.split(r"[,;&]| and ", authors))
+
+                    author_parts = [p for p in re.split(r"[,;&]| and ", authors) if p.strip()]
+                    num_authors = len(author_parts)
                     if num_authors > 2:
                         citation = f"{first_author} et al., {year}"
                     elif num_authors == 2:
                         second_author = "Unknown"
-                        parts = re.split(r"[,;&]| and ", authors)
-                        if len(parts) >= 2:
-                            words2 = [w for w in re.findall(r"[a-zA-Z\u00C0-\u017F]+", parts[1]) if w.lower() not in {"et", "al"}]
-                            if words2:
-                                second_author = words2[-1]
+                        words2 = [w for w in re.findall(r"[a-zA-Z\u00C0-\u017F]+", author_parts[1])
+                                  if w.lower() not in {"et", "al"}]
+                        if words2:
+                            second_author = words2[-1]
                         citation = f"{first_author} & {second_author}, {year}"
                     else:
                         citation = f"{first_author}, {year}"
@@ -764,26 +948,38 @@ class RAGService:
                 pass
             return None
 
-        # Replace doc_X in text
+        # Replace doc_X in text, tracking resolved citations for deduplication
         modified_answer = answer
         has_citations = False
-        
+        # Track per-sentence citation counts to prevent excessive repetition
+        paper_citation_counts: dict[str, int] = {}
+
         pattern = r"\bdoc_(\d+)\b"
-        
+
         def repl(match):
+            nonlocal has_citations
             doc_num = match.group(1)
             cit = get_clean_citation(doc_num)
             if cit:
-                nonlocal has_citations
+                # Deduplication: if this exact citation has appeared > 2 times, suppress
+                count = paper_citation_counts.get(cit, 0)
+                if count >= 3:
+                    logger.debug(f"Suppressing duplicate citation: {cit} (count={count})")
+                    return ""  # remove the duplicate
+                paper_citation_counts[cit] = count + 1
                 has_citations = True
                 return cit
             return f"doc_{doc_num}"
-            
+
         modified_answer = re.sub(pattern, repl, modified_answer)
-        
-        # Clean up double parentheticals if any
+
+        # Clean up empty parentheticals: "( )" or "(, )" or "()"
+        modified_answer = re.sub(r"\(\s*,?\s*\)", "", modified_answer)
+        # Clean up double parentheticals: "((X))"
         modified_answer = re.sub(r"\(\(([^()]+)\)\)", r"(\1)", modified_answer)
-        
+        # Clean up trailing commas before closing paren: "(X, )"
+        modified_answer = re.sub(r",\s*\)", ")", modified_answer)
+
         return modified_answer, has_citations
 
     def generate_answer(
@@ -1528,6 +1724,15 @@ class RAGService:
                                 logger.warning("No doc_X citations found in LLM answer after grounding.")
                         except Exception as _cb:
                             logger.warning(f"Citation binding failed: {_cb}")
+
+                    # FIX 4b: Generic-knowledge injection filter.
+                    # Run AFTER citation binding (so we check APA inline, not doc_X) and
+                    # BEFORE references are appended so the body is clean.
+                    if not listing_style_query and not self._is_refusal_answer(answer):
+                        try:
+                            answer = self._strip_generic_sentences(answer, chunks)
+                        except Exception as _gs:
+                            logger.warning(f"Generic sentence filter failed: {_gs}")
 
                     if (not listing_style_query) and (not self._is_refusal_answer(answer)):
                         safe_refs = self._build_safe_references(chunks, papers_metadata)
