@@ -839,14 +839,22 @@ def is_simple_inventory_listing(query: str) -> bool:
     # If the query contains topic-specific keywords (e.g., "ransomware papers", "phishing detection papers"),
     # this is NOT a simple inventory listing - it requires topic filtering
     q_lower = (query or "").lower()
-    topic_keywords = _significant_query_tokens(query)
-    # If we have topic keywords beyond generic terms, this requires filtering, not simple listing
-    if topic_keywords and len(topic_keywords) >= 1:
-        # Check if the query has specific topic terms that should filter results
-        # (e.g., "ransomware", "phishing", "malware", "intrusion", etc.)
-        specific_topics = [t for t in topic_keywords if t not in _GENERIC_TOPIC_TOKENS and len(t) >= 4]
-        if specific_topics:
-            return False
+    
+    # Check for explicit topic filtering patterns
+    # These patterns indicate the user wants to filter by topic, not list all papers
+    topic_filter_patterns = [
+        r"\b(?:list|show|table)\s+(?:all\s+)?(?:\w+\s+){0,3}(?:papers?|articles?|studies)\b",
+    ]
+    
+    # Extract potential topic keywords from the query
+    # Remove common words to find the actual topic
+    words = re.findall(r'\b[a-z]{3,}\b', q_lower)
+    stop_words = {"list", "show", "table", "all", "papers", "paper", "articles", "article", "studies", "study", "for", "the", "and", "or", "in", "on", "about"}
+    potential_topics = [w for w in words if w not in stop_words]
+    
+    # If we have potential topic keywords, this requires topic filtering via RAG
+    if potential_topics:
+        return False
     
     return is_listing_query(query) and not is_content_extraction_query(query)
 
@@ -1492,16 +1500,16 @@ def fuzzy_match_paper_titles(query: str, papers_metadata: dict) -> list[str]:
     q_clean = re.sub(r'^(tell me about|what is|describe|explain|summarize|summary of|about|the paper titled|paper titled|what dataset was used in|what deep learning architecture was used in|what performance metrics were reported in|what does jhanjhi think about)\s+', '', q_lower, flags=re.I)
     q_clean = q_clean.strip()
     
-    # If the cleaned query is long enough (>= 4 words) and specific, try direct title matching
+    # If the cleaned query is long enough (>= 3 words) and specific, try direct title matching
     words = q_clean.split()
-    if len(words) >= 4:
+    if len(words) >= 3:
         for title in papers_metadata:
             title_lower = title.lower()
-            # Check for substantial overlap (at least 50% of words for 4-5 words, 60% for longer)
+            # Check for substantial overlap (at least 50% of words for 3-5 words, 60% for longer)
             title_words = set(title_lower.split())
             query_words = set(words)
             overlap = len(title_words & query_words)
-            min_overlap = 3 if len(query_words) == 4 else min(4, len(query_words) * 0.5)
+            min_overlap = 2 if len(query_words) == 3 else min(3, len(query_words) * 0.5)
             if overlap >= min_overlap:
                 if title not in matches:
                     matches.append(title)
@@ -2019,15 +2027,20 @@ def retrieve_relevant_chunks(
     # CRITICAL: When inventory_titles is set (specific paper matched), ALWAYS filter to those papers
     # This prevents cross-paper hallucination where content from wrong papers is cited
     if inventory_titles:
+        # First, filter existing chunks to only matched papers
         chunks = filter_chunks_to_titles(chunks, inventory_titles)
+        
+        # If no chunks after filtering, retrieve directly from matched papers
         if not chunks:
-            # If filtering removed all chunks, retrieve directly from the matched papers
             for title in inventory_titles:
                 chunks = _dedupe_chunks(
                     chunks + vector_store.get_chunks_for_paper(title, max_chunks=max(limit, 12))
                 )
             # Re-filter after direct retrieval to ensure only matched papers
             chunks = filter_chunks_to_titles(chunks, inventory_titles)
+        
+        # ALWAYS apply final filter to ensure no cross-paper contamination
+        chunks = filter_chunks_to_titles(chunks, inventory_titles)
 
     # Strict mode: never return unscoped semantic noise when the query is entity-locked.
     if strict and locked_scope:
