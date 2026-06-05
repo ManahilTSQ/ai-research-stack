@@ -6,6 +6,7 @@ for unambiguous citation and verification. This removes all ambiguity
 in provenance tracking.
 """
 
+import re
 import uuid
 import logging
 from typing import Any, Optional

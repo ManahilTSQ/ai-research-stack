@@ -495,9 +495,8 @@ def _significant_query_tokens(query: str) -> list[str]:
     stop = _query_stopwords()
     raw = re.findall(r"[a-z0-9]+", (query or "").lower())
     # Author surnames are often 4+ characters — keep them even when other tokens are short.
+    # Removed 3-character fallback to avoid false positives from generic short tokens.
     tokens = [t for t in raw if len(t) >= 4 and t not in stop]
-    if not tokens:
-        tokens = [t for t in raw if len(t) >= 3 and t not in stop]
     return tokens
 
 

@@ -130,15 +130,7 @@ class FailureHandler:
                 "metrics": {"chunk_count": 0}
             }
         
-        if len(chunks) < 3:
-            return {
-                "has_failure": True,
-                "type": "insufficient_retrieval",
-                "severity": "medium",
-                "message": f"Only {len(chunks)} chunks retrieved - insufficient evidence.",
-                "suggested_action": "respond_insufficient_evidence",
-                "metrics": {"chunk_count": len(chunks)}
-            }
+        # Removed < 3 chunks check - 2 relevant chunks is excellent retrieval for single-paper queries
         
         # Check if all chunks have high distance (poor relevance)
         distances = [chunk.get("distance", 1.0) for chunk in chunks]

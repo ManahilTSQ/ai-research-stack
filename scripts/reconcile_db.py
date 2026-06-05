@@ -159,8 +159,12 @@ def reconcile(force_reset: bool = False):
         is_already_in_db = False
         matched_db_title = None
         for db_title in db_papers.keys():
-            if (db_title.lower().strip() in title_guess.lower().strip() or 
-                    title_guess.lower().strip() in db_title.lower().strip()):
+            # Use word boundary matching instead of substring matching
+            # to avoid false positives like "Attention" matching "Attention Is All You Need"
+            db_title_words = set(re.findall(r'\b\w+\b', db_title.lower()))
+            title_guess_words = set(re.findall(r'\b\w+\b', title_guess.lower()))
+            # Require at least 3 significant words to match
+            if len(db_title_words & title_guess_words) >= 3:
                 is_already_in_db = True
                 matched_db_title = db_title
                 break

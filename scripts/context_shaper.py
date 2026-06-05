@@ -97,6 +97,8 @@ class ContextShaper:
         
         for paper_title, paper_chunks in papers.items():
             # Limit chunks per paper (filtering - but this is display-level filtering)
+            if len(paper_chunks) > max_chunks_per_paper:
+                logger.warning(f"Dropping {len(paper_chunks) - max_chunks_per_paper} chunks from '{paper_title}' due to per-paper cap")
             paper_chunks = paper_chunks[:max_chunks_per_paper]
             
             # Get paper metadata

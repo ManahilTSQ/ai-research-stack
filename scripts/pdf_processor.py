@@ -142,9 +142,9 @@ class PDFProcessorService:
                     })
 
             # Determine if this is likely full text or abstract-only
-            # Abstract-only papers typically have < 2000 characters
-            # Full papers typically have > 5000 characters
-            has_full_text = total_chars >= 2000
+            # Abstract-only papers typically have < 8000 characters
+            # Full papers typically have > 8000 characters
+            has_full_text = total_chars >= 8000
             if not has_full_text:
                 logger.warning(
                     f"Extracted minimal text ({total_chars} chars) from '{pdf_path.name}' "

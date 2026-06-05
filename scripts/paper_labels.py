@@ -42,14 +42,20 @@ def _last_names_from_authors(authors_str: str) -> list[str]:
             if surname and len(surname) > 1:
                 surnames.append(surname)
             continue
+        # "John Smith" or "Smith J." → surname is the last non-initial token
         tokens = [t for t in part.split() if t]
         if not tokens:
             continue
-        meaningful = [t for t in tokens if len(t) > 1 and not re.match(r"^[A-Z]\.?$", t)]
-        surname = (meaningful[-1] if meaningful else tokens[-1]).replace(".", "")
+        # Filter out initials (single letters with optional period)
+        non_initials = [t for t in tokens if len(t) > 1 and not re.match(r"^[A-Z]\.?$", t, re.I)]
+        # If we have non-initial tokens, use the last one as surname
+        if non_initials:
+            surname = non_initials[-1].replace(".", "")
+        else:
+            # Fallback: use the last token even if it's an initial
+            surname = tokens[-1].replace(".", "")
         if surname and surname.lower() not in {"unknown", "none", "null"}:
-            if not re.match(r"^[A-Z]\.?$", surname, re.I):
-                surnames.append(surname)
+            surnames.append(surname)
     return surnames[:3]
 
 

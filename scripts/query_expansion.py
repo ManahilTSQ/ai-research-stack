@@ -17,16 +17,8 @@ class QueryExpansion:
     Expands queries with controlled synonyms and academic variations.
     """
 
-    # Academic term synonyms and variations
+    # Academic term synonyms and variations (generic only, no domain-specific terms)
     ACADEMIC_SYNONYMS = {
-        "machine learning": [
-            "ML", "artificial intelligence", "AI", "deep learning", "neural network",
-            "statistical learning", "predictive modeling", "pattern recognition"
-        ],
-        "deep learning": [
-            "neural network", "deep neural network", "DNN", "CNN", "RNN",
-            "transformer", "attention mechanism", "representation learning"
-        ],
         "algorithm": [
             "method", "approach", "technique", "procedure", "strategy",
             "computational method", "optimization method"
@@ -43,25 +35,9 @@ class QueryExpansion:
             "architecture", "network", "system", "framework", "approach",
             "predictive model", "classification model"
         ],
-        "classification": [
-            "categorization", "labeling", "prediction", "recognition",
-            "discrimination", "pattern classification"
-        ],
-        "detection": [
-            "identification", "recognition", "discovery", "localization",
-            "anomaly detection", "intrusion detection"
-        ],
-        "optimization": [
-            "improvement", "enhancement", "refinement", "tuning",
-            "parameter tuning", "hyperparameter optimization"
-        ],
         "feature": [
             "attribute", "characteristic", "property", "variable",
             "input variable", "predictor"
-        ],
-        "accuracy": [
-            "precision", "recall", "f1-score", "performance metric",
-            "classification accuracy", "prediction accuracy"
         ],
         "experiment": [
             "study", "trial", "test", "evaluation", "assessment",

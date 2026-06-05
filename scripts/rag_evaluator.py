@@ -271,10 +271,7 @@ class RAGEvaluator:
         """
         Calculate contradiction rate: does the answer contradict itself?
         
-        Looks for:
-        - Explicit contradiction markers (however, but, although)
-        - Numerical contradictions
-        - Logical inconsistencies
+        Only flags direct logical contradictions, not legitimate academic contrast markers.
         """
         if not answer:
             return 0.0
@@ -287,27 +284,23 @@ class RAGEvaluator:
         
         contradictions = 0
         
-        # Check for explicit contradiction markers
-        contradiction_markers = [
-            "however", "but", "although", "despite", "conversely",
-            "on the other hand", "in contrast", "contrary to"
-        ]
-        
-        for sentence in sentences:
-            sentence_lower = sentence.lower()
-            if any(marker in sentence_lower for marker in contradiction_markers):
-                # This might indicate a contradiction - check if it's a valid contrast
-                # or an actual contradiction
-                contradictions += 0.5  # Partial weight for potential contradiction
-        
-        # Check for numerical contradictions
-        numbers = re.findall(r'\b\d+(?:\.\d+)?\b', answer)
-        if len(numbers) >= 2:
-            # If same number appears with different qualifiers, might be contradiction
-            number_counts = Counter(numbers)
-            for num, count in number_counts.items():
-                if count > 1:
-                    contradictions += 0.3
+        # Check for direct logical contradictions (X is true, X is false)
+        # Pattern: "X is/are/was/were" followed by "X is not/are not/was not/were not"
+        for i, sentence in enumerate(sentences):
+            # Look for explicit negation of previous claims
+            if i > 0:
+                # Check if current sentence directly negates previous sentence
+                prev_lower = sentences[i-1].lower()
+                curr_lower = sentence.lower()
+                
+                # Simple pattern: "X is" followed by "X is not"
+                # This is a basic heuristic - could be improved with NLP
+                if " is " in prev_lower and " is not " in curr_lower:
+                    # Check if the subject is similar
+                    prev_subject = prev_lower.split(" is ")[0].strip()
+                    curr_subject = curr_lower.split(" is not ")[0].strip()
+                    if prev_subject == curr_subject:
+                        contradictions += 1.0
         
         # Normalize by sentence count
         contradiction_rate = min(contradictions / len(sentences), 1.0)

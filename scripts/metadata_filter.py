@@ -268,10 +268,9 @@ class MetadataFilter:
         if any(venue.lower() in query.lower() for venue in venue_keywords):
             return True
         
-        # Check for explicit constraint phrases
+        # Check for explicit constraint phrases (only specific phrases, not generic words)
         constraint_phrases = [
-            "published in", "from", "venue", "conference", "journal",
-            "year", "domain", "field"
+            "published in", "venue", "conference", "journal"
         ]
         if any(phrase in query.lower() for phrase in constraint_phrases):
             return True

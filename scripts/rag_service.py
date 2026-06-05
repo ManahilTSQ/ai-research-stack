@@ -2196,12 +2196,14 @@ class RAGService:
         url = f"{settings.OLLAMA_BASE_URL}/api/chat"
         # Build a multi-turn message array so the model can preserve chat memory
         # across browser refreshes when conversation history is provided by the UI.
+        # Only pass user messages to avoid hallucination reinforcement from assistant answers.
         messages = [{"role": "system", "content": system_prompt}]
         if history_for_llm:
             for turn in history_for_llm[-12:]:
                 role = (turn.get("role") or "").strip().lower()
                 content = (turn.get("content") or "").strip()
-                if role in {"user", "assistant"} and content:
+                # Only include user messages, not assistant messages
+                if role == "user" and content:
                     messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": user_prompt})
 
