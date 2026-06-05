@@ -1366,7 +1366,7 @@ class RAGService:
             bibliography_count = 0
             for chunk in chunks:
                 text = chunk.get("text", "").lower()
-                if self._is_bibliography_chunk(text):
+                if is_bibliography_chunk(text):
                     bibliography_count += 1
             
             ref_percentage = (bibliography_count / len(chunks)) * 100 if chunks else 0
@@ -1382,7 +1382,7 @@ class RAGService:
                 title = meta.get("title", "Unknown")[:60]
                 distance = chunk.get("distance", "N/A")
                 rerank_score = chunk.get("rerank_score", "N/A")
-                is_bib = "[BIB]" if self._is_bibliography_chunk(chunk.get("text", "")) else ""
+                is_bib = "[BIB]" if is_bibliography_chunk(chunk.get("text", "")) else ""
                 logger.info(f"  {i}. {title}... | distance={distance:.3f} | rerank={rerank_score} {is_b}")
         
         if faithfulness_issues:
