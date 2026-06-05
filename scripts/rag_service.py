@@ -1383,7 +1383,7 @@ class RAGService:
                 distance = chunk.get("distance", "N/A")
                 rerank_score = chunk.get("rerank_score", "N/A")
                 is_bib = "[BIB]" if is_bibliography_chunk(chunk.get("text", "")) else ""
-                logger.info(f"  {i}. {title}... | distance={distance:.3f} | rerank={rerank_score} {is_b}")
+                logger.info(f"  {i}. {title}... | distance={distance:.3f} | rerank={rerank_score} {is_bib}")
         
         if faithfulness_issues:
             logger.info("Faithfulness issues:")
