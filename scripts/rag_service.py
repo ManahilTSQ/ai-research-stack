@@ -2301,6 +2301,7 @@ class RAGService:
                         # Issue 10: Removed dead _parse_constrained_claims path
                         # The 8B model doesn't reliably produce structured CLAIM/SOURCE/QUOTE blocks
                         # This code was adding latency without benefit. Keeping raw LLM answer.
+                        pass
 
                     answer = self._strip_model_references(answer, chunks=chunks)
 
