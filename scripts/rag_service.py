@@ -1066,6 +1066,27 @@ class RAGService:
                     "error": "No relevant chunks retrieved",
                 }
         
+        # ── Additional safety check: refuse obviously off-topic queries ─────────
+        # Even if chunks were retrieved, refuse if query is clearly outside scope
+        off_topic_patterns = {
+            "who won", "world cup", "fifa", "sports", "election", "president",
+            "weather", "temperature", "forecast", "movie", "film", "actor",
+            "celebrity", "music", "song", "recipe", "cook", "cooking", "food",
+            "travel", "vacation", "hotel", "flight", "airport"
+        }
+        query_lower = query.lower()
+        has_off_topic = any(pattern in query_lower for pattern in off_topic_patterns)
+        
+        if has_off_topic and not query_matches_paper and not filter_title:
+            logger.warning(f"Off-topic query detected: {query}")
+            return {
+                "query": query,
+                "answer": NOT_IN_LIBRARY_REFUSAL,
+                "sources": [],
+                "success": False,
+                "error": "Off-topic query",
+            }
+        
         # ── Context quality gate before LLM ───────────────────────────────────
         # DISABLED: Context quality gate is too aggressive and blocks valid queries
         # The quality calculation is unreliable and causes false negatives
