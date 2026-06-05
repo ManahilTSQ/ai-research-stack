@@ -1039,14 +1039,17 @@ class RAGService:
                 # ensure chunks are from papers about that topic
                 if "coffee" in query.lower():
                     coffee_chunks = 0
+                    non_coffee_chunks = []
                     for chunk in chunks:
                         chunk_title = chunk.get("metadata", {}).get("title", "").lower()
                         chunk_text = chunk.get("text", "").lower()
                         if "coffee" in chunk_title or "coffee" in chunk_text:
                             coffee_chunks += 1
+                        else:
+                            non_coffee_chunks.append(chunk_title[:50] if chunk_title else "unknown")
                     
                     if coffee_chunks < len(chunks) * 0.5:
-                        logger.warning(f"Query asks about coffee but only {coffee_chunks}/{len(chunks)} chunks are coffee-related")
+                        logger.warning(f"Query asks about coffee but only {coffee_chunks}/{len(chunks)} chunks are coffee-related. Non-coffee chunks: {non_coffee_chunks[:3]}")
                         return {
                             "query": query,
                             "answer": NOT_IN_LIBRARY_REFUSAL,
@@ -1054,6 +1057,11 @@ class RAGService:
                             "success": False,
                             "error": "Retrieved chunks not relevant to coffee topic",
                         }
+                    
+                    # Filter out non-coffee chunks even if we pass the threshold
+                    if coffee_chunks < len(chunks):
+                        logger.info(f"Filtering {len(chunks) - coffee_chunks} non-coffee chunks")
+                        chunks = [c for c in chunks if "coffee" in c.get("metadata", {}).get("title", "").lower() or "coffee" in c.get("text", "").lower()]
             
             # If no chunks retrieved and query doesn't match paper title, refuse
             if not chunks and not query_matches_paper:
