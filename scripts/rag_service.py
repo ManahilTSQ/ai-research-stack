@@ -997,17 +997,17 @@ class RAGService:
 
         library_inventory_str = build_library_inventory(inventory_metadata)
         
+        # ── Check if query matches a paper title (used in multiple checks below) ─────
+        query_matches_paper = False
+        for title in papers_metadata.keys():
+            if title.lower() in query.lower() or query.lower() in title.lower():
+                query_matches_paper = True
+                break
+        
         # ── Off-topic detection BEFORE LLM call ─────────────────────────────
         # Use retrieval count AND relevance check (more reliable than just count)
         # If chunks were retrieved but are not relevant to the query, refuse
         if not filter_title and not matched_titles:
-            # Check if query might be about a paper title in the library
-            query_matches_paper = False
-            for title in papers_metadata.keys():
-                if title.lower() in query.lower() or query.lower() in title.lower():
-                    query_matches_paper = True
-                    break
-            
             # Check relevance of retrieved chunks
             if chunks:
                 # Extract significant query tokens
