@@ -783,30 +783,6 @@ class RAGService:
                     return True
         return False
 
-    # ─────────────────────────────────────────────────────────────────────────────
-    # PAPER-TYPE INFERENCE (heuristic, no ingestion changes required)
-    # Classifies each paper as SURVEY | DATASET | METHOD | APPLICATION
-    # purely from title keywords. Passed to the LLM so it knows what kind
-    # of evidence it is working with and doesn't treat surveys as experiments.
-    # ─────────────────────────────────────────────────────────────────────────────
-    _SURVEY_WORDS   = {"survey", "review", "overview", "taxonomy", "literature"}
-    _DATASET_WORDS  = {"dataset", "benchmark", "corpus", "collection", "annotation", "labeled"}
-    _METHOD_WORDS   = {"framework", "architecture", "algorithm", "network", "model", "approach",
-                       "method", "technique", "system", "detection", "segmentation",
-                       "classification", "prediction", "optimization"}
-
-    def _infer_paper_type(self, title: str, text: str = "") -> str:
-        """Return one of: SURVEY | DATASET | METHOD | APPLICATION"""
-        t = (title + " " + text[:200]).lower()
-        words = set(re.findall(r"\b\w+\b", t))
-        if words & self._SURVEY_WORDS:
-            return "SURVEY"
-        if words & self._DATASET_WORDS:
-            return "DATASET"
-        if words & self._METHOD_WORDS:
-            return "METHOD"
-        return "APPLICATION"
-
     def _build_retrieved_set_summary(self, chunks: list[dict]) -> str:
         from collections import Counter
         summary_lines = []
@@ -827,12 +803,20 @@ class RAGService:
             key = (title.lower(), authors.lower(), year)
             if key not in seen:
                 seen.add(key)
-                paper_type = self._infer_paper_type(title, text)
+                # Map rerank score to retrieval confidence weighting
+                rerank_score = chunk.get("rerank_score", 0.5)
+                if rerank_score >= 0.60:
+                    confidence = "High"
+                elif rerank_score >= 0.45:
+                    confidence = "Medium"
+                else:
+                    confidence = "Low/Weak"
+
                 summary_lines.append(
                     f"- Document ID: doc_{idx}\n"
                     f"  Title: {title}\n"
                     f"  Authors: {authors} ({year})\n"
-                    f"  Paper type: [{paper_type}]  ← use this when reasoning about evidence strength\n"
+                    f"  Retrieval Confidence Weighting: [{confidence}] (Score: {rerank_score:.2f})\n"
                     f"  Keywords in chunk: {kw_str}"
                 )
         return "\n".join(summary_lines)
@@ -867,11 +851,14 @@ class RAGService:
         if not chunks:
             return "refuse", ""
 
-        scored = [c for c in chunks if "rerank_score" in c]
+        scored = sorted(
+            [c for c in chunks if "rerank_score" in c],
+            key=lambda x: x["rerank_score"],
+            reverse=True
+        )
 
         if not scored:
-            # No scores available (e.g. author-scoped path skipped reranker)
-            # Fall back on chunk count heuristic
+            # Fall back on chunk count heuristic if no scores are present
             if len(chunks) >= 3:
                 return "confident", ""
             return "partial", (
@@ -879,13 +866,18 @@ class RAGService:
                 "explicitly state. Do not extrapolate."
             )
 
-        confident = [c for c in scored if c["rerank_score"] >= self._CONFIDENT_THRESHOLD]
-        partial   = [c for c in scored if self._PARTIAL_THRESHOLD <= c["rerank_score"] < self._CONFIDENT_THRESHOLD]
+        # Compute normalized query-level confidence metrics
+        top_n = min(3, len(scored))
+        avg_top_3 = sum(c["rerank_score"] for c in scored[:top_n]) / top_n
+        max_score = scored[0]["rerank_score"]
 
-        if len(confident) >= 2:
+        logger.info(f"Query confidence metrics: avg_top_3={avg_top_3:.3f}, max_score={max_score:.3f}")
+
+        # Routing based on normalized query-level confidence
+        if avg_top_3 >= 0.52 and max_score >= 0.58:
             return "confident", ""
 
-        if len(confident) >= 1 or len(partial) >= 2:
+        if avg_top_3 >= 0.38 and max_score >= 0.42:
             return "partial", (
                 "PARTIAL EVIDENCE MODE: The retrieved documents are only partially or "
                 "weakly related to this query. You MUST:\n"
@@ -897,14 +889,161 @@ class RAGService:
                 "Document Set above.\n"
             )
 
-        if len(partial) >= 1:
-            return "partial", (
-                "PARTIAL EVIDENCE MODE: Only weakly related documents were retrieved. "
-                "Acknowledge this clearly and summarize only what is directly stated."
-            )
-
-        # All scores below _PARTIAL_THRESHOLD
+        # All scores below thresholds
         return "refuse", ""
+
+    def _parse_constrained_claims(self, text: str) -> list[dict]:
+        blocks = []
+        # Pattern to match CLAIM:, SOURCE:, and QUOTE: blocks
+        # CLAIM: <text>\nSOURCE: doc_<num>\nQUOTE: <text>
+        pattern = r"CLAIM:\s*(.*?)\nSOURCE:\s*(doc_\d+)\nQUOTE:\s*(.*?)(?=\nCLAIM:|\Z)"
+        matches = re.finditer(pattern, text, re.DOTALL | re.IGNORECASE)
+        for m in matches:
+            claim = m.group(1).strip()
+            source = m.group(2).strip().lower()
+            quote = m.group(3).strip()
+            blocks.append({
+                "claim": claim,
+                "source": source,
+                "quote": quote
+            })
+        return blocks
+
+    def _validate_claims(self, claims: list[dict], chunks: list[dict]) -> list[dict]:
+        valid_claims = []
+        for c in claims:
+            source_id = c["source"]
+            try:
+                # doc_1 maps to chunks[0], doc_2 to chunks[1]...
+                idx = int(source_id.split("_")[1]) - 1
+                if idx < 0 or idx >= len(chunks):
+                    logger.warning(f"Invalid source ID in claim: {source_id}")
+                    continue
+                chunk = chunks[idx]
+                chunk_text = chunk.get("text", "")
+                
+                # Check quote match
+                quote = c["quote"]
+                # Normalize spaces and lower case for comparison
+                norm_quote = re.sub(r"\s+", " ", quote.lower().strip())
+                norm_chunk = re.sub(r"\s+", " ", chunk_text.lower().strip())
+                
+                # Check cleaned alphanumeric content to handle punctuation / quote differences
+                clean_quote = re.sub(r"[^\w\s]", "", norm_quote)
+                clean_chunk = re.sub(r"[^\w\s]", "", norm_chunk)
+                
+                if clean_quote in clean_chunk or norm_quote in norm_chunk:
+                    valid_claims.append({
+                        "claim": c["claim"],
+                        "source": source_id,
+                        "chunk_idx": idx,
+                        "chunk": chunk
+                    })
+                else:
+                    logger.warning(f"Verbatim quote validation failed for claim: {c['claim'][:50]}... Quote: {quote[:50]}...")
+            except (IndexError, ValueError) as e:
+                logger.warning(f"Failed to parse source ID {source_id}: {e}")
+        return valid_claims
+
+    def _synthesize_prose(self, valid_claims: list[dict], query: str, chunks: list[dict], papers_metadata: dict, listing_style_query: bool) -> str:
+        # Group claims by paper
+        paper_claims = {}
+        for c in valid_claims:
+            chunk = c["chunk"]
+            meta = chunk.get("metadata", {}) or {}
+            title = meta.get("title", "Untitled Paper")
+            authors = meta.get("authors", "Unknown Authors")
+            year = meta.get("year", "N/A")
+            domain = meta.get("domain", "General Research")
+            
+            key = (title, authors, year, domain)
+            if key not in paper_claims:
+                paper_claims[key] = []
+            paper_claims[key].append(c)
+            
+        if not paper_claims:
+            return ""
+
+        if listing_style_query:
+            lines = []
+            seen_papers = set()
+            for key, claims in paper_claims.items():
+                title, authors, year, domain = key
+                paper_str = f"{authors} ({year}). {title}"
+                if paper_str not in seen_papers:
+                    seen_papers.add(paper_str)
+                    lines.append(f"{len(lines)+1}. {paper_str}")
+            return "\n".join(lines)
+
+        # Check if it is an aggregation query
+        _AGG_PATTERNS = (
+            "what do all", "all papers say", "across all", "summarize all",
+            "compare all", "conclusion of all", "what do these papers",
+            "all studies say", "combined conclusion", "combined summary",
+            "overall conclusion", "aggregate", "synthesis of all",
+        )
+        is_aggregation = any(p in query.lower() for p in _AGG_PATTERNS)
+
+        sections = []
+        
+        if is_aggregation:
+            # Group by domain
+            domain_groups = {}
+            for key, claims in paper_claims.items():
+                title, authors, year, domain = key
+                if domain not in domain_groups:
+                    domain_groups[domain] = []
+                domain_groups[domain].append((key, claims))
+                
+            for domain, paper_list in domain_groups.items():
+                sections.append(f"### {domain.upper()} DOMAIN")
+                for key, claims in paper_list:
+                    title, authors, year, _ = key
+                    # Get the confidence level of the first chunk from this paper
+                    chunk = claims[0]["chunk"]
+                    rerank_score = chunk.get("rerank_score", 0.5)
+                    confidence = "High" if rerank_score >= 0.60 else ("Medium" if rerank_score >= 0.45 else "Low/Weak")
+                    
+                    sentences = []
+                    for c in claims:
+                        sent = c["claim"]
+                        # Make sure sentence ends with the correct parenthetical citation
+                        if not sent.endswith(f"({c['source']})"):
+                            if sent.endswith("."):
+                                sent = sent[:-1].strip()
+                            sent = f"{sent} ({c['source']})."
+                        sentences.append(sent)
+                    
+                    paper_prose = " ".join(sentences)
+                    sections.append(
+                        f"In the study \"{title}\" by {authors} ({year}) [Retrieval Confidence: {confidence}]:\n"
+                        f"{paper_prose}"
+                    )
+                sections.append("")
+        else:
+            # Standard single-paper or multi-paper factual synthesis
+            for key, claims in paper_claims.items():
+                title, authors, year, domain = key
+                chunk = claims[0]["chunk"]
+                rerank_score = chunk.get("rerank_score", 0.5)
+                confidence = "High" if rerank_score >= 0.60 else ("Medium" if rerank_score >= 0.45 else "Low/Weak")
+                
+                sentences = []
+                for c in claims:
+                    sent = c["claim"]
+                    if not sent.endswith(f"({c['source']})"):
+                        if sent.endswith("."):
+                            sent = sent[:-1].strip()
+                        sent = f"{sent} ({c['source']})."
+                    sentences.append(sent)
+                
+                paper_prose = " ".join(sentences)
+                sections.append(
+                    f"According to \"{title}\" by {authors} ({year}) [Retrieval Confidence: {confidence}]:\n"
+                    f"{paper_prose}"
+                )
+                
+        return "\n\n".join(sections).strip()
 
     def _build_context_with_ids(self, chunks: list[dict]) -> str:
         blocks = []
@@ -1724,74 +1863,30 @@ class RAGService:
                 "Only use information from this paper's context blocks when answering.\n"
             )
 
-        # System prompt: absolute iron-wall instruction set for Llama 3 8B
+        # System prompt: structured Claim-Evidence extraction instructions
         system_prompt = (
-            "=== ABSOLUTE OPERATING RULES — READ BEFORE EVERYTHING ELSE ===\n"
-            "You are an AI assistant LOCKED to an academic research knowledge base.\n"
-            "You ONLY answer questions using information from the DOCUMENT CONTEXT BLOCKS and the INGESTED PAPER LIBRARY INVENTORY below.\n"
-            "You have NO general knowledge. You are NOT ChatGPT. You CANNOT access the internet.\n"
-            "You MUST REFUSE to answer ANYTHING that is not present in the provided context or library inventory.\n\n"
-            "=== CRITICAL: DO NOT USE EXTERNAL KNOWLEDGE ===\n"
-            "If the user asks about:\n"
-            "- Ada Lovelace, Albert Einstein, Elon Musk, François Chollet, or any person NOT in the library inventory → REFUSE\n"
-            "- Transformers invented by Vaswani et al. (if not in library) → REFUSE\n"
-            "- Keras, TensorFlow, PyTorch (if not explicitly in context) → REFUSE\n"
-            "- FIFA World Cup, sports, entertainment, politics → REFUSE\n"
-            "- Any topic NOT explicitly mentioned in the context blocks or library inventory → REFUSE\n"
-            "DO NOT provide general knowledge about these topics. DO NOT explain who they are. DO NOT cite external papers.\n"
-            "Simply say: 'This question is outside the scope of your ingested research knowledge base.'\n\n"
-            "=== HARD REFUSAL TRIGGERS — ALWAYS REFUSE THESE, NO EXCEPTIONS ===\n"
-            "- Cooking, recipes, food → REFUSE\n"
-            "- Medical advice, health, symptoms → REFUSE (unless paper is medical research)\n"
-            "- News, weather, current events, sports, entertainment → REFUSE\n"
-            "- Any question where the answer requires knowledge NOT in the context blocks or the Ingested Paper Library Inventory → REFUSE\n"
-            "- Any question about a person, paper, or concept not found in the Library Inventory or context blocks → REFUSE\n"
-            "- Questions about famous people, historical events, or general knowledge → REFUSE\n\n"
-            "REFUSAL FORMAT (copy this exactly when refusing):\n"
-            "\"This question is outside the scope of your ingested research knowledge base. "
-            "I can only answer questions based on the papers that have been ingested. "
-            "Please ask a question about the research papers in your library.\"\n\n"
-            "=== WHAT YOU ARE ALLOWED TO DO ===\n"
-            "- Answer research questions strictly using the Document Context Blocks or Ingested Paper Library Inventory provided.\n"
-            "- Summarize, compare, or explain content that is EXPLICITLY present in the context or library inventory.\n"
-            "- List authors, years, titles, DOIs only from the Library Inventory or context.\n\n"
-            "=== OPERATING RULES FOR KEYWORDS & GROUNDING ===\n"
-            "1. NEVER say 'none exist', 'no papers exist', or 'there are no papers on this topic' if any papers in the Ingested Paper Library Inventory or the Document Context Blocks match or mention the query keywords (e.g. 'coffee').\n"
-            "2. WEAK RELEVANCE FALLBACK: If the retrieved papers are only partially or weakly related to the query (for example, if you ask about 'coffee evolution' and the papers focus on 'accessibility', 'tourism', 'agroecology', or 'LULC' aspects of the coffee region, or NLP cultural probing), you MUST NOT deny their existence. Instead, clearly state: 'There are partially related studies, but they focus on [X, Y, Z] aspects of [topic]' and summarize what they do say.\n"
-            "3. NO CITATION STITCHING/BLENDING: Each statement or claim you make must map directly to its specific source document/chunk. Do NOT blend findings, titles, or concepts from multiple papers into a single sentence or a single citation. Keep claims from different papers in separate sentences, each with its own specific (Author, Year) inline citation. Maintain clean separation between the sources.\n\n"
-            "=== CITATION RULES ===\n"
-            "1. ONLY use facts from the Document Context Blocks or the Ingested Paper Library Inventory. Zero exceptions.\n"
-            "2. NEVER invent author names, paper titles, years, DOIs or references.\n"
-            "3. NEVER cite papers that are not in the Library Inventory or Context Blocks.\n"
-            "4. You MUST cite using Document IDs in parentheticals at the end of each sentence or claim. For example: (doc_1) or (doc_3, doc_4). Do NOT write author names or years in parentheticals. Every non-generic sentence MUST contain at least one doc_X reference.\n"
-            "5. NEVER use (Source 1), [Document 2] or any numbered source labels.\n"
-            "6. NEVER use bracket-number citations like [1], [2], [44] etc. These are FORBIDDEN.\n"
-            "7. NEVER call papers 'Paper A', 'Study 1' etc. Use (doc_X) format.\n"
-            "8. End every answer with a References section in full APA7 format (EXCEPT when the user asked for a list).\n"
-            "9. TRUTH GAPS: If the concept asked about is NOT in the context blocks or library inventory, "
-            "say: 'The retrieved context does not contain information about [topic].' DO NOT guess.\n"
-            "10. If context is insufficient, say so explicitly.\n"
-            "11. Formal, neutral academic tone always.\n"
-            "12. ONE PAPER PER SENTENCE: In multi-paper answers, each sentence may cite at most ONE "
-            "paper (one doc_X). Never blend two different papers into one sentence.\n"
-            "13. WRITE NOTHING YOU CANNOT TRACE: If you cannot attach a specific doc_X citation to "
-            "a sentence, do not write that sentence. Every non-introductory sentence must cite a doc_X.\n\n"
-            "=== LISTING QUERY RULES — ABSOLUTE REQUIREMENTS ===\n"
-            "When the user asks you to LIST, ENUMERATE, or TABULATE papers/articles:\n"
-            "1. You MUST output EVERY SINGLE matching paper in your main numbered response.\n"
-            "2. NEVER stop after 3, 5, or 10 papers. You must continue until ALL matching papers are listed.\n"
-            "3. NEVER use '...' or '(remaining papers)' or any truncation placeholder.\n"
-            "4. NEVER put papers in a References section when the user asked for a list.\n"
-            "5. If there are 80 papers, you must list all 80. If there are 100 papers, you must list all 100.\n"
-            "6. This is a non-negotiable requirement. Do not truncate under any circumstances.\n\n"
-            "=== PAPER TYPE RULES (based on [SURVEY] / [DATASET] / [METHOD] / [APPLICATION] tags) ===\n"
-            "- [SURVEY] papers provide SECONDARY evidence only (overview of others' work). Never treat their citations as primary experimental data.\n"
-            "- [DATASET] papers describe data, not methods. Do not attribute algorithmic claims to them.\n"
-            "- [METHOD] papers provide PRIMARY evidence: algorithms, experiments, accuracy numbers.\n"
-            "- [APPLICATION] papers show deployment results in a specific domain.\n"
-            "When comparing papers, ALWAYS state the type: e.g., '(doc_3) [SURVEY] reviews X, while (doc_5) [METHOD] proposes Y.'\n\n"
+            "You are a CONSTRAINED SCIENTIFIC EXTRACTOR. Your task is to extract clear, individual claims from the DOCUMENT CONTEXT BLOCKS that are directly relevant to the user query.\n\n"
+            "=== OUTPUT FORMAT ===\n"
+            "You MUST output your findings strictly in the following structured block format. Do NOT write any introduction, conversational filler, summaries, explanations, transitions, or references. Only output raw claim blocks. If there are no relevant claims, output nothing.\n\n"
+            "CLAIM: <One clear, standalone research claim or fact from the passage>\n"
+            "SOURCE: <doc_X>\n"
+            "QUOTE: <The exact, verbatim phrase or sentence from doc_X supporting this claim>\n\n"
+            "Repeat this block for every valid claim you extract. Ensure a blank line separates each block.\n\n"
+            "=== OPERATING RULES ===\n"
+            "1. NO EXTRAPOLATION: Extracted claims must be strictly grounded in the document context. You have NO general knowledge.\n"
+            "2. VERBATIM QUOTES: The QUOTE field MUST contain the exact verbatim substring from the source document. Do NOT paraphrase or alter the quote in any way.\n"
+            "3. NO CITATION BLENDING: Each block can only cite ONE source document. Do NOT mix multiple sources in a single block.\n"
+            "4. SOURCE AVAILABILITY: Only extract from papers listed in the Ingested Paper Library Inventory and document context blocks. If the query cannot be answered, output nothing.\n"
+            "5. NO CONVERSATION: Write absolutely nothing else except the blocks. Zero chat, zero markdown wrappers around the blocks, zero introductions, zero references section.\n"
+            "6. LISTING QUERIES: If the user asks to list all papers or matching topics, extract each matching paper as a separate CLAIM block where CLAIM is the paper title and authors, SOURCE is the doc_X, and QUOTE is the title or first sentence of doc_X.\n\n"
+            "=== RETRIEVAL CONFIDENCE WEIGHTING RULES ===\n"
+            "Each document has a Retrieval Confidence Weighting: High, Medium, or Low.\n"
+            "- High confidence documents contain extremely strong, directly relevant primary evidence.\n"
+            "- Medium confidence documents contain moderately strong, related evidence.\n"
+            "- Low/Weak confidence documents contain weakly related evidence and should be interpreted with caution.\n"
+            "Always favor claims from High confidence documents over Medium/Low confidence ones.\n\n"
             f"{scope_note}"
-            "=== BEGIN ANSWERING ONLY FROM CONTEXT/INVENTORY BELOW ==="
+            "=== BEGIN CONSTRAINED EXTRACTION ==="
         )
 
         # ── Step 3b: Answer Decision Gate ────────────────────────────────────
@@ -1839,21 +1934,9 @@ class RAGService:
         )
         _is_aggregation_query = any(p in query.lower() for p in _AGG_PATTERNS)
         _aggregation_notice = (
-            "AGGREGATION MODE — STRICT STRUCTURE REQUIRED:\n"
-            "You are synthesizing across papers from MULTIPLE DOMAINS. Follow this exact structure:\n\n"
-            "STEP 1 — DOMAIN SEGMENTATION (mandatory first):\n"
-            "  Group the retrieved documents by research domain (e.g., Medical Imaging, AI Safety, "
-            "Agriculture, NLP). For each domain group, summarize ONLY what those papers say. "
-            "Cite each claim with its specific doc_X. Do NOT mix domains in one paragraph.\n\n"
-            "STEP 2 — SHARED THEMES (only if real overlap exists):\n"
-            "  After per-domain summaries, list only themes that are explicitly mentioned by "
-            "2 or more papers from DIFFERENT domains. Name the doc_IDs. "
-            "If no cross-domain overlap exists, write: 'No significant cross-domain themes identified.'\n\n"
-            "STEP 3 — DIVERGENCES AND GAPS:\n"
-            "  State where papers disagree or cover different aspects. Note which papers are "
-            "[SURVEY] (secondary evidence) vs [METHOD] (primary experimental evidence).\n\n"
-            "FORBIDDEN: Do NOT produce a single unified conclusion across all papers. "
-            "Do NOT invent consensus. Do NOT blend claims from different domains into one sentence."
+            "AGGREGATION MODE — Focus on extracting key claims, findings, and methods "
+            "across the papers. Ensure each claim is captured in a separate block with its "
+            "verbatim QUOTE."
         ) if _is_aggregation_query else ""
 
         # User prompt: library inventory + doc-ID summary + full passages
@@ -1874,9 +1957,8 @@ class RAGService:
             + (_partial_notice + "\n\n" if _partial_notice else "")
             + (_aggregation_notice + "\n\n" if _aggregation_notice else "")
             + f"Researcher Query: {query}\n\n"
-            "Provide your structured academic answer below. "
-            "You MUST cite every factual claim using doc_X IDs from the Retrieved Document Set above "
-            "(e.g. (doc_1), (doc_3, doc_5)). Append a References section at the end."
+            "Provide your extracted claim blocks below. "
+            "You MUST use the exact CLAIM:, SOURCE:, and QUOTE: format."
         )
 
         # ── Step 4: Send to Ollama /api/chat ──────────────────────────────────
@@ -1967,6 +2049,26 @@ class RAGService:
                 elif answer_has_table_truncation(answer):
                     answer = TABLE_TRUNCATION_REFUSAL
                 else:
+                    if not self._is_refusal_answer(answer):
+                        parsed_blocks = self._parse_constrained_claims(answer)
+                        valid_claims = self._validate_claims(parsed_blocks, chunks)
+                        if valid_claims:
+                            answer = self._synthesize_prose(valid_claims, query, chunks, papers_metadata, listing_style_query)
+                            logger.info(f"Synthesized prose from {len(valid_claims)} valid claims.")
+                        else:
+                            logger.warning("No valid claims extracted/verified. Returning limited-evidence notice.")
+                            titles_present = list({
+                                c.get("metadata", {}).get("title", "Untitled")
+                                for c in chunks if c.get("metadata", {}).get("title")
+                            })[:3]
+                            titles_str = "; ".join(titles_present) if titles_present else "the retrieved papers"
+                            answer = (
+                                f"The library contains related studies ({titles_str}) but the "
+                                "retrieved passages do not contain sufficient detail to fully answer "
+                                "this specific question. Try rephrasing or asking about a specific "
+                                "aspect of these papers."
+                            )
+
                     answer = self._strip_model_references(answer, chunks=chunks)
 
                     # FIX 2: Hard grounding — strip any sentence not backed by a doc_X reference.
@@ -1987,14 +2089,12 @@ class RAGService:
                         except Exception as _cb:
                             logger.warning(f"Citation binding failed: {_cb}")
 
-                    # FIX 4b: Generic-knowledge injection filter.
-                    # Run AFTER citation binding (so we check APA inline, not doc_X) and
-                    # BEFORE references are appended so the body is clean.
-                    if not listing_style_query and not self._is_refusal_answer(answer):
-                        try:
-                            answer = self._strip_generic_sentences(answer, chunks)
-                        except Exception as _gs:
-                            logger.warning(f"Generic sentence filter failed: {_gs}")
+                    # FIX 4b: Generic-knowledge injection filter (bypassed since claims are strictly extracted).
+                    # if not listing_style_query and not self._is_refusal_answer(answer):
+                    #     try:
+                    #         answer = self._strip_generic_sentences(answer, chunks)
+                    #     except Exception as _gs:
+                    #         logger.warning(f"Generic sentence filter failed: {_gs}")
 
                     if (not listing_style_query) and (not self._is_refusal_answer(answer)):
                         safe_refs = self._build_safe_references(chunks, papers_metadata)

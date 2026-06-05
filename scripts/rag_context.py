@@ -1504,6 +1504,18 @@ def is_bibliography_chunk(text: str) -> bool:
     return False
 
 
+def _ensure_rerank_scores(chunks: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
+    for c in chunks:
+        if "rerank_score" not in c:
+            # Fallback calculation using distance: similarity score in [0.0, 1.0]
+            distance = float(c.get("distance", 1.0))
+            similarity = max(0.0, 1.0 - (distance / 2.0))
+            overlap_count = _chunk_query_overlap_score(c, query)
+            lexical_bonus = min(0.3, overlap_count * 0.1)
+            c["rerank_score"] = min(1.0, similarity + lexical_bonus)
+    return chunks
+
+
 def retrieve_relevant_chunks(
     vector_store,
     query: str,
@@ -1668,7 +1680,7 @@ def retrieve_relevant_chunks(
                     logger.warning("Reranker not available, skipping reranking")
                 except Exception as e:
                     logger.warning(f"Reranking failed: {e}, using original chunks")
-            return rank_and_cap_chunks(author_chunks, query, limit=limit)
+            return _ensure_rerank_scores(rank_and_cap_chunks(author_chunks, query, limit=limit), query)
 
     # ── Standard semantic search path with over-retrieval ─────────────────────
     # Over-retrieve: request extra candidates so reranking has more to work with
@@ -1694,7 +1706,27 @@ def retrieve_relevant_chunks(
     # Filter out bibliography chunks
     raw = [c for c in raw if not is_bibliography_chunk(c.get("text", ""))]
 
-    chunks = filter_chunks_by_relevance(raw, max_distance=settings.RAG_MAX_DISTANCE)
+    # Determine adaptive distance threshold based on query type
+    _AGG_PATTERNS = (
+        "what do all", "all papers say", "across all", "summarize all",
+        "compare all", "conclusion of all", "what do these papers",
+        "all studies say", "combined conclusion", "combined summary",
+        "overall conclusion", "aggregate", "synthesis of all",
+    )
+    is_aggregation = any(p in query.lower() for p in _AGG_PATTERNS)
+    is_single_paper = bool(filter_title) or (bool(inventory_titles) and len(inventory_titles) == 1)
+
+    if is_aggregation:
+        adaptive_distance = getattr(settings, "RAG_MAX_DISTANCE_AGGREGATION", 0.58)
+        logger.info(f"Aggregation query detected. Using strict threshold {adaptive_distance}")
+    elif is_single_paper:
+        adaptive_distance = getattr(settings, "RAG_MAX_DISTANCE_SINGLE", 0.78)
+        logger.info(f"Single-paper query detected. Using relaxed threshold {adaptive_distance}")
+    else:
+        adaptive_distance = getattr(settings, "RAG_MAX_DISTANCE_DEFAULT", 0.70)
+        logger.info(f"General query. Using default threshold {adaptive_distance}")
+
+    chunks = filter_chunks_by_relevance(raw, max_distance=adaptive_distance)
 
     if settings.RAG_REQUIRE_QUERY_TERM_MATCH:
         chunks = _filter_chunks_by_query_term_presence(
@@ -1723,7 +1755,7 @@ def retrieve_relevant_chunks(
                 logger.warning("Reranker not available, skipping reranking")
             except Exception as e:
                 logger.warning(f"Reranking failed: {e}, using original chunks")
-        return filtered[:limit]
+        return _ensure_rerank_scores(filtered[:limit], query)
 
     if not chunks and inventory_titles and not strict:
         chunks = raw[:limit]
@@ -1748,7 +1780,7 @@ def retrieve_relevant_chunks(
         except Exception as e:
             logger.warning(f"Reranking failed: {e}, using original chunks")
 
-    return rank_and_cap_chunks(chunks, query, limit=limit)
+    return _ensure_rerank_scores(rank_and_cap_chunks(chunks, query, limit=limit), query)
 
 
 def chunk_citation_label(chunk: dict[str, Any], index: int) -> str:
