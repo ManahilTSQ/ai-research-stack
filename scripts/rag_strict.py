@@ -466,6 +466,24 @@ def resolve_query_scope(
                 entity_kind="topic",
                 topic_tokens=specific,
             )
+    
+    # ── Direct listing query with topic keywords (e.g., "List SDN papers") ──
+    # This handles cases where query_has_library_topic_cue might not trigger
+    # but the query clearly has topic keywords for filtering
+    if re.search(r'\b(?:list|show|table)\s+(?:\w+\s+){1,}(?:papers?|articles?|studies)\b', q_lower):
+        # Extract topic keywords by removing listing words
+        listing_words = {"list", "show", "table", "papers", "paper", "articles", "article", "studies", "study", "all"}
+        topic_keywords = [t for t in topic_tokens if t not in listing_words]
+        if topic_keywords:
+            # Try to match papers by these topic keywords
+            matched_papers = find_papers_by_metadata_keywords(query, papers_metadata)
+            if matched_papers:
+                return QueryScope(
+                    scoped_titles=matched_papers,
+                    requires_entity=True,
+                    entity_kind="topic",
+                    topic_tokens=topic_keywords,
+                )
 
 
 
