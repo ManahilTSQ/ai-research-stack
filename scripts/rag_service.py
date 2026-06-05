@@ -860,6 +860,23 @@ class RAGService:
         if not chunks:
             return "refuse", ""
 
+        # ── Fix 6: Multi-Paper Retrieval Floor for Comparison Queries ──
+        _COMP_CUES = {
+            "compare", "comparison", "contrast", "difference", "differences",
+            "similarities", "versus", "vs", "across", "common", "trends",
+            "which papers"
+        }
+        q_lower = query.lower()
+        is_comparison = any(cue in q_lower for cue in _COMP_CUES)
+        if is_comparison:
+            unique_papers = {c.get("metadata", {}).get("title", "") for c in chunks if c.get("metadata", {}).get("title")}
+            if len(unique_papers) < 2:
+                logger.warning(
+                    f"Refusing query '{query}' because comparison requires >=2 papers, "
+                    f"but only retrieved from {len(unique_papers)} paper(s): {unique_papers}"
+                )
+                return "refuse", ""
+
         scored = sorted(
             [c for c in chunks if "rerank_score" in c],
             key=lambda x: x["rerank_score"],
@@ -881,6 +898,12 @@ class RAGService:
         max_score = scored[0]["rerank_score"]
 
         logger.info(f"Query confidence metrics: avg_top_3={avg_top_3:.3f}, max_score={max_score:.3f}")
+
+        # ── Fix 5: Refuse Answer on Weak Retrieval Scores ──
+        if max_score < 0.35:
+            logger.warning(f"Refusing query '{query}' because max_score {max_score:.3f} < 0.35")
+            return "refuse", ""
+
         # Routing based on normalized query-level confidence
         if avg_top_3 >= 0.52 and max_score >= 0.58:
             return "confident", ""
@@ -1087,6 +1110,17 @@ class RAGService:
         "yolo",
     })
 
+    # Grouped related domain terms to perform cross-domain checks.
+    # If a sentence contains any word from a group, the chunk MUST contain at least one word from that same group.
+    _DOMAIN_GROUPS: list[set[str]] = [
+        {"malware", "android", "security", "cybersecurity", "intrusion", "phishing"},
+        {"tumor", "brain", "lung", "covid", "cancer", "carcinoma", "breast", "lesion", "retinoblastoma", "melanoma", "mammogram", "x-ray", "xray", "mri", "u-net", "unet", "skin"},
+        {"plant", "agriculture", "leaf", "disease"},
+        {"explainability", "xai", "interpretability", "visualization", "shap", "lime", "transparency"},
+        {"safety", "jailbreak", "privacy", "agentic"},
+        {"airport", "coffee", "colombian", "accessibility", "tourism"},
+    ]
+
     def _verify_claim_chunk_support(self, sentence: str, doc_num: int, chunks: list[dict]) -> bool:
         """
         Span-level evidence check: verify that the chunk cited by doc_<doc_num> actually
@@ -1096,9 +1130,10 @@ class RAGService:
         1. Architecture-name check: if the sentence names a specific model/architecture
            (e.g. RNN, LSTM, GAN, Xception), that name MUST appear in the cited chunk.
            This prevents e.g. "RNNs used in security" being attributed to an agriculture paper.
+        1.5 Domain-name check: if the sentence contains key domain terms (e.g. malaria, covid),
+            the cited chunk MUST contain at least one term from that same domain group.
         2. Token-overlap check:
-           - Long sentences (5+ significant tokens): require >= 2 matching tokens.
-           - Short sentences (< 5 tokens): require >= 1 matching token.
+           - Adaptively requires hits based on sentence length (1 for <=2 tokens, 2 for <=5, 3 otherwise).
            - Title-word match from the cited paper also counts as a pass.
         """
         if doc_num < 1 or doc_num > len(chunks):
@@ -1109,10 +1144,6 @@ class RAGService:
         chunk_full = chunk_text + " " + chunk_title
 
         # ── Rule 1: Architecture-name gate ──────────────────────────────────
-        # If the sentence explicitly mentions a specific architecture or model,
-        # the cited chunk MUST contain that name.  This eliminates the pattern
-        # where the LLM says "RNNs are used in security (doc_3)" when doc_3 is
-        # an agriculture paper that never mentions RNNs.
         sent_lower = sentence.lower()
         for arch in self._ARCHITECTURE_NAMES:
             # Only fire when the architecture name appears as a whole word in the sentence
@@ -1124,12 +1155,31 @@ class RAGService:
                     )
                     return False
 
+        # ── Rule 1.5: Domain group check ───────────────────────────────────
+        for domain_group in self._DOMAIN_GROUPS:
+            # If the sentence contains any term from this domain group as a word
+            sent_has_domain = any(re.search(rf"\b{re.escape(term)}\b", sent_lower) for term in domain_group)
+            if sent_has_domain:
+                # The chunk must contain at least one term from the same domain group
+                chunk_full_lower = chunk_full.lower()
+                chunk_has_domain = any(term in chunk_full_lower for term in domain_group)
+                if not chunk_has_domain:
+                    logger.debug(
+                        f"Domain gate mismatch: sentence has terms from {domain_group} "
+                        f"but chunk '{chunk_title[:60]}' has none — rejecting"
+                    )
+                    return False
+
         # ── Rule 2: Token-overlap check ──────────────────────────────────────
         _STOP = {
             "the", "this", "that", "is", "are", "was", "were", "has", "have",
             "had", "with", "and", "for", "from", "into", "which", "their",
             "also", "based", "using", "used", "study", "paper", "research",
             "approach", "method", "result", "shows", "show", "shown",
+            # Expanded stopwords to block generic matches on technical commonalities
+            "detection", "classification", "accuracy", "performance", "proposed",
+            "results", "system", "model", "data", "applications", "analysis",
+            "evaluation", "methods", "approach"
         }
         # Extract tokens from the sentence (4+ chars, not stop-words)
         sent_tokens = [
@@ -1146,10 +1196,15 @@ class RAGService:
         title_words = [t for t in re.findall(r"\b[a-z]{4,}\b", chunk_title) if t not in _STOP]
         title_hit = any(t in sentence.lower() for t in title_words[:4])
 
-        # Weaken token overlap check to allow semantic paraphrases:
-        # Pass if at least 1 token matches (hits >= 1) OR the chunk's title matches,
-        # OR the sentence contains too few checkable tokens to verify.
-        return hits >= 1 or title_hit or len(sent_tokens) <= 2
+        # Adaptive thresholding to be permissive on short claims but strict on long ones
+        if len(sent_tokens) <= 2:
+            required_hits = 1
+        elif len(sent_tokens) <= 5:
+            required_hits = 2
+        else:
+            required_hits = 3
+
+        return hits >= required_hits or title_hit
 
     def _enforce_hard_grounding_rules(self, answer: str, chunks: list[dict]) -> str:
         # Split answer into claims/sentences
@@ -1167,9 +1222,27 @@ class RAGService:
         sentences = verifier.split_into_claims(answer_body)
         kept_sentences = []
 
+        GENERIC_FILLER_PATTERNS = [
+            "future research",
+            "further investigation",
+            "further study",
+            "further studies",
+            "interdisciplinary approach",
+            "deeper understanding",
+            "complex phenomenon",
+            "novel insights",
+            "future directions",
+            "research directions",
+            "investigate the phenomenon",
+        ]
+
         for sent in sentences:
+            # Check for generic academic filler patterns
+            is_filler = any(p in sent.lower() for p in GENERIC_FILLER_PATTERNS)
+
             # Always keep generic/structural sentences (headings, transitions)
-            if verifier.is_generic_sentence(sent):
+            # EXCEPT when they contain academic filler pattern words (which need grounding)
+            if verifier.is_generic_sentence(sent) and not is_filler:
                 kept_sentences.append(sent)
                 continue
 
@@ -1480,11 +1553,11 @@ class RAGService:
             query,
             limit=effective_limit,
             filter_title=filter_title,
-            scope_titles=matched_titles if matched_titles else None,
+            scope_titles=matched_titles if matched_titles and scope.entity_kind != "topic" else None,
             use_reranking=True,  # Always enable reranking for better precision
             over_retrieve_multiplier=2.5,  # Reduced from 4.0 — prevents citation drift from irrelevant chunks
         )
-        if matched_titles and not filter_title:
+        if matched_titles and not filter_title and scope.entity_kind != "topic":
             chunks = filter_chunks_to_titles(chunks, matched_titles)
 
         # ── EARLY QUALITY GATE (immediately after retrieval/reranking) ───────────

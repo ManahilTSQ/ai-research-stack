@@ -125,7 +125,7 @@ class QueryScope:
         """True when retrieval and answers must stay within scoped_titles."""
         if not self.scoped_titles:
             return False
-        return self.entity_kind in ("author", "paper", "filter", "topic")
+        return self.entity_kind in ("author", "paper", "filter")
 
 
 def _load_manifest() -> dict:

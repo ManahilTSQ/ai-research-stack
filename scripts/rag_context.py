@@ -412,8 +412,15 @@ def _query_stopwords() -> set[str]:
         "focus", "focuses", "question", "questions", "concept", "concepts", "theory",
         "theories", "approach", "approaches", "framework", "frameworks", "system",
         "systems", "process", "processes", "perspective", "perspectives", "literature",
-        "review", "reviews", "empirical", "evidence", "conclusions"
+        "review", "reviews", "empirical", "evidence", "conclusions",
+        # Query verbs and action words to prevent keyword over-filtering
+        "discussed", "discussing", "proposed", "proposing", "compared", "comparing",
+        "described", "describing", "analyzed", "analyzing", "presented", "presenting",
+        "investigated", "investigating", "used", "using", "found", "find", "seen",
+        "report", "reports", "reporting", "summarized", "explained", "mention",
+        "mentioned", "address", "addressed"
     }
+
 
 
 def _significant_query_tokens(query: str) -> list[str]:
