@@ -140,8 +140,19 @@ def _load_manifest() -> dict:
 
 
 def _author_tokens_from_string(authors: str) -> set[str]:
+    """Extract 4+ character surname tokens, with Unicode normalization.
+
+    Handles fi/fl ligatures (e.g. Aldughay\ufb01q → aldughayfiq) and
+    diacritic marks (e.g. Gra\xf1a → grana) so APA citation verification
+    does not false-positive on papers with non-ASCII author names.
+    """
+    import unicodedata
     tokens: set[str] = set()
-    for part in re.split(r"[,;&]| and ", (authors or "").lower()):
+    # NFKD decomposition: ligatures + diacritics → base ASCII chars
+    normalized = unicodedata.normalize("NFKD", (authors or ""))
+    normalized = normalized.replace("\ufb01", "fi").replace("\ufb02", "fl")
+    normalized = "".join(c for c in normalized if not unicodedata.combining(c))
+    for part in re.split(r"[,;&]| and ", normalized.lower()):
         for word in re.findall(r"[a-z]{4,}", part):
             tokens.add(word)
     return tokens
@@ -628,10 +639,31 @@ def is_catalog_metadata_query(query: str) -> bool:
         if "did not" in q or "not find" in q or "would have" in q or "wanted" in q:
             return False
 
+    # ── Topic-search queries should NOT be routed to catalog metadata ─────────
+    # "Find papers about ransomware" / "Show papers related to SDN" are topic searches.
+    # Even if they mention "authors" or "metadata" as display fields, the primary
+    # intent is topic search — not catalog listing. Return False so keyword discovery
+    # or semantic search handles them.
+    if re.search(
+        r"\b(?:find|search|get|retrieve)\s+papers?\s+(?:about|on|related\s+to|concerning|mentioning)\b",
+        q, re.I
+    ):
+        return False
+
     # ── Specific paper author query route-to-RAG ──────────────────────────────
     # Route queries asking about the authors / writers of a specific paper/topic to RAG
     if re.search(r"\b(?:who\s+(?:wrote|authored)|authors?\s+of)\s+(?:the|this|a|an)?\s*(?:papers?|articles?|publications?|studies|study)\b", q):
         return False
+
+    # ── Multi-field metadata query with a specific paper title ────────────────
+    # e.g. "What are the authors, venue, and year of the paper 'X'?"
+    # Detected by: quoted title OR 'paper'/'article' mention + 2+ metadata fields.
+    _META_FIELDS = {"author", "authors", "venue", "year", "doi", "journal", "published"}
+    _meta_hits = sum(1 for f in _META_FIELDS if f in q)
+    if _meta_hits >= 2 and re.search(
+        r"[\"\'].*?[\"\']|\bpaper\b|\barticle\b|\bpublication\b", q
+    ):
+        return True
 
     # ── Individual paper metadata queries ─────────────────────────────────────
     if any(pat in q for pat in ["who wrote", "who authored", "who are the authors", "author of", "authors of", "who is the author",
@@ -669,10 +701,14 @@ def is_catalog_metadata_query(query: str) -> bool:
     ]
     if any(re.search(pat, q) for pat in author_patterns):
         return True
-    # Match "list all authors" / "show all authors" but NOT
-    # "list articles with Jhanjhi as author or co-author" (where 'author' is a role, not the subject).
+    # Match "list all authors" / "show all authors" but NOT:
+    # - "list articles with Jhanjhi as author or co-author" (role context)
+    # - "show full metadata including authors" (authors is a display field, not subject)
+    # - "show papers about X ... authors and year" (topic search mentioning author field)
     if (re.search(r"\b(list|show|name|who|all)\b.{0,40}\b(all\s+)?(authors?|writers?)\b", q)
-            and not re.search(r"\bas\s+(an?\s+)?(?:author|co-?author)\b", q)):
+            and not re.search(r"\bas\s+(an?\s+)?(?:author|co-?author)\b", q)
+            and not re.search(r"\b(?:including|metadata|complete|full)\b", q)
+            and "and year" not in q and "and venue" not in q):
         return True
     if re.search(r"\bhow many\b.{0,30}\b(papers?|articles?)\b", q):
         return True
@@ -766,8 +802,9 @@ def _format_numbered_list(header: str, lines: list[str]) -> str:
 def answer_individual_paper_metadata_query(query: str, papers_metadata: dict) -> str | None:
     q = (query or "").lower().strip()
     
-    # 1. Identify target field
+    # 1. Identify target field (or "all" for multi-field requests)
     target_field = None
+    _META_FIELD_COUNT = sum(1 for f in ("author", "authors", "venue", "year", "doi") if f in q)
     if (any(pat in q for pat in ["who wrote", "who authored", "who are the authors", "who is the author", "list the authors of", "show the authors of", "name the authors of"])
         or (("author" in q or "authors" in q) and any(pat in q for pat in ["what is the name of the", "what are the names of the", "names of the author", "name of the author"]))):
         target_field = "authors"
@@ -777,7 +814,12 @@ def answer_individual_paper_metadata_query(query: str, papers_metadata: dict) ->
         target_field = "venue"
     elif "doi" in q:
         target_field = "doi"
-        
+
+    # Multi-field request: "What are the authors, venue, and year of X?"
+    # When 2+ metadata fields are requested together, return a combined answer.
+    if not target_field and _META_FIELD_COUNT >= 2:
+        target_field = "all"
+
     if not target_field:
         return None
         
@@ -813,22 +855,38 @@ def answer_individual_paper_metadata_query(query: str, papers_metadata: dict) ->
     answers = []
     for title in matched_papers:
         meta = papers_metadata[title]
-        val = meta.get(target_field)
-        if not val or val == "N/A":
-            continue
-            
-        if target_field == "authors":
-            answers.append(f"The author(s) of the paper \"{title}\" are: {val}.")
-        elif target_field == "year":
-            answers.append(f"The paper \"{title}\" was published in {val}.")
-        elif target_field == "venue":
-            answers.append(f"The paper \"{title}\" was published in {val}.")
-        elif target_field == "doi":
-            answers.append(f"The DOI of the paper \"{title}\" is {val}.")
-            
+
+        if target_field == "all":
+            # Return all available metadata fields in one structured answer
+            authors_val = meta.get("authors", "Unknown Authors")
+            year_val = meta.get("year", "N/A")
+            venue_val = meta.get("venue") or "N/A"
+            doi_val = meta.get("doi") or "N/A"
+            parts = [
+                f"**Title:** {title}",
+                f"**Authors:** {authors_val}",
+                f"**Year:** {year_val}",
+                f"**Venue:** {venue_val}",
+            ]
+            if doi_val and doi_val != "N/A":
+                parts.append(f"**DOI:** https://doi.org/{doi_val}")
+            answers.append("\n".join(parts))
+        else:
+            val = meta.get(target_field)
+            if not val or val == "N/A":
+                continue
+            if target_field == "authors":
+                answers.append(f"The author(s) of the paper \"{title}\" are: {val}.")
+            elif target_field == "year":
+                answers.append(f"The paper \"{title}\" was published in {val}.")
+            elif target_field == "venue":
+                answers.append(f"The paper \"{title}\" was published in {val}.")
+            elif target_field == "doi":
+                answers.append(f"The DOI of the paper \"{title}\" is {val}.")
+
     if not answers:
         return None
-        
+
     references_list = []
     for title in matched_papers:
         meta = papers_metadata[title]
@@ -840,7 +898,7 @@ def answer_individual_paper_metadata_query(query: str, papers_metadata: dict) ->
         if d and d != "N/A":
             ref += f" https://doi.org/{d}"
         references_list.append(ref)
-        
+
     ref_block = "\n\nReferences:\n\n" + "\n\n".join(references_list)
     return "\n\n".join(answers) + ref_block
 
@@ -1003,22 +1061,43 @@ def answer_catalog_metadata_query(query: str, papers_metadata: dict) -> str | No
         r"\bpapers?\s+by\s+|\barticles?\s+by\s+", q
     ):
         matched_venue = None
-        venues = set()
-        for meta in papers_metadata.values():
-            v = meta.get("venue")
-            if v and v != "N/A":
-                venues.add(v)
-                
-        for v in venues:
-            norm_v = v.lower().replace("&amp;", "&").strip()
-            if norm_v in q:
-                matched_venue = v
-                break
-            words = [w.strip(".,:;()[]") for w in norm_v.split()]
-            words = [w for w in words if len(w) >= 4 and w not in {"journal", "conference", "transactions", "letters", "proceedings", "reports", "report"}]
-            if words and any(w in q for w in words):
-                matched_venue = v
-                break
+
+        # ── Skip venue matching for topic/relation queries ────────────────────
+        # "List papers related to SDN-based security" should NOT accidentally match
+        # "Journal of Information Security" via the word "security".
+        # Only apply venue matching when the user explicitly names a venue/journal.
+        _is_topic_query = bool(re.search(
+            r"\b(?:related|about|on|concerning|regarding|focus|covering|mentioning)\b", q, re.I
+        ))
+        if not _is_topic_query:
+            venues = set()
+            for meta in papers_metadata.values():
+                v = meta.get("venue")
+                if v and v != "N/A":
+                    venues.add(v)
+
+            for v in venues:
+                norm_v = v.lower().replace("&amp;", "&").strip()
+                # Full venue name must appear literally in query
+                if norm_v in q:
+                    matched_venue = v
+                    break
+                # Keyword match: require a venue-specific word (not a generic topic word)
+                _VENUE_GENERIC = {
+                    "journal", "conference", "transactions", "letters",
+                    "proceedings", "reports", "report", "review", "research",
+                    # Common words that should NEVER alone trigger a venue match:
+                    "security", "network", "computing", "intelligence", "science",
+                    "engineering", "technology", "systems", "applications",
+                    "information", "international", "digital",
+                }
+                words = [w.strip(".,:;()[]") for w in norm_v.split()]
+                specific_words = [w for w in words if len(w) >= 5 and w not in _VENUE_GENERIC]
+                # Require at least 2 specific venue words to match — prevents
+                # 'security' alone matching 'Journal of Information Security'
+                if len(specific_words) >= 2 and sum(1 for w in specific_words if w in q) >= 2:
+                    matched_venue = v
+                    break
 
         titles = sorted(papers_metadata.keys())
         if matched_venue:

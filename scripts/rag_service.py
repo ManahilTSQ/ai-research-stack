@@ -1867,6 +1867,11 @@ class RAGService:
                     "paper", "study", "model", "method", "approach", "system",
                     "learning", "detection", "classification", "analysis", "review",
                     "using", "based", "these", "their", "which", "about",
+                    # Library/ingestion meta-terms: never trigger domain-term checks
+                    # (they won't appear in chunk text but are valid library queries)
+                    "ingested", "successfully", "library", "database", "knowledge",
+                    "papers", "document", "documents", "full", "text", "pdfs", "abstract",
+                    "ingest", "ingestion", "corpus",
                 }
                 specific_terms = [
                     t for t in query_tokens
