@@ -417,17 +417,24 @@ class RAGService:
         Build a deterministic References section from retrieved chunk metadata.
 
         Guards applied (in order):
-          1. Pages must be purely numeric ("1", "1-12", "pp. 6-7"); anything else is dropped.
+          1. Title must exist in the ingested library catalog (papers_metadata). Any title
+             not found in the catalog is treated as a hallucination and dropped.
           2. Venue is capped at 80 characters (first clause only).
           3. Authors field must not contain other paper titles.
           4. Each unique *title* appears only once regardless of how many chunks came from it.
-          5. If the assembled reference string exceeds 350 characters the entire entry is
+          5. Pages are omitted entirely — they are unreliably stored in chunk metadata and
+             produce formatting artifacts like trailing "0.".
+          6. If the assembled reference string exceeds 350 characters the entire entry is
              dropped — it is almost certainly corrupted / stitched metadata.
         """
-        _PAGES_RE = re.compile(r"^(?:pp?\.?\s*)?\d+(?:\s*[\-\u2013\u2014,]\s*\d+)?$")
-
         refs: list[str] = []
         seen_titles: set[str] = set()          # deduplicate by title alone
+
+        # Build a fast lower-case lookup of the library catalog titles for Guard 1
+        catalog_lower: dict[str, str] = {}
+        if papers_metadata:
+            for t in papers_metadata:
+                catalog_lower[t.lower()] = t
 
         for chunk in chunks:
             meta = chunk.get("metadata", {}) or {}
@@ -436,7 +443,6 @@ class RAGService:
             year   = str(meta.get("year") or "N/A").strip()
             doi    = (meta.get("doi")     or "N/A").strip()
             venue  = (meta.get("venue")   or "").strip()
-            pages  = (meta.get("pages")   or "").strip()
 
             # ── Guard 1: skip obviously incomplete metadata ────────────────
             if not title or title == "Untitled":
@@ -446,24 +452,29 @@ class RAGService:
             if year == "N/A":
                 continue
 
-            # ── Guard 2: deduplicate by title ─────────────────────────────
+            # ── Guard 2: LIBRARY CATALOG CHECK — block hallucinated papers ─
+            # Every reference MUST correspond to a paper that was actually ingested.
+            # If the title is not in papers_metadata, it is a hallucination and must
+            # be silently dropped before it reaches the user.
+            if catalog_lower:  # only enforce when catalog is available
+                title_lower = title.lower()
+                if title_lower not in catalog_lower:
+                    # Allow partial match for very long titles that get truncated
+                    partial_match = any(
+                        len(ct) > 30 and (title_lower in ct or ct in title_lower)
+                        for ct in catalog_lower
+                    )
+                    if not partial_match:
+                        logger.warning(
+                            f"Dropping hallucinated reference (not in library catalog): {title[:80]}"
+                        )
+                        continue
+
+            # ── Guard 3: deduplicate by title ─────────────────────────────
             title_key = title.lower()
             if title_key in seen_titles:
                 continue
             seen_titles.add(title_key)
-
-            # ── Guard 3: sanitize pages — numeric only, max 20 chars ──────
-            pages_clean = ""
-            if pages:
-                pages_stripped = pages.strip()
-                if _PAGES_RE.match(pages_stripped) and len(pages_stripped) <= 20:
-                    pages_clean = pages_stripped
-                else:
-                    # Try to extract a page range from embedded text
-                    m = re.search(r"\bpp?\.?\s*(\d+(?:\s*[\-–—,]\s*\d+)?)", pages_stripped, re.I)
-                    if m and len(m.group(0)) <= 20:
-                        pages_clean = m.group(1)
-                    # otherwise discard
 
             # ── Guard 4: sanitize venue — 80 chars, no embedded titles ────
             venue_clean = ""
@@ -492,12 +503,10 @@ class RAGService:
                         authors_clean = authors_clean[:idx].strip(", ")
                         a_lower = authors_clean.lower()
 
-            # ── Assemble reference ────────────────────────────────────────
+            # ── Assemble reference (pages deliberately omitted — unreliable) ──
             ref_parts = [f"- {authors_clean} ({year}). {title}"]
             if venue_clean:
                 ref_parts.append(venue_clean)
-            if pages_clean:
-                ref_parts.append(pages_clean)
             ref = ". ".join(ref_parts) + "."
 
             if doi and doi not in ("N/A", ""):
@@ -1412,7 +1421,9 @@ class RAGService:
 
         effective_limit = limit
         if matched_titles:
-            effective_limit = max(limit, len(matched_titles) * 3, 24)
+            # Cap to 20 chunks max. More chunks dilute relevance and cause citation drift.
+            # Use 2 chunks per matched paper (enough coverage without flooding context).
+            effective_limit = min(max(limit, len(matched_titles) * 2), 20)
 
         # Extraction/listing tables must not inherit unrelated prior chat turns.
         # Drafting / creative requests (draft, write, generate, suggest) also get a
@@ -1436,7 +1447,7 @@ class RAGService:
             filter_title=filter_title,
             scope_titles=matched_titles if matched_titles else None,
             use_reranking=True,  # Always enable reranking for better precision
-            over_retrieve_multiplier=4.0,  # Increase over-retrieval for better reranking candidates
+            over_retrieve_multiplier=2.5,  # Reduced from 4.0 — prevents citation drift from irrelevant chunks
         )
         if matched_titles and not filter_title:
             chunks = filter_chunks_to_titles(chunks, matched_titles)
@@ -1846,6 +1857,13 @@ class RAGService:
             "7. TRUTH GAPS: If the concept asked about is NOT in the context, say: 'The retrieved context does not contain information about [topic].' DO NOT guess.\n"
             "8. ONE PAPER PER SENTENCE: In multi-paper answers, each sentence may cite at most ONE paper (one doc_X). Never blend two papers into one sentence.\n"
             "9. WRITE NOTHING YOU CANNOT TRACE: If you cannot attach a specific doc_X citation to a sentence, do not write that sentence.\n\n"
+            "=== PAPER-SPECIFIC ANSWER RULES — MANDATORY ===\n"
+            "When describing what a paper found, concluded, or contributed, you MUST include concrete specifics:\n"
+            "- ALWAYS state the exact accuracy %, F1 score, dataset name, model name, or other metric if it appears in the passage. Example: 'achieves 98.3% accuracy on the ISIC dataset (doc_2)' NOT 'achieves high accuracy'.\n"
+            "- ALWAYS name the specific method or architecture used. Example: 'uses a ResNet-50 backbone (doc_3)' NOT 'uses deep learning'.\n"
+            "- If no specific numeric value appears in the retrieved passage, write: 'reports improved [metric] but specific figures are not in the retrieved passage (doc_X)'.\n"
+            "- NEVER use generic phrases like 'reduces data requirements', 'improves performance', 'state of the art' without citing the specific number or paper-reported result.\n"
+            "- NEVER describe online platforms, e-commerce, social media, or other topics that are NOT in the retrieved context passages.\n\n"
             "=== LISTING QUERY RULES — ABSOLUTE REQUIREMENTS ===\n"
             "When the user asks you to LIST, ENUMERATE, or TABULATE papers/articles:\n"
             "1. You MUST output EVERY SINGLE matching paper in your main numbered response.\n"

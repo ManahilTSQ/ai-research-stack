@@ -888,9 +888,18 @@ def apply_verification_or_refuse(
 ) -> tuple[str, bool]:
     """
     Returns (final_answer, passed).
-    
-    Enforces strict citation grounding: answers may only cite papers that are
-    either in the retrieved chunks or in the resolved scope.
+
+    Scope-checks the answer body against the resolved paper scope.
+    Reference integrity (hallucination blocking) is handled upstream
+    by _build_safe_references() which enforces a strict library-catalog
+    guard before any title is rendered.
+
+    NOTE: strip_unverified_citations is intentionally NOT called here.
+    By the time this function executes, _bind_citations_and_verify has
+    already resolved all (doc_X) placeholders into (Author et al., Year)
+    APA inline citations. Calling strip_unverified_citations at this point
+    causes it to mis-match its own valid_pairs format and delete correct
+    citations, which was the primary cause of citations disappearing.
     """
     if not answer or not answer.strip():
         return answer, True
@@ -902,36 +911,6 @@ def apply_verification_or_refuse(
         parts = answer.split("References:", 1)
         answer_body = parts[0].strip()
         refs_part = "References:\n" + parts[1].strip()
-
-    # ── Verify and clean up citations/claims using CitationVerifier ──
-    try:
-        from citation_verifier import CitationVerifier
-        verifier = CitationVerifier()
-        # 1. Strip unverified citations on the body only
-        answer_body = verifier.strip_unverified_citations(answer_body, chunks)
-        # 2. Verify and remove unsupported claim sentences on the body only
-        verification = verifier.verify_answer(answer_body, chunks)
-        answer_body = verifier.regenerate_or_remove_unsupported(answer_body, verification, action="remove")
-        
-        if not answer_body.strip():
-            # If body is completely empty and scope is locked, return refusal
-            if scope.is_locked:
-                return NOT_IN_LIBRARY_REFUSAL, False
-            # Otherwise return a limited-evidence notice
-            titles_present = list({
-                c.get("metadata", {}).get("title", "Untitled")
-                for c in chunks if c.get("metadata", {}).get("title")
-            })[:3]
-            titles_str = "; ".join(titles_present) if titles_present else "the retrieved papers"
-            return (
-                f"The library contains related studies ({titles_str}) but the "
-                "retrieved passages do not contain sufficient detail to fully answer "
-                "this specific question. Try rephrasing or asking about a specific "
-                "aspect of these papers."
-            ), True
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"Citation/claim verification failed in strict verification: {e}")
 
     # Re-append references
     final_answer = answer_body
