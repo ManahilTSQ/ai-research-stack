@@ -835,6 +835,19 @@ def is_simple_inventory_listing(query: str) -> bool:
     # Allow contextual questions about chat history to pass through to RAG handler
     if "above questions" in query.lower() or "this chat" in query.lower():
         return False
+    
+    # If the query contains topic-specific keywords (e.g., "ransomware papers", "phishing detection papers"),
+    # this is NOT a simple inventory listing - it requires topic filtering
+    q_lower = (query or "").lower()
+    topic_keywords = _significant_query_tokens(query)
+    # If we have topic keywords beyond generic terms, this requires filtering, not simple listing
+    if topic_keywords and len(topic_keywords) >= 1:
+        # Check if the query has specific topic terms that should filter results
+        # (e.g., "ransomware", "phishing", "malware", "intrusion", etc.)
+        specific_topics = [t for t in topic_keywords if t not in _GENERIC_TOPIC_TOKENS and len(t) >= 4]
+        if specific_topics:
+            return False
+    
     return is_listing_query(query) and not is_content_extraction_query(query)
 
 
@@ -866,9 +879,26 @@ def query_has_author_intent(query: str) -> bool:
 
 def query_has_paper_focus(query: str) -> bool:
     """True when the user is asking about a specific paper by title."""
-    return bool(_PAPER_FOCUS_RE.search(query or "")) or bool(
-        re.search(r'"[^"]{8,200}"', query or "")
-    )
+    q = query or ""
+    
+    # Check for explicit paper focus patterns
+    if _PAPER_FOCUS_RE.search(q):
+        return True
+    
+    # Check for quoted titles
+    if re.search(r'"[^"]{8,200}"', q):
+        return True
+    
+    # Check for "Who wrote [paper title]" pattern
+    # Extract the phrase after "Who wrote" and check if it matches a paper title
+    who_wrote_match = re.search(r'who\s+(?:wrote|authored)\s+(.+?)(?:\s*[?\.]|$)', q, re.I)
+    if who_wrote_match:
+        potential_title = who_wrote_match.group(1).strip()
+        # If the phrase is long enough (>= 4 words), it's likely a paper title not an author name
+        if len(potential_title.split()) >= 4:
+            return True
+    
+    return False
 
 
 def _clean_author_phrase(phrase: str) -> str | None:
@@ -1452,6 +1482,28 @@ def fuzzy_match_paper_titles(query: str, papers_metadata: dict) -> list[str]:
                 if re.search(rf'\b{re.escape(acronym_lower)}\b', title_lower):
                     if title not in matches:
                         matches.append(title)
+        if matches:
+            return matches
+
+    # Enhanced unquoted title matching for "Tell me about X" queries
+    # Check if the query looks like a paper title (long, specific phrases)
+    q_lower = (query or "").lower().strip()
+    # Remove common query prefixes
+    q_clean = re.sub(r'^(tell me about|what is|describe|explain|summarize|summary of|about|the paper titled|paper titled)\s+', '', q_lower, flags=re.I)
+    q_clean = q_clean.strip()
+    
+    # If the cleaned query is long enough (>= 5 words) and specific, try direct title matching
+    words = q_clean.split()
+    if len(words) >= 5:
+        for title in papers_metadata:
+            title_lower = title.lower()
+            # Check for substantial overlap (at least 60% of words)
+            title_words = set(title_lower.split())
+            query_words = set(words)
+            overlap = len(title_words & query_words)
+            if overlap >= min(5, len(query_words) * 0.6):
+                if title not in matches:
+                    matches.append(title)
         if matches:
             return matches
 

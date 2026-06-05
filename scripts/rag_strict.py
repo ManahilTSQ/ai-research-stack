@@ -848,7 +848,9 @@ def answer_individual_paper_metadata_query(query: str, papers_metadata: dict) ->
                 best_hits = scored[0][0]
                 matched_papers = [t for h, t in scored if h == best_hits]
                 
-    if not matched_papers or len(matched_papers) > 3:
+    # Allow up to 5 matches for DOI queries to increase recall
+    max_matches = 5 if target_field == "doi" else 3
+    if not matched_papers or len(matched_papers) > max_matches:
         return None
         
     # 3. Format answer
