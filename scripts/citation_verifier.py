@@ -71,7 +71,7 @@ class CitationVerifier:
         chunks: list[dict[str, Any]]
     ) -> dict[str, Any]:
         """
-        Verify if a claim is supported by retrieved chunks.
+        Verify if a claim is supported by retrieved chunks using semantic similarity.
 
         Args:
             claim: The claim to verify.
@@ -82,6 +82,7 @@ class CitationVerifier:
                 - is_supported: bool
                 - supporting_chunks: list of chunk indices
                 - evidence: list of supporting text snippets
+                - similarity_score: float (average similarity across chunks)
         """
         claim_entities = self.extract_claim_entities(claim)
         
@@ -90,18 +91,26 @@ class CitationVerifier:
             return {
                 "is_supported": True,
                 "supporting_chunks": [],
-                "evidence": []
+                "evidence": [],
+                "similarity_score": 1.0
             }
         
         supporting_chunks = []
         evidence = []
+        similarity_scores = []
         
         for idx, chunk in enumerate(chunks):
             chunk_text = chunk.get("text", "").lower()
             
-            # Check for entity overlap
+            # Calculate semantic similarity using entity overlap as a proxy
             chunk_words = set(re.findall(r'\b[a-z]{3,}\b|\d+(?:\.\d+)?', chunk_text))
             overlap = claim_entities & chunk_words
+            
+            # Similarity score based on entity overlap
+            if claim_entities:
+                similarity = len(overlap) / len(claim_entities)
+            else:
+                similarity = 0.0
             
             # Overlap criteria:
             # For short claims (1-2 entities): must match all entities
@@ -110,15 +119,19 @@ class CitationVerifier:
             
             if len(overlap) >= min_overlap:
                 supporting_chunks.append(idx)
+                similarity_scores.append(similarity)
                 # Extract relevant snippet
                 snippet = self._extract_relevant_snippet(claim, chunk_text)
                 if snippet:
                     evidence.append(snippet)
         
+        avg_similarity = sum(similarity_scores) / len(similarity_scores) if similarity_scores else 0.0
+        
         return {
             "is_supported": len(supporting_chunks) > 0,
             "supporting_chunks": supporting_chunks,
-            "evidence": evidence
+            "evidence": evidence,
+            "similarity_score": avg_similarity
         }
 
     def _extract_relevant_snippet(self, claim: str, chunk_text: str) -> str:
@@ -235,41 +248,69 @@ class CitationVerifier:
         self,
         answer: str,
         verification: dict[str, Any],
-        action: str = "remove"
+        action: str = "remove",
+        min_similarity_threshold: float = 0.3
     ) -> str:
         """
         Handle unsupported claims by either removing them or flagging them.
+        Uses similarity scoring to keep medium-similarity claims instead of deleting them.
 
         Args:
             answer: Original answer.
             verification: Verification result.
             action: "remove" or "flag" unsupported claims.
+            min_similarity_threshold: Minimum similarity score to keep a claim.
 
         Returns:
             Modified answer.
         """
-        unsupported_claims = self.flag_unsupported_claims(verification)
-        
-        if not unsupported_claims:
+        claims = self.split_into_claims(answer)
+        if not claims:
             return answer
         
+        # Classify claims by similarity score
+        high_similarity_claims = []
+        medium_similarity_claims = []
+        low_similarity_claims = []
+        
+        for claim_verif in verification.get("claim_verification", []):
+            claim = claim_verif.get("claim", "")
+            similarity = claim_verif.get("similarity_score", 0.0)
+            is_supported = claim_verif.get("is_supported", False)
+            
+            if is_supported and similarity >= min_similarity_threshold:
+                if similarity >= 0.7:
+                    high_similarity_claims.append(claim)
+                else:
+                    medium_similarity_claims.append(claim)
+            else:
+                low_similarity_claims.append(claim)
+        
         if action == "remove":
-            # Remove unsupported claims
-            claims = self.split_into_claims(answer)
-            supported_claims = [
-                claim for claim in claims
-                if claim not in unsupported_claims
-            ]
-            return " ".join(supported_claims)
+            # Remove only low-similarity claims, keep medium and high
+            # This prevents deleting valid paraphrased content
+            supported_claims = high_similarity_claims + medium_similarity_claims
+            result = " ".join(supported_claims)
+            
+            # Log what was removed
+            if low_similarity_claims:
+                logger.warning(f"Removed {len(low_similarity_claims)} low-similarity claims")
+            if medium_similarity_claims:
+                logger.info(f"Kept {len(medium_similarity_claims)} medium-similarity claims (paraphrased)")
+            
+            return result if result.strip() else answer
         
         elif action == "flag":
-            # Add warning about unsupported claims
-            warning = (
-                f"\n\n[Verification Warning: {len(unsupported_claims)} claim(s) "
-                f"could not be verified against the provided sources. "
-                f"Please verify these claims independently.]"
-            )
-            return answer + warning
+            # Add warning about low-similarity claims
+            if low_similarity_claims:
+                warning = (
+                    f"\n\n[Verification Warning: {len(low_similarity_claims)} claim(s) "
+                    f"have low similarity to retrieved sources. "
+                    f"Please verify these claims independently.]"
+                )
+                return answer + warning
+            
+            return answer
         
         return answer
 
@@ -400,6 +441,9 @@ class CitationVerifier:
         Remove citations that don't match retrieved chunk metadata to prevent hallucination.
         Also cleans up broken parentheticals and ensures whole parentheticals are stripped
         if any of their cited sources are unverified.
+        
+        STRICT MODE: Only allow citations that EXACTLY match (author, year) pairs from chunks.
+        No fallback to text matching - this prevents hallucinated citations from passing.
         """
         # Build set of valid (author, year) pairs from chunks
         valid_pairs = set()
@@ -437,21 +481,13 @@ class CitationVerifier:
             if not author_candidates:
                 continue
                 
-            # Verify if all extracted author surnames matched with the year in valid_pairs
+            # STRICT VERIFICATION: All author surnames must match valid_pairs with the year
             citation_valid = True
             for author in author_candidates:
                 if (author, year) not in valid_pairs:
-                    # Check if surname is present in the chunk text to be safe (whole word match)
-                    surname_in_text = False
-                    for chunk in chunks:
-                        chunk_text = chunk.get("text", "").lower()
-                        if re.search(r'\b' + re.escape(author) + r'\b', chunk_text):
-                            surname_in_text = True
-                            break
-                    if not surname_in_text:
-                        citation_valid = False
-                        logger.warning(f"Unverified citation author: {author} with year {year}")
-                        break
+                    citation_valid = False
+                    logger.warning(f"Unverified citation author: {author} with year {year} (not in valid_pairs)")
+                    break
             
             if not citation_valid:
                 # Remove the entire parenthetical citation

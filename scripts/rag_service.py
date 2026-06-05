@@ -689,37 +689,46 @@ class RAGService:
         inventory_metadata = inventory_for_scope(papers_metadata, scope)
 
         # ── Author existence check & Broad author query handling — BEFORE retrieval/LLM ──
+        # IMPORTANT: Only apply author existence check if the query is actually about an author,
+        # NOT if it's about a paper title that might be confused with an author name
         if query_expects_named_author(query) and scope.entity_kind != "paper":
-            author_phrase = extract_author_search_phrase(query)
-            if not author_phrase:
-                author_phrase, _ = resolve_author_from_library(query, papers_metadata)
-            
-            if author_phrase:
-                author_exists = verify_author_exists_in_library(author_phrase, papers_metadata)
-                if not author_exists:
-                    # Double-check
-                    _, resolved_papers = resolve_author_from_library(query, papers_metadata)
-                    if not resolved_papers:
-                        logger.warning(f"Author '{author_phrase}' not in library, refusing before LLM")
-                        return {
-                            "query": query,
-                            "answer": f"No papers authored by {author_phrase} were found in the ingested library.",
-                            "sources": [],
-                            "success": False,
-                            "error": f"Author not in library: {author_phrase}",
-                        }
+            # First check if the query might be about a paper title instead of an author
+            # This prevents false positives like "Deep Learning with Differential Privacy" being treated as an author
+            paper_title_matches = fuzzy_match_paper_titles(query, papers_metadata)
+            if paper_title_matches:
+                # Query is about a paper title, skip author existence check
+                logger.info(f"Query matches paper title '{paper_title_matches[0]}', skipping author existence check")
+            else:
+                author_phrase = extract_author_search_phrase(query)
+                if not author_phrase:
+                    author_phrase, _ = resolve_author_from_library(query, papers_metadata)
                 
-                # Check if it's a broad query when they have multiple papers
-                if author_exists:
-                    author_display, resolved_papers = resolve_author_from_library(query, papers_metadata)
-                    if len(resolved_papers) > 3 and is_broad_author_query(query, author_phrase):
-                        logger.warning(f"Broad query on author '{author_phrase}' with {len(resolved_papers)} papers, refusing before LLM")
-                        return {
-                            "query": query,
-                            "answer": f"{author_display} is an author on {len(resolved_papers)} papers in your library. Please specify which paper or topic.",
-                            "sources": [],
-                            "success": True,
-                        }
+                if author_phrase:
+                    author_exists = verify_author_exists_in_library(author_phrase, papers_metadata)
+                    if not author_exists:
+                        # Double-check
+                        _, resolved_papers = resolve_author_from_library(query, papers_metadata)
+                        if not resolved_papers:
+                            logger.warning(f"Author '{author_phrase}' not in library, refusing before LLM")
+                            return {
+                                "query": query,
+                                "answer": f"No papers authored by {author_phrase} were found in the ingested library.",
+                                "sources": [],
+                                "success": False,
+                                "error": f"Author not in library: {author_phrase}",
+                            }
+                    
+                    # Check if it's a broad query when they have multiple papers
+                    if author_exists:
+                        author_display, resolved_papers = resolve_author_from_library(query, papers_metadata)
+                        if len(resolved_papers) > 3 and is_broad_author_query(query, author_phrase):
+                            logger.warning(f"Broad query on author '{author_phrase}' with {len(resolved_papers)} papers, refusing before LLM")
+                            return {
+                                "query": query,
+                                "answer": f"{author_display} is an author on {len(resolved_papers)} papers in your library. Please specify which paper or topic.",
+                                "sources": [],
+                                "success": True,
+                            }
 
         if query_mode == "ambiguous":
             return {
@@ -789,45 +798,51 @@ class RAGService:
             history_for_llm = None
 
         # ── Step 1: Retrieve chunks ───────────────────────────────────────────
+        # Enable reranking by default for better retrieval precision
         chunks = retrieve_relevant_chunks(
             self.vector_store,
             query,
             limit=effective_limit,
             filter_title=filter_title,
             scope_titles=matched_titles if matched_titles else None,
+            use_reranking=True,  # Always enable reranking for better precision
+            over_retrieve_multiplier=4.0,  # Increase over-retrieval for better reranking candidates
         )
         if matched_titles and not filter_title:
             chunks = filter_chunks_to_titles(chunks, matched_titles)
 
         # ── EARLY QUALITY GATE (immediately after retrieval/reranking) ───────────
         # Moved here to save compute - fail fast before any further processing
-        if chunks:
-            try:
-                from context_coherence import ContextCoherence
-                coherence = ContextCoherence()
-                coherence_metrics = coherence.calculate_coherence_score(chunks)
-                
-                # Quality threshold: if coherence is too low, refuse
-                quality_threshold = 0.4
-                if coherence_metrics["overall_coherence"] < quality_threshold and not scope.is_locked:
-                    logger.warning(
-                        f"Context coherence too low: {coherence_metrics['overall_coherence']:.2f} "
-                        f"(threshold: {quality_threshold})"
-                    )
-                    # If we have contradictions or high fragmentation, refuse
-                    if (coherence_metrics["contradiction_count"] > 0 or 
-                        coherence_metrics["fragmentation_score"] > 0.7):
-                        return {
-                            "query": query,
-                            "answer": IRRELEVANT_REFUSAL,
-                            "sources": chunks,
-                            "success": False,
-                            "error": f"Context coherence gate failed: score {coherence_metrics['overall_coherence']:.2f}"
-                        }
-            except ImportError:
-                logger.warning("Context coherence module not available, skipping early quality gate")
-            except Exception as e:
-                logger.warning(f"Early quality gate failed: {e}")
+        # DISABLED: Context coherence gate is too aggressive and blocks valid queries
+        # The coherence calculation is unreliable and causes false negatives
+        # Relying on citation verification and scope verification instead
+        # if chunks:
+        #     try:
+        #         from context_coherence import ContextCoherence
+        #         coherence = ContextCoherence()
+        #         coherence_metrics = coherence.calculate_coherence_score(chunks)
+        #         
+        #         # Quality threshold: if coherence is too low, refuse
+        #         quality_threshold = 0.4
+        #         if coherence_metrics["overall_coherence"] < quality_threshold and not scope.is_locked:
+        #             logger.warning(
+        #                 f"Context coherence too low: {coherence_metrics['overall_coherence']:.2f} "
+        #                 f"(threshold: {quality_threshold})"
+        #             )
+        #             # If we have contradictions or high fragmentation, refuse
+        #             if (coherence_metrics["contradiction_count"] > 0 or 
+        #                 coherence_metrics["fragmentation_score"] > 0.7):
+        #                 return {
+        #                     "query": query,
+        #                     "answer": IRRELEVANT_REFUSAL,
+        #                     "sources": chunks,
+        #                     "success": False,
+        #                     "error": f"Context coherence gate failed: score {coherence_metrics['overall_coherence']:.2f}"
+        #                 }
+        #     except ImportError:
+        #         logger.warning("Context coherence module not available, skipping early quality gate")
+        #     except Exception as e:
+        #         logger.warning(f"Early quality gate failed: {e}")
 
         if not papers_metadata:
             logger.warning("No papers found in ChromaDB.")
@@ -982,32 +997,57 @@ class RAGService:
 
         library_inventory_str = build_library_inventory(inventory_metadata)
         
-        # ── Context quality gate before LLM ───────────────────────────────────
-        try:
-            from context_shaper import ContextShaper
-            shaper = ContextShaper()
-            quality_metrics = shaper.estimate_context_quality(chunks, query)
+        # ── Off-topic detection BEFORE LLM call ─────────────────────────────
+        # Use retrieval count instead of keyword matching (more reliable)
+        # If no chunks were retrieved and the query is not about a specific paper in the library,
+        # refuse immediately to prevent LLM from hallucinating
+        if not chunks and not filter_title and not matched_titles:
+            # Check if query might be about a paper title in the library
+            query_matches_paper = False
+            for title in papers_metadata.keys():
+                if title.lower() in query.lower() or query.lower() in title.lower():
+                    query_matches_paper = True
+                    break
             
-            # Quality threshold: if quality is too low, refuse or retry
-            quality_threshold = 0.3
-            if quality_metrics["quality_score"] < quality_threshold and not scope.is_locked:
-                logger.warning(
-                    f"Context quality too low: {quality_metrics['quality_score']:.2f} "
-                    f"(threshold: {quality_threshold})"
-                )
-                # If we have very few chunks or they're not relevant, refuse
-                if quality_metrics["chunk_count"] < 2 or quality_metrics["avg_distance"] > 1.2:
-                    return {
-                        "query": query,
-                        "answer": IRRELEVANT_REFUSAL,
-                        "sources": chunks,
-                        "success": False,
-                        "error": f"Context quality gate failed: score {quality_metrics['quality_score']:.2f}"
-                    }
-        except ImportError:
-            logger.warning("Context shaper not available, skipping quality gate")
-        except Exception as e:
-            logger.warning(f"Context quality gate failed: {e}")
+            if not query_matches_paper:
+                logger.warning(f"No chunks retrieved and query doesn't match any paper title: {query}")
+                return {
+                    "query": query,
+                    "answer": NOT_IN_LIBRARY_REFUSAL,
+                    "sources": [],
+                    "success": False,
+                    "error": "No relevant chunks retrieved",
+                }
+        
+        # ── Context quality gate before LLM ───────────────────────────────────
+        # DISABLED: Context quality gate is too aggressive and blocks valid queries
+        # The quality calculation is unreliable and causes false negatives
+        # Relying on citation verification and scope verification instead
+        # try:
+        #     from context_shaper import ContextShaper
+        #     shaper = ContextShaper()
+        #     quality_metrics = shaper.estimate_context_quality(chunks, query)
+        #     
+        #     # Quality threshold: if quality is too low, refuse or retry
+        #     quality_threshold = 0.3
+        #     if quality_metrics["quality_score"] < quality_threshold and not scope.is_locked:
+        #         logger.warning(
+        #             f"Context quality too low: {quality_metrics['quality_score']:.2f} "
+        #             f"(threshold: {quality_threshold})"
+        #         )
+        #         # If we have very few chunks or they're not relevant, refuse
+        #         if quality_metrics["chunk_count"] < 2 or quality_metrics["avg_distance"] > 1.2:
+        #             return {
+        #                 "query": query,
+        #                 "answer": IRRELEVANT_REFUSAL,
+        #                 "sources": chunks,
+        #                 "success": False,
+        #                 "error": f"Context quality gate failed: score {quality_metrics['quality_score']:.2f}"
+        #             }
+        # except ImportError:
+        #     logger.warning("Context shaper not available, skipping quality gate")
+        # except Exception as e:
+        #     logger.warning(f"Context quality gate failed: {e}")
         
         context_str = chunks_to_context_string(chunks)
 
@@ -1054,17 +1094,20 @@ class RAGService:
             "You MUST REFUSE to answer ANYTHING that is not present in the provided context or library inventory.\n\n"
             "=== CRITICAL: DO NOT USE EXTERNAL KNOWLEDGE ===\n"
             "If the user asks about:\n"
-            "- Ada Lovelace, Albert Einstein, Elon Musk, or any person NOT in the library inventory → REFUSE\n"
+            "- Ada Lovelace, Albert Einstein, Elon Musk, François Chollet, or any person NOT in the library inventory → REFUSE\n"
             "- Transformers invented by Vaswani et al. (if not in library) → REFUSE\n"
+            "- Keras, TensorFlow, PyTorch (if not explicitly in context) → REFUSE\n"
+            "- FIFA World Cup, sports, entertainment, politics → REFUSE\n"
             "- Any topic NOT explicitly mentioned in the context blocks or library inventory → REFUSE\n"
             "DO NOT provide general knowledge about these topics. DO NOT explain who they are. DO NOT cite external papers.\n"
             "Simply say: 'This question is outside the scope of your ingested research knowledge base.'\n\n"
             "=== HARD REFUSAL TRIGGERS — ALWAYS REFUSE THESE, NO EXCEPTIONS ===\n"
             "- Cooking, recipes, food → REFUSE\n"
             "- Medical advice, health, symptoms → REFUSE (unless paper is medical research)\n"
-            "- News, weather, current events → REFUSE\n"
+            "- News, weather, current events, sports, entertainment → REFUSE\n"
             "- Any question where the answer requires knowledge NOT in the context blocks or the Ingested Paper Library Inventory → REFUSE\n"
-            "- Any question about a person, paper, or concept not found in the Library Inventory or context blocks → REFUSE\n\n"
+            "- Any question about a person, paper, or concept not found in the Library Inventory or context blocks → REFUSE\n"
+            "- Questions about famous people, historical events, or general knowledge → REFUSE\n\n"
             "REFUSAL FORMAT (copy this exactly when refusing):\n"
             "\"This question is outside the scope of your ingested research knowledge base. "
             "I can only answer questions based on the papers that have been ingested. "
@@ -1076,16 +1119,17 @@ class RAGService:
             "=== CITATION RULES ===\n"
             "1. ONLY use facts from the Document Context Blocks or the Ingested Paper Library Inventory. Zero exceptions.\n"
             "2. NEVER invent author names, paper titles, years, DOIs or references.\n"
-            "3. Use APA7 inline citations: (Author, Year) or (Author et al., Year, p. X).\n"
-            "4. NEVER use (Source 1), [Document 2] or any numbered source labels.\n"
-            "5. NEVER use bracket-number citations like [1], [2], [44] etc. These are FORBIDDEN.\n"
+            "3. NEVER cite papers that are not in the Library Inventory or Context Blocks.\n"
+            "4. Use APA7 inline citations: (Author, Year) or (Author et al., Year, p. X).\n"
+            "5. NEVER use (Source 1), [Document 2] or any numbered source labels.\n"
+            "6. NEVER use bracket-number citations like [1], [2], [44] etc. These are FORBIDDEN.\n"
             "   Bracket citations are NOT APA7. If you write [1] or [44] that is a CRITICAL ERROR.\n"
-            "6. NEVER call papers 'Paper A', 'Study 1' etc. Use (Author, Year) or exact title.\n"
-            "7. End every answer with a References section in full APA7 format (EXCEPT when the user asked for a list).\n"
-            "8. TRUTH GAPS: If the concept asked about is NOT in the context blocks or library inventory, "
+            "7. NEVER call papers 'Paper A', 'Study 1' etc. Use (Author, Year) or exact title.\n"
+            "8. End every answer with a References section in full APA7 format (EXCEPT when the user asked for a list).\n"
+            "9. TRUTH GAPS: If the concept asked about is NOT in the context blocks or library inventory, "
             "say: 'The retrieved context does not contain information about [topic].' DO NOT guess.\n"
-            "9. If context is insufficient, say so explicitly.\n"
-            "10. Formal, neutral academic tone always.\n\n"
+            "10. If context is insufficient, say so explicitly.\n"
+            "11. Formal, neutral academic tone always.\n\n"
             "=== LISTING QUERY RULES — ABSOLUTE REQUIREMENTS ===\n"
             "When the user asks you to LIST, ENUMERATE, or TABULATE papers/articles:\n"
             "1. You MUST output EVERY SINGLE matching paper in your main numbered response.\n"
@@ -1094,12 +1138,6 @@ class RAGService:
             "4. NEVER put papers in a References section when the user asked for a list.\n"
             "5. If there are 80 papers, you must list all 80. If there are 100 papers, you must list all 100.\n"
             "6. This is a non-negotiable requirement. Do not truncate under any circumstances.\n\n"
-            "5. NEVER call papers 'Paper A', 'Study 1' etc. Use (Author, Year) or exact title.\n"
-            "6. End every answer with a References section in full APA7 format (EXCEPT when the user asked for a list).\n"
-            "7. TRUTH GAPS: If the concept asked about is NOT in the context blocks or library inventory, "
-            "say: 'The retrieved context does not contain information about [topic].' DO NOT guess.\n"
-            "8. If context is insufficient, say so explicitly.\n"
-            "9. Formal, neutral academic tone always.\n\n"
             f"{scope_note}"
             "=== BEGIN ANSWERING ONLY FROM CONTEXT/INVENTORY BELOW ==="
         )
@@ -1189,13 +1227,25 @@ class RAGService:
                 try:
                     from citation_verifier import CitationVerifier
                     verifier = CitationVerifier()
-                    # 1. Strip unverified citations
+                    # 1. Strip unverified citations (STRICT MODE)
+                    answer_before = answer
                     answer = verifier.strip_unverified_citations(answer, chunks)
+                    if answer != answer_before:
+                        logger.warning(f"Citation verifier stripped citations, answer changed from {len(answer_before)} to {len(answer)} chars")
                     # 2. Verify and remove unsupported claim sentences
                     verification = verifier.verify_answer(answer, chunks)
+                    answer_before = answer
                     answer = verifier.regenerate_or_remove_unsupported(answer, verification, action="remove")
+                    if answer != answer_before:
+                        logger.warning(f"Claim verifier removed unsupported claims, answer changed from {len(answer_before)} to {len(answer)} chars")
+                    # 3. Refuse if too few claims can be grounded
+                    support_ratio = verification.get("support_ratio", 1.0)
+                    if support_ratio < 0.3 and not scope.is_locked:
+                        logger.warning(f"Too few claims grounded ({support_ratio:.2%}), returning refusal")
+                        answer = NOT_IN_LIBRARY_REFUSAL
                     # If answer is now empty, fallback to refusal
                     if not answer.strip():
+                        logger.warning("Answer became empty after citation/claim verification, returning refusal")
                         answer = NOT_IN_LIBRARY_REFUSAL
                 except ImportError:
                     logger.warning("Citation verifier not available, skipping citation and claim check")

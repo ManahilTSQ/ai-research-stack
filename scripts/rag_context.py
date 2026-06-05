@@ -244,6 +244,25 @@ _TOPIC_PROFILES: list[dict[str, Any]] = [
             "malware", "phishing", "blockchain", "federated",
         ],
     },
+    {
+        "id": "coffee_landscape",
+        "query_patterns": [
+            r"coffee\s+cultural\s+landscape",
+            r"colombian\s+coffee",
+            r"coffee\s+landscape",
+            r"coffee\s+communit",
+            r"agroecology\s+coffee",
+        ],
+        "paper_markers": [
+            "coffee cultural landscape", "colombian coffee", "coffee landscape",
+            "coffee communities", "agroecology coffee", "coffee region",
+            "sustainable tourism coffee", "coffee biodiversity",
+        ],
+        "chunk_markers": [
+            "coffee", "cultural landscape", "colombian", "agroecology", "biodiversity",
+            "tourism", "accessibility", "landscape patterns", "coffee farmers",
+        ],
+    },
 ]
 
 _AUTHOR_SCOPED_PATTERNS = [
@@ -1342,6 +1361,9 @@ def resolve_matching_paper_titles(query: str, papers_metadata: dict) -> list[str
     """
     Map a natural-language question to paper title(s) in the local library inventory.
     Author matches always win over title-token matches to prevent wrong-paper answers.
+    
+    Enhanced to better handle topic-based queries like "Colombian Coffee Cultural Landscape"
+    by requiring multiple token matches for topic queries.
     """
     if not papers_metadata:
         return []
@@ -1381,9 +1403,16 @@ def resolve_matching_paper_titles(query: str, papers_metadata: dict) -> list[str
     matched: list[str] = []
     author_matches: list[str] = []
 
+    # For topic-based queries (not author-scoped), require multiple token matches
+    # to prevent false positives like "Deep Learning" matching everything about learning
+    is_topic_query = not is_author_scoped and not query_has_author_intent(query)
+    min_token_matches = 2 if is_topic_query and len(tokens) >= 2 else 1
+
     for title, meta in papers_metadata.items():
         authors = meta.get("authors") or ""
         title_l = (title or "").lower()
+        token_hits = 0
+        
         for token in tokens:
             if len(token) < 4:
                 continue
@@ -1392,9 +1421,11 @@ def resolve_matching_paper_titles(query: str, papers_metadata: dict) -> list[str
                     author_matches.append(title)
                 break
             if not is_author_scoped and token in title_l:
-                if title not in matched:
-                    matched.append(title)
-                break
+                token_hits += 1
+        
+        # Only add to matched if we have enough token hits
+        if token_hits >= min_token_matches and title not in matched:
+            matched.append(title)
 
     if len(tokens) == 1 and not _token_is_ambiguous_surname(
         tokens[0], indexes, len(papers_metadata)
