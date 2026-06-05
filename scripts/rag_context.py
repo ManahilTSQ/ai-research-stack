@@ -30,12 +30,29 @@ def _get_reranker():
         except ImportError as e:
             logger.error(f"sentence-transformers not installed: {e}")
             logger.error("Reranking DISABLED. Install with: pip install sentence-transformers")
+            logger.error("⚠️ WARNING: Reranking is disabled - retrieval quality will be lower without the cross-encoder")
         except Exception as e:
             logger.error(f"Failed to load cross-encoder reranker: {e}")
             logger.error("Reranking DISABLED due to error")
+            logger.error("⚠️ WARNING: Reranking is disabled - retrieval quality will be lower without the cross-encoder")
     else:
         logger.debug("Using cached cross-encoder reranker")
     return _reranker
+
+
+def check_reranker_health() -> bool:
+    """
+    Check if the reranker is available and working.
+    Returns True if reranker is loaded, False otherwise.
+    Logs explicit warning if reranker is not available.
+    """
+    reranker = _get_reranker()
+    if reranker is None:
+        logger.warning("⚠️ RERANKER HEALTH CHECK FAILED: Cross-encoder reranker is not available")
+        logger.warning("   This will reduce retrieval quality. Install sentence-transformers to enable reranking.")
+        return False
+    logger.info("✓ RERANKER HEALTH CHECK PASSED: Cross-encoder reranker is available")
+    return True
 
 def rerank_chunks(question: str, chunks: list[dict], top_n: int = 5) -> list[dict]:
     """
@@ -183,6 +200,8 @@ _AUTHOR_PHRASE_PATTERNS = [
     # Support 'written by' and 'authored by' phrases
     re.compile(r"(?:papers?|articles?|works?|publications?)?\s*(?:written|authored)\s+by\s+(.+?)(?:\s+on\b|[\.,;]|$)", re.I),
     re.compile(r"(?:who\s+wrote|who\s+authored)\s+(?:the\s+)?(?:paper|article|work)?\s*(?:by\s+)?(.+?)(?:\s*[\.,;\?]|$)", re.I),
+    # Specific paper author queries: "who wrote [title]" - must match title in library
+    re.compile(r"(?:who\s+wrote|who\s+authored)\s+[\"']?(.+?)[\"']?(?:\s*[\.,;\?]|$)", re.I),
     # Synthesis / stance questions: "thoughts of Jhanjhi", "contributions by X"
     re.compile(
         r"(?:thoughts?|views?|opinions?|ideas?|perspective|work|research|"
@@ -194,7 +213,7 @@ _AUTHOR_PHRASE_PATTERNS = [
         r"(?:thoughts?|views?|contributions?|work)\s+(?:of|by)\s+(.+?)(?:\s*[\.,;\?]|$)",
         re.I,
     ),
-    # Possessive author queries: "Jie Li's work", "Noor Zaman Jhanjhi’s research"
+    # Possessive author queries: "Jie Li's work", "Noor Zaman Jhanjhi's research"
     re.compile(r"(.+?)(?:'s|\u2019s)\s+work(?:\s+on\b|[\.,;]|$)", re.I),
     re.compile(r"(.+?)(?:'s|\u2019s)\s+research(?:\s+on\b|[\.,;]|$)", re.I),
     re.compile(r"according to\s+(.+?)(?:\s*[\.,;\?]|$)", re.I),
@@ -786,6 +805,24 @@ def classify_query_mode(query: str) -> str:
     q = (query or "").strip()
     if not q:
         return "content"
+
+    # ── Metadata query classifier (Issue 9) ─────────────────────────────────
+    # Detect queries asking for DOI, year, venue, title, or authors of a named paper
+    # These should be classified as "listing" to route to deterministic metadata path
+    _META_FIELD_PATTERNS = [
+        r"\bdoi\s+(?:of|for|from)\b",
+        r"\bwhat\s+is\s+the\s+doi\b",
+        r"\bwhat\s+(?:year|when)\s+(?:was|is)\b",
+        r"\bpublication\s+year\b",
+        r"\bwhich\s+(?:journal|venue|conference)\b",
+        r"\bwhere\s+was\s+(?:it|this|the\s+paper)\s+published\b",
+        r"\bwho\s+(?:wrote|authored)\b",
+        r"\b(?:author|authors?)\s+of\b",
+        r"\b(?:title|name)\s+of\s+(?:the\s+)?paper\b",
+    ]
+    if any(re.search(pat, q, re.I) for pat in _META_FIELD_PATTERNS):
+        # If it's a metadata query, route to listing path for deterministic answer
+        return "listing"
 
     has_listing = is_listing_query(q)
     has_content = bool(_CONTENT_INTENT_RE.search(q)) or bool(
@@ -1743,7 +1780,7 @@ def retrieve_relevant_chunks(
     *,
     scope_titles: list[str] | None = None,
     use_reranking: bool = True,
-    over_retrieve_multiplier: float = 3.0,
+    over_retrieve_multiplier: float = 6.0,
     use_domain_filtering: bool = True,
     use_query_routing: bool = True,
 ) -> list[dict[str, Any]]:
@@ -1766,7 +1803,7 @@ def retrieve_relevant_chunks(
         filter_title: Optional paper title filter.
         scope_titles: Optional list of paper titles to scope retrieval.
         use_reranking: If True, apply hybrid reranking after retrieval.
-        over_retrieve_multiplier: Multiplier for initial retrieval (e.g., 3.0 = retrieve 3x limit).
+        over_retrieve_multiplier: Multiplier for initial retrieval (default 6.0 = retrieve 6x limit).
         use_domain_filtering: If True, detect query domain and filter by domain metadata.
         use_query_routing: If True, use query understanding to control pipeline routing.
 

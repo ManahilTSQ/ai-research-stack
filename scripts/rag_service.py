@@ -1131,17 +1131,6 @@ class RAGService:
         "yolo",
     })
 
-    # Grouped related domain terms to perform cross-domain checks.
-    # If a sentence contains any word from a group, the chunk MUST contain at least one word from that same group.
-    _DOMAIN_GROUPS: list[set[str]] = [
-        {"malware", "android", "security", "cybersecurity", "intrusion", "phishing"},
-        {"tumor", "brain", "lung", "covid", "cancer", "carcinoma", "breast", "lesion", "retinoblastoma", "melanoma", "mammogram", "x-ray", "xray", "mri", "u-net", "unet", "skin"},
-        {"plant", "agriculture", "leaf", "disease"},
-        {"explainability", "xai", "interpretability", "visualization", "shap", "lime", "transparency"},
-        {"safety", "jailbreak", "privacy", "agentic"},
-        {"airport", "coffee", "colombian", "accessibility", "tourism"},
-    ]
-
     def _verify_claim_chunk_support(self, sentence: str, doc_num: int, chunks: list[dict]) -> bool:
         """
         Span-level evidence check: verify that the chunk cited by doc_<doc_num> actually
@@ -1151,9 +1140,9 @@ class RAGService:
         1. Architecture-name check: if the sentence names a specific model/architecture
            (e.g. RNN, LSTM, GAN, Xception), that name MUST appear in the cited chunk.
            This prevents e.g. "RNNs used in security" being attributed to an agriculture paper.
-        1.5 Domain-name check: if the sentence contains key domain terms (e.g. malaria, covid),
-            the cited chunk MUST contain at least one term from that same domain group.
-        2. Token-overlap check:
+        2. Fuzzy title matching: if the sentence cites a paper by title words, those words
+           must overlap with the cited chunk's title. This is more robust than hardcoded domain groups.
+        3. Token-overlap check:
            - Adaptively requires hits based on sentence length (1 for <=2 tokens, 2 for <=5, 3 otherwise).
            - Title-word match from the cited paper also counts as a pass.
         """
@@ -1176,22 +1165,21 @@ class RAGService:
                     )
                     return False
 
-        # ── Rule 1.5: Domain group check ───────────────────────────────────
-        for domain_group in self._DOMAIN_GROUPS:
-            # If the sentence contains any term from this domain group as a word
-            sent_has_domain = any(re.search(rf"\b{re.escape(term)}\b", sent_lower) for term in domain_group)
-            if sent_has_domain:
-                # The chunk must contain at least one term from the same domain group
-                chunk_full_lower = chunk_full.lower()
-                chunk_has_domain = any(term in chunk_full_lower for term in domain_group)
-                if not chunk_has_domain:
-                    logger.debug(
-                        f"Domain gate mismatch: sentence has terms from {domain_group} "
-                        f"but chunk '{chunk_title[:60]}' has none — rejecting"
-                    )
-                    return False
+        # ── Rule 2: Fuzzy title matching ─────────────────────────────────────
+        # Extract significant words from the chunk title (4+ chars, not common stopwords)
+        _TITLE_STOP = {
+            "the", "a", "an", "and", "or", "in", "on", "at", "to", "for", "of", "with",
+            "using", "based", "approach", "method", "system", "model", "study", "research",
+            "paper", "analysis", "detection", "classification"
+        }
+        title_significant = [t for t in re.findall(r"\b[a-z]{4,}\b", chunk_title) if t not in _TITLE_STOP]
+        # If the sentence contains 2+ significant words from the chunk title, it's likely citing that paper
+        title_word_hits = sum(1 for t in title_significant if t in sent_lower)
+        if title_word_hits >= 2:
+            # Strong title match - accept the claim
+            return True
 
-        # ── Rule 2: Token-overlap check ──────────────────────────────────────
+        # ── Rule 3: Token-overlap check ──────────────────────────────────────
         _STOP = {
             "the", "this", "that", "is", "are", "was", "were", "has", "have",
             "had", "with", "and", "for", "from", "into", "which", "their",
@@ -1208,14 +1196,13 @@ class RAGService:
             if t not in _STOP
         ]
         if not sent_tokens:
-            return True  # can’t verify, give benefit of doubt
+            return True  # can't verify, give benefit of doubt
 
         # Count how many sentence tokens appear in chunk text
         hits = sum(1 for t in sent_tokens if t in chunk_text)
 
         # Also accept if chunk title appears directly in sentence
-        title_words = [t for t in re.findall(r"\b[a-z]{4,}\b", chunk_title) if t not in _STOP]
-        title_hit = any(t in sentence.lower() for t in title_words[:4])
+        title_hit = any(t in sentence.lower() for t in title_significant[:4])
 
         # Adaptive thresholding — cap at 2 to avoid stripping valid factual sentences.
         # 1 hit  : very short claims (<=2 meaningful tokens)
@@ -1394,12 +1381,67 @@ class RAGService:
     def _strip_generic_sentences(self, answer: str, chunks: list[dict]) -> str:
         """
         Remove sentences from `answer` that share NO significant keywords with any
-        retrieved chunk. 
-        
-        [RELAXED]: Now bypassed to allow full semantic paraphrasing and prevent 
+        retrieved chunk.
+
+        [RELAXED]: Now bypassed to allow full semantic paraphrasing and prevent
         aggressive sentence stripping. Simply returns the answer as-is.
         """
         return answer
+
+    def _extract_key_sentences(self, chunks: list[dict], query: str) -> list[dict]:
+        """
+        Extract key sentences from chunks for extractive QA (Issue 3).
+        Returns a list of dicts with 'sentence', 'doc_id', and 'source' info.
+        """
+        extracted = []
+        query_tokens = set(re.findall(r"\b[a-z]{4,}\b", query.lower()))
+        
+        for idx, chunk in enumerate(chunks, 1):
+            text = chunk.get("text", "")
+            meta = chunk.get("metadata", {})
+            title = meta.get("title", "Untitled")
+            
+            # Split into sentences
+            sentences = re.split(r'(?<=[.!?])\s+', text)
+            
+            for sent in sentences:
+                sent = sent.strip()
+                if len(sent) < 30:  # Skip very short sentences
+                    continue
+                
+                sent_tokens = set(re.findall(r"\b[a-z]{4,}\b", sent.lower()))
+                
+                # Score sentence based on:
+                # 1. Overlap with query tokens
+                # 2. Sentence length (prefer medium-length sentences)
+                # 3. Contains numbers/dates (often factual)
+                query_overlap = len(query_tokens & sent_tokens)
+                length_score = min(1.0, len(sent) / 200.0)  # Prefer ~200 char sentences
+                has_facts = bool(re.search(r'\d{4}|\d+\.\d+|\d+%|\d+/\d+', sent))
+                
+                score = query_overlap * 2.0 + length_score + (1.0 if has_facts else 0)
+                
+                if score >= 1.0:  # Minimum threshold
+                    extracted.append({
+                        'sentence': sent,
+                        'doc_id': f'doc_{idx}',
+                        'title': title,
+                        'score': score
+                    })
+        
+        # Sort by score and take top sentences per chunk
+        extracted.sort(key=lambda x: x['score'], reverse=True)
+        
+        # Limit to top 3 sentences per chunk to avoid overwhelming the LLM
+        doc_counts = {}
+        filtered = []
+        for item in extracted:
+            doc_id = item['doc_id']
+            if doc_counts.get(doc_id, 0) < 3:
+                filtered.append(item)
+                doc_counts[doc_id] = doc_counts.get(doc_id, 0) + 1
+        
+        return filtered
 
     def _bind_citations_and_verify(self, answer: str, chunks: list[dict]) -> tuple[str, bool]:
         # Let's map each doc_X to its clean APA citation
@@ -2053,7 +2095,25 @@ class RAGService:
 
         # Build structured retrieved set summary and context blocks with IDs
         retrieved_summary_str = self._build_retrieved_set_summary(chunks)
-        context_str = self._build_context_with_ids(chunks)
+        
+        # Issue 3: Extractive QA - pre-extract key sentences before LLM call
+        key_sentences = self._extract_key_sentences(chunks, query)
+        
+        # Build context using pre-extracted sentences for extractive QA
+        if key_sentences:
+            # Build context from extracted sentences
+            context_blocks = []
+            for sent in key_sentences:
+                context_blocks.append(
+                    f"--- {sent['doc_id']} ({sent['title'][:60]}...) ---\n"
+                    f"{sent['sentence']}\n"
+                )
+            context_str = "\n\n".join(context_blocks)
+            logger.info(f"Extractive QA: Using {len(key_sentences)} pre-extracted sentences from {len(chunks)} chunks")
+        else:
+            # Fallback to full chunks if no sentences extracted
+            context_str = self._build_context_with_ids(chunks)
+            logger.info("Extractive QA: No sentences extracted, using full chunks")
 
         # ── Step 3: Build structured prompts ──────────────────────────────────
         scope_note = ""
@@ -2199,11 +2259,12 @@ class RAGService:
         # Only pass user messages to avoid hallucination reinforcement from assistant answers.
         messages = [{"role": "system", "content": system_prompt}]
         if history_for_llm:
-            for turn in history_for_llm[-12:]:
+            # Pass full turn pairs (user + assistant) to provide grounded context
+            # This prevents contamination from ungrounded user questions without answers
+            for turn in history_for_llm[-6:]:  # Reduced from 12 to 6 to limit context
                 role = (turn.get("role") or "").strip().lower()
                 content = (turn.get("content") or "").strip()
-                # Only include user messages, not assistant messages
-                if role == "user" and content:
+                if content:
                     messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": user_prompt})
 
@@ -2214,7 +2275,8 @@ class RAGService:
             "options": {
                 "temperature": 0.05, # Near-zero: almost fully deterministic, kills creativity/hallucination
                 "top_p": 0.8,        # Tighter nucleus sampling
-                "repeat_penalty": 1.1  # Reduces repetitive hallucination loops
+                "repeat_penalty": 1.1,  # Reduces repetitive hallucination loops
+                "num_predict": 2048  # Allow longer responses to prevent table truncation
             }
         }
 
@@ -2236,17 +2298,9 @@ class RAGService:
                     answer = TABLE_TRUNCATION_REFUSAL
                 else:
                     if not self._is_refusal_answer(answer):
-                        # Optional claim-level enhancement: try to parse CLAIM/SOURCE/QUOTE blocks
-                        # produced by some LLM outputs. If enough valid claims are found, synthesize
-                        # prose from them (higher quality). If not — e.g. the 8B model wrote natural
-                        # language instead of structured blocks — keep the raw LLM answer as-is.
-                        parsed_blocks = self._parse_constrained_claims(answer)
-                        valid_claims = self._validate_claims(parsed_blocks, chunks)
-                        if valid_claims:
-                            answer = self._synthesize_prose(valid_claims, query, chunks, papers_metadata, listing_style_query)
-                            logger.info(f"Synthesized prose from {len(valid_claims)} valid claims.")
-                        else:
-                            logger.info("Claim parser found no structured blocks — keeping raw LLM answer.")
+                        # Issue 10: Removed dead _parse_constrained_claims path
+                        # The 8B model doesn't reliably produce structured CLAIM/SOURCE/QUOTE blocks
+                        # This code was adding latency without benefit. Keeping raw LLM answer.
 
                     answer = self._strip_model_references(answer, chunks=chunks)
 
