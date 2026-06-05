@@ -272,6 +272,7 @@ class CitationVerifier:
         high_similarity_claims = []
         medium_similarity_claims = []
         low_similarity_claims = []
+        supported_claims = []
         
         for claim_verif in verification.get("claim_verification", []):
             claim = claim_verif.get("claim", "")
@@ -279,6 +280,7 @@ class CitationVerifier:
             is_supported = claim_verif.get("is_supported", False)
             
             if is_supported and similarity >= min_similarity_threshold:
+                supported_claims.append(claim)
                 if similarity >= 0.7:
                     high_similarity_claims.append(claim)
                 else:
@@ -287,9 +289,8 @@ class CitationVerifier:
                 low_similarity_claims.append(claim)
         
         if action == "remove":
-            # Remove only low-similarity claims, keep medium and high
+            # Remove only low-similarity claims, keep medium and high in their original order
             # This prevents deleting valid paraphrased content
-            supported_claims = high_similarity_claims + medium_similarity_claims
             result = " ".join(supported_claims)
             
             # Log what was removed

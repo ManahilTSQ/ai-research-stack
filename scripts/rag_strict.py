@@ -320,6 +320,17 @@ def resolve_query_scope(
             )
         return QueryScope(requires_entity=True, entity_kind="filter")
 
+    # Check paper titles first to prevent false-positive author/topic matching
+    # (e.g. queries matching "contribution of Xception" being treated as author queries)
+    paper_titles = fuzzy_match_paper_titles(query, papers_metadata)
+    if paper_titles:
+        if len(paper_titles) == 1 or query_has_paper_focus(query):
+            return QueryScope(
+                scoped_titles=paper_titles,
+                requires_entity=True,
+                entity_kind="paper",
+            )
+
     # ── Multi-author co-authorship: "papers by X and Y" → intersection ──────
     # Must run BEFORE single-author resolution so "Stiawan and Budiarto" is
     # not accidentally matched as just "Budiarto" (the second surname).
@@ -340,15 +351,6 @@ def resolve_query_scope(
             entity_kind="author",
             author_phrase=" & ".join(multi_authors),
         )
-
-    if query_has_paper_focus(query):
-        paper_titles = fuzzy_match_paper_titles(query, papers_metadata)
-        if paper_titles:
-            return QueryScope(
-                scoped_titles=paper_titles[:1] if len(paper_titles) == 1 else paper_titles,
-                requires_entity=True,
-                entity_kind="paper",
-            )
 
     author_phrase, author_titles = resolve_author_from_library(query, papers_metadata)
     explicit_author = query_expects_named_author(query) or bool(
@@ -420,13 +422,7 @@ def resolve_query_scope(
                 topic_tokens=specific,
             )
 
-    paper_titles = fuzzy_match_paper_titles(query, papers_metadata)
-    if len(paper_titles) == 1:
-        return QueryScope(
-            scoped_titles=paper_titles,
-            requires_entity=False,
-            entity_kind="paper",
-        )
+
 
     return QueryScope(
         scoped_titles=[],

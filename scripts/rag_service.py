@@ -38,6 +38,7 @@ from rag_context import (
     TABLE_TRUNCATION_REFUSAL,
     extract_author_search_phrase,
     resolve_author_from_library,
+    fuzzy_match_paper_titles,
 )
 from rag_strict import (
     resolve_query_scope,

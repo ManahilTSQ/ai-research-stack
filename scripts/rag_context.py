@@ -1299,7 +1299,8 @@ def fuzzy_match_paper_titles(query: str, papers_metadata: dict) -> list[str]:
         return []
     scored.sort(reverse=True)
     best_score = scored[0][0]
-    return [t for s, t in scored if s == best_score and s >= 2]
+    min_required_score = 2 if len(tokens) >= 2 else 1
+    return [t for s, t in scored if s == best_score and s >= min_required_score]
 
 
 def parse_table_columns_from_query(query: str) -> list[str]:
