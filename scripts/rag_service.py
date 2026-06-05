@@ -515,14 +515,91 @@ class RAGService:
             return ""
         return "References:\n" + "\n".join(refs)
 
-    def _strip_model_references(self, answer: str) -> str:
+    def _strip_body_reference_fragments(self, text: str, chunks: list[dict] | None = None) -> str:
         """
-        Remove any model-generated References section so we can append verified references.
+        Remove orphaned reference-list fragments the LLM injects into the answer body.
+
+        Uses a UNIVERSAL title-word matching approach:
+        1. Build a vocabulary of significant words from ALL known paper titles.
+        2. For each line in the body (after the real References section is gone),
+           compute what fraction of that line's words come from known paper titles.
+        3. Lines that are predominantly title vocabulary (>= 50%) with no verb are
+           bibliography fragments and are stripped.
+        4. Lines that are bare DOI/URL are always stripped.
+
+        This works for any domain (medical, coffee, AI safety, etc.) without
+        needing domain-specific regex patterns.
+        """
+        if not text:
+            return text
+
+        # Build title-word vocabulary from retrieved chunks (if provided)
+        title_words: set[str] = set()
+        _STOP = {
+            "the", "this", "that", "with", "and", "for", "from", "into",
+            "which", "their", "also", "based", "using", "used", "study",
+            "paper", "approach", "review", "survey", "deep", "learning",
+            "machine", "analysis", "method", "model", "data", "image",
+        }
+        if chunks:
+            for c in chunks:
+                t = (c.get("metadata", {}).get("title") or "").lower()
+                for w in re.findall(r"\b[a-z]{4,}\b", t):
+                    if w not in _STOP:
+                        title_words.add(w)
+
+        lines = text.split("\n")
+        kept: list[str] = []
+        for line in lines:
+            stripped_line = line.strip()
+
+            # Always strip bare URL/DOI lines
+            if re.match(r'^https?://\S+$', stripped_line):
+                continue
+
+            # Always strip lines that contain a DOI and nothing else meaningful
+            if 'doi.org/' in stripped_line and len(stripped_line) < 120:
+                word_count = len(re.findall(r'\b[a-z]{4,}\b', stripped_line.lower()))
+                if word_count < 6:  # mostly DOI, not a real sentence
+                    continue
+
+            # Skip short lines and lines that look like normal sentences (have verbs)
+            if len(stripped_line) < 20:
+                kept.append(line)
+                continue
+
+            # Check if this line is predominantly title vocabulary
+            if title_words:
+                line_words = re.findall(r'\b[a-z]{4,}\b', stripped_line.lower())
+                if line_words:
+                    title_hits = sum(1 for w in line_words if w in title_words)
+                    ratio = title_hits / len(line_words)
+                    # Heuristic: if >=50% of words are from known titles AND
+                    # the line has no sentence-ending period mid-line after a space gap,
+                    # it's likely a bibliography fragment
+                    has_year = bool(re.search(r'\(\d{4}\)', stripped_line))
+                    has_doi  = 'doi' in stripped_line.lower() or 'https://' in stripped_line
+                    if ratio >= 0.50 and (has_year or has_doi):
+                        continue  # strip this line
+
+            kept.append(line)
+
+        return "\n".join(kept).strip()
+
+    def _strip_model_references(self, answer: str, chunks: list[dict] | None = None) -> str:
+        """
+        Remove any model-generated References section and orphaned reference
+        fragments so we can append a clean verified References section.
         """
         if not answer:
             return ""
-        # Match lines like "References:", "## References", "References list", etc., and strip everything after
-        stripped = re.split(r"\n\s*(?:#+\s*|\*+\s*|_+)?references\b[:\s]*", answer, maxsplit=1, flags=re.IGNORECASE)[0]
+        # Step 1: strip everything after a "References:" heading
+        stripped = re.split(
+            r"\n\s*(?:#+\s*|\*+\s*|_+)?references\b[:\s]*",
+            answer, maxsplit=1, flags=re.IGNORECASE
+        )[0]
+        # Step 2: strip orphaned reference fragments using title-word matching
+        stripped = self._strip_body_reference_fragments(stripped, chunks=chunks)
         return stripped.strip()
 
     def _is_refusal_answer(self, answer: str) -> bool:
@@ -706,6 +783,30 @@ class RAGService:
                     return True
         return False
 
+    # ─────────────────────────────────────────────────────────────────────────────
+    # PAPER-TYPE INFERENCE (heuristic, no ingestion changes required)
+    # Classifies each paper as SURVEY | DATASET | METHOD | APPLICATION
+    # purely from title keywords. Passed to the LLM so it knows what kind
+    # of evidence it is working with and doesn't treat surveys as experiments.
+    # ─────────────────────────────────────────────────────────────────────────────
+    _SURVEY_WORDS   = {"survey", "review", "overview", "taxonomy", "literature"}
+    _DATASET_WORDS  = {"dataset", "benchmark", "corpus", "collection", "annotation", "labeled"}
+    _METHOD_WORDS   = {"framework", "architecture", "algorithm", "network", "model", "approach",
+                       "method", "technique", "system", "detection", "segmentation",
+                       "classification", "prediction", "optimization"}
+
+    def _infer_paper_type(self, title: str, text: str = "") -> str:
+        """Return one of: SURVEY | DATASET | METHOD | APPLICATION"""
+        t = (title + " " + text[:200]).lower()
+        words = set(re.findall(r"\b\w+\b", t))
+        if words & self._SURVEY_WORDS:
+            return "SURVEY"
+        if words & self._DATASET_WORDS:
+            return "DATASET"
+        if words & self._METHOD_WORDS:
+            return "METHOD"
+        return "APPLICATION"
+
     def _build_retrieved_set_summary(self, chunks: list[dict]) -> str:
         from collections import Counter
         summary_lines = []
@@ -726,10 +827,12 @@ class RAGService:
             key = (title.lower(), authors.lower(), year)
             if key not in seen:
                 seen.add(key)
+                paper_type = self._infer_paper_type(title, text)
                 summary_lines.append(
                     f"- Document ID: doc_{idx}\n"
                     f"  Title: {title}\n"
                     f"  Authors: {authors} ({year})\n"
+                    f"  Paper type: [{paper_type}]  ← use this when reasoning about evidence strength\n"
                     f"  Keywords in chunk: {kw_str}"
                 )
         return "\n".join(summary_lines)
@@ -807,17 +910,24 @@ class RAGService:
         blocks = []
         for idx, chunk in enumerate(chunks, 1):
             meta = chunk.get("metadata", {}) or {}
-            title = meta.get("title", "Untitled")
-            authors = meta.get("authors", "Unknown Authors")
-            year = meta.get("year", "N/A")
-            text = chunk.get("text", "")
-            
-            blocks.append(
+            # Only expose clean, safe fields to the LLM.
+            # pages/venue/doi are often corrupted (stitched across papers) and
+            # cause the LLM to reproduce garbage in its answer body.
+            title   = (meta.get("title")   or "Untitled").strip()
+            authors = (meta.get("authors") or "Unknown Authors").strip()
+            year    = str(meta.get("year") or "N/A").strip()
+            section = (meta.get("section") or "").strip()
+            text    = chunk.get("text", "")
+
+            header = (
                 f"=== DOCUMENT ID: doc_{idx} ===\n"
                 f"Title: {title}\n"
-                f"Authors: {authors} ({year})\n"
-                f"Passage:\n{text}\n"
+                f"Authors: {authors} ({year})"
             )
+            if section:
+                header += f"\nSection: {section}"
+            header += f"\nPassage:\n{text}\n"
+            blocks.append(header)
         return "\n\n".join(blocks)
 
     def _verify_claim_chunk_support(self, sentence: str, doc_num: int, chunks: list[dict]) -> bool:
@@ -1459,17 +1569,24 @@ class RAGService:
                 stopwords = {"what", "which", "where", "when", "how", "does", "did", "are", "is", "was", "were", "have", "has", "had", "will", "would", "could", "should", "may", "might", "must", "can", "about", "from", "with", "that", "this", "these", "those"}
                 query_tokens = query_tokens - stopwords
                 
-                # Check if query tokens appear in retrieved chunks
+                # Check if ANY query tokens appear in retrieved chunks
+                # Use a very soft threshold: at least 1 chunk must match at least 1 token
+                # The Answer Decision Gate (below) handles confidence; this check only
+                # blocks truly off-topic retrieval where NOTHING in the query appears anywhere.
                 relevant_chunks = 0
                 for chunk in chunks:
                     chunk_text = chunk.get("text", "").lower()
-                    token_hits = sum(1 for token in query_tokens if token in chunk_text)
-                    if token_hits >= 2 or (len(query_tokens) == 1 and query_tokens and query_tokens.pop() in chunk_text):
+                    chunk_title = chunk.get("metadata", {}).get("title", "").lower()
+                    search_text = chunk_text + " " + chunk_title
+                    token_hits = sum(1 for token in query_tokens if token in search_text)
+                    if token_hits >= 1:  # lowered from 2 — any single meaningful token match counts
                         relevant_chunks += 1
-                
-                # If less than 50% of chunks are relevant, refuse
-                if relevant_chunks < len(chunks) * 0.5 and not query_matches_paper:
-                    logger.warning(f"Low chunk relevance: {relevant_chunks}/{len(chunks)} chunks relevant for query: {query}")
+
+                # Refuse only if <20% of chunks have ANY token match (truly off-topic retrieval)
+                if relevant_chunks < max(1, len(chunks) * 0.2) and not query_matches_paper:
+                    logger.warning(
+                        f"Very low chunk relevance: {relevant_chunks}/{len(chunks)} for query: {query}"
+                    )
                     return {
                         "query": query,
                         "answer": NOT_IN_LIBRARY_REFUSAL,
@@ -1477,34 +1594,53 @@ class RAGService:
                         "success": False,
                         "error": "Retrieved chunks not relevant to query",
                     }
-                
-                # Additional check: if query asks about specific topic (e.g., "coffee papers"),
-                # ensure chunks are from papers about that topic
-                if "coffee" in query.lower():
-                    coffee_chunks = 0
-                    non_coffee_chunks = []
-                    for chunk in chunks:
-                        chunk_title = chunk.get("metadata", {}).get("title", "").lower()
-                        chunk_text = chunk.get("text", "").lower()
-                        if "coffee" in chunk_title or "coffee" in chunk_text:
-                            coffee_chunks += 1
-                        else:
-                            non_coffee_chunks.append(chunk_title[:50] if chunk_title else "unknown")
-                    
-                    if coffee_chunks < len(chunks) * 0.5:
-                        logger.warning(f"Query asks about coffee but only {coffee_chunks}/{len(chunks)} chunks are coffee-related. Non-coffee chunks: {non_coffee_chunks[:3]}")
+
+                # Universal domain-term zero-match check.
+                # If the query contains a high-specificity term (5+ chars, not a stopword)
+                # and that term appears in ZERO retrieved chunks (text OR title),
+                # then refuse — retrieval missed the domain entirely.
+                # This is domain-agnostic: works for coffee, blockchain, UAV, etc.
+                _COMMON = {
+                    "paper", "study", "model", "method", "approach", "system",
+                    "learning", "detection", "classification", "analysis", "review",
+                    "using", "based", "these", "their", "which", "about",
+                }
+                specific_terms = [
+                    t for t in query_tokens
+                    if len(t) >= 5 and t not in _COMMON
+                ]
+                if specific_terms:
+                    for term in specific_terms:
+                        term_in_any_chunk = any(
+                            term in c.get("text", "").lower()
+                            or term in c.get("metadata", {}).get("title", "").lower()
+                            for c in chunks
+                        )
+                        if not term_in_any_chunk:
+                            logger.info(
+                                f"Domain term '{term}' absent from all chunks — "
+                                "but other terms match; continuing (not refusing)"
+                            )
+                    # Only refuse if ALL specific terms are absent from ALL chunks
+                    all_terms_absent = all(
+                        not any(
+                            term in c.get("text", "").lower()
+                            or term in c.get("metadata", {}).get("title", "").lower()
+                            for c in chunks
+                        )
+                        for term in specific_terms
+                    )
+                    if all_terms_absent and not query_matches_paper:
+                        logger.warning(
+                            f"All specific query terms absent from chunks: {specific_terms}. Refusing."
+                        )
                         return {
                             "query": query,
                             "answer": NOT_IN_LIBRARY_REFUSAL,
                             "sources": [],
                             "success": False,
-                            "error": "Retrieved chunks not relevant to coffee topic",
+                            "error": "Domain terms not present in retrieved chunks",
                         }
-                    
-                    # Filter out non-coffee chunks even if we pass the threshold
-                    if coffee_chunks < len(chunks):
-                        logger.info(f"Filtering {len(chunks) - coffee_chunks} non-coffee chunks")
-                        chunks = [c for c in chunks if "coffee" in c.get("metadata", {}).get("title", "").lower() or "coffee" in c.get("text", "").lower()]
             
             # If no chunks retrieved and query doesn't match paper title, refuse
             if not chunks and not query_matches_paper:
@@ -1640,6 +1776,12 @@ class RAGService:
             "4. NEVER put papers in a References section when the user asked for a list.\n"
             "5. If there are 80 papers, you must list all 80. If there are 100 papers, you must list all 100.\n"
             "6. This is a non-negotiable requirement. Do not truncate under any circumstances.\n\n"
+            "=== PAPER TYPE RULES (based on [SURVEY] / [DATASET] / [METHOD] / [APPLICATION] tags) ===\n"
+            "- [SURVEY] papers provide SECONDARY evidence only (overview of others' work). Never treat their citations as primary experimental data.\n"
+            "- [DATASET] papers describe data, not methods. Do not attribute algorithmic claims to them.\n"
+            "- [METHOD] papers provide PRIMARY evidence: algorithms, experiments, accuracy numbers.\n"
+            "- [APPLICATION] papers show deployment results in a specific domain.\n"
+            "When comparing papers, ALWAYS state the type: e.g., '(doc_3) [SURVEY] reviews X, while (doc_5) [METHOD] proposes Y.'\n\n"
             f"{scope_note}"
             "=== BEGIN ANSWERING ONLY FROM CONTEXT/INVENTORY BELOW ==="
         )
@@ -1678,6 +1820,31 @@ class RAGService:
                     "error": "No usable evidence retrieved.",
                 }
 
+        # ── Aggregation query detection ────────────────────────────────────────
+        # Detect "what do all papers say / compare all / summarize all" queries.
+        # Inject a strict aggregation instruction to prevent invented consensus.
+        _AGG_PATTERNS = (
+            "what do all", "all papers say", "across all", "summarize all",
+            "compare all", "conclusion of all", "what do these papers",
+            "all studies say", "combined conclusion", "combined summary",
+            "overall conclusion", "aggregate", "synthesis of all",
+        )
+        _is_aggregation_query = any(p in query.lower() for p in _AGG_PATTERNS)
+        _aggregation_notice = (
+            "AGGREGATION MODE — STRICT RULES:\\n"
+            "You are synthesizing across MULTIPLE papers. You MUST follow these rules:\\n"
+            "1. SHARED THEMES: Only state a theme as 'shared' if it is explicitly supported "
+            "by 2 or more different doc_X documents. Name the doc_IDs.\\n"
+            "2. DIVERGENCE: If papers disagree or cover different aspects, state this explicitly. "
+            "Do NOT invent a consensus that does not exist in the text.\\n"
+            "3. GAPS: If some papers are [SURVEY] type, note they provide secondary evidence "
+            "only — do not treat their referenced works as primary results.\\n"
+            "4. FORBIDDEN: Do NOT merge claims from different papers into one sentence. "
+            "Do NOT write a 'super conclusion' that summarizes all papers as one finding.\\n"
+            "5. FORMAT: Structure as: (a) Shared themes [with doc citations], "
+            "(b) Divergences, (c) Evidence gaps."
+        ) if _is_aggregation_query else ""
+
         # User prompt: library inventory + doc-ID summary + full passages
         # Inject partial-notice from the gate when mode == 'partial'
         user_prompt = (
@@ -1694,6 +1861,7 @@ class RAGService:
             f"{context_str}\n"
             f"{'─' * 80}\n\n"
             + (_partial_notice + "\n\n" if _partial_notice else "")
+            + (_aggregation_notice + "\n\n" if _aggregation_notice else "")
             + f"Researcher Query: {query}\n\n"
             "Provide your structured academic answer below. "
             "You MUST cite every factual claim using doc_X IDs from the Retrieved Document Set above "
@@ -1788,7 +1956,7 @@ class RAGService:
                 elif answer_has_table_truncation(answer):
                     answer = TABLE_TRUNCATION_REFUSAL
                 else:
-                    answer = self._strip_model_references(answer)
+                    answer = self._strip_model_references(answer, chunks=chunks)
 
                     # FIX 2: Hard grounding — strip any sentence not backed by a doc_X reference.
                     # This must run BEFORE citation binding so uncited claims are removed first.
