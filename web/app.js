@@ -46,6 +46,7 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("rag-query-form").addEventListener("submit", handleRAGQuery);
     document.getElementById("btn-sync-pdfs").addEventListener("click", fetchLocalPDFs);
     document.getElementById("btn-scan-pending").addEventListener("click", handleScanPending);
+    document.getElementById("btn-delete-all-papers").addEventListener("click", handleDeleteAllPapers);
     document.getElementById("citation-analysis-form").addEventListener("submit", handleCitationAnalysis);
     document.getElementById("close-sources-btn").addEventListener("click", () => {
         document.getElementById("retrieved-sources-panel").classList.add("hidden");
@@ -1092,6 +1093,45 @@ document.addEventListener("DOMContentLoaded", () => {
         } catch (err) {
             btn.disabled = false;
             btn.innerHTML = `<i class="fa-solid fa-arrows-spin"></i> Scan & Ingest Folder`;
+        }
+    }
+
+    /**
+     * Handle the "Delete All Papers" button click.
+     * Calls DELETE /api/papers to delete all papers from ChromaDB, manifest, and physical files.
+     */
+    async function handleDeleteAllPapers() {
+        const btn = document.getElementById("btn-delete-all-papers");
+        
+        // Confirm with the user before proceeding
+        if (!confirm("Are you sure you want to delete ALL papers from the knowledge base?\n\nThis will:\n- Delete all papers from ChromaDB\n- Clear the manifest\n- Delete all physical PDF files\n\nThis action cannot be undone!")) {
+            return;
+        }
+
+        btn.disabled = true;
+        btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i> Deleting all papers...`;
+
+        try {
+            const resp = await fetch(`${API_BASE}/api/papers`, { method: "DELETE" });
+            const result = await resp.json();
+
+            btn.disabled = false;
+            btn.innerHTML = `<i class="fa-solid fa-trash-can"></i> Delete All Papers`;
+
+            if (result.success) {
+                alert(`Successfully deleted ${result.deleted_count} papers.`);
+            } else {
+                alert(`Deletion completed with errors:\n${result.errors ? result.errors.join('\n') : 'Unknown error'}`);
+            }
+
+            // Refresh the file list and stats
+            fetchLocalPDFs();
+            checkHealth();
+
+        } catch (err) {
+            btn.disabled = false;
+            btn.innerHTML = `<i class="fa-solid fa-trash-can"></i> Delete All Papers`;
+            alert(`Failed to delete all papers: ${err.message}`);
         }
     }
 

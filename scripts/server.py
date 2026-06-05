@@ -682,6 +682,69 @@ def delete_paper(filename: str):
     }
 
 
+@app.delete("/api/papers")
+def delete_all_papers():
+    """Delete all papers from ChromaDB, manifest, and physical files."""
+    manifest = manifest_service.get_all_entries()
+    filenames = list(manifest.keys())
+    
+    if not filenames:
+        return {"success": True, "deleted_count": 0, "message": "No papers to delete."}
+    
+    deleted_count = 0
+    errors = []
+    
+    for filename in filenames:
+        try:
+            meta = manifest[filename]
+            title = meta.get("title")
+            doi = meta.get("doi")
+            
+            # 1. Delete from vector store
+            vector_store.delete_paper(title=title, doi=doi)
+            
+            # 2. Delete physical file
+            pdf_path = settings.PDF_DOWNLOAD_DIR / filename
+            if pdf_path.exists():
+                pdf_path.unlink()
+            
+            deleted_count += 1
+        except Exception as e:
+            errors.append(f"{filename}: {str(e)}")
+            logger.error(f"Failed to delete paper '{filename}': {e}")
+    
+    # 3. Clear the entire manifest
+    try:
+        manifest_service._save_manifest({})
+        success_manifest = True
+    except Exception as e:
+        logger.error(f"Failed to clear manifest: {e}")
+        success_manifest = False
+        errors.append(f"Manifest clear failed: {str(e)}")
+    
+    # 4. Clear the entire ChromaDB collection
+    try:
+        vector_store.client.delete_collection("research_papers")
+        # Recreate the collection
+        vector_store = VectorStoreService()
+        success_db = True
+    except Exception as e:
+        logger.error(f"Failed to clear ChromaDB collection: {e}")
+        success_db = False
+        errors.append(f"ChromaDB clear failed: {str(e)}")
+    
+    return {
+        "success": success_manifest and success_db and deleted_count == len(filenames),
+        "deleted_count": deleted_count,
+        "total_count": len(filenames),
+        "errors": errors if errors else None,
+        "details": {
+            "database": success_db,
+            "manifest": success_manifest
+        }
+    }
+
+
 @app.get("/api/pdfs")
 def list_pdfs():
     manifest = manifest_service.sync_with_vector_store(vector_store)
