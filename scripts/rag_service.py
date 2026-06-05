@@ -1196,15 +1196,13 @@ class RAGService:
         title_words = [t for t in re.findall(r"\b[a-z]{4,}\b", chunk_title) if t not in _STOP]
         title_hit = any(t in sentence.lower() for t in title_words[:4])
 
-        # Adaptive thresholding to be permissive on short claims but strict on long ones
-        if len(sent_tokens) <= 2:
-            required_hits = 1
-        elif len(sent_tokens) <= 5:
-            required_hits = 2
-        else:
-            required_hits = 3
+        # Adaptive thresholding — cap at 2 to avoid stripping valid factual sentences.
+        # 1 hit  : very short claims (<=2 meaningful tokens)
+        # 2 hits : all longer claims (>2 meaningful tokens)
+        # Title-word match is always an independent pass.
+        required_hits = 1 if len(sent_tokens) <= 2 else 2
 
-        return hits >= required_hits or title_hit
+        return hits >= required_hits or title_hit or len(sent_tokens) <= 1
 
     def _enforce_hard_grounding_rules(self, answer: str, chunks: list[dict]) -> str:
         # Split answer into claims/sentences
@@ -1266,7 +1264,17 @@ class RAGService:
                     f"Removing sentence — cited chunks do not support claim: '{sent[:80]}'"
                 )
 
-        new_body = " ".join(kept_sentences)
+        new_body = " ".join(kept_sentences).strip()
+
+        # Safety net: if ALL sentences were stripped, return the original body
+        # (minus any References block) so the UI always receives displayable text.
+        if not new_body:
+            logger.warning(
+                "_enforce_hard_grounding_rules stripped every sentence — "
+                "returning original answer body to prevent blank/hung response."
+            )
+            new_body = answer_body
+
         if refs_part:
             return f"{new_body}\n\n{refs_part}"
         return new_body
