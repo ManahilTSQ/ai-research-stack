@@ -1863,30 +1863,65 @@ class RAGService:
                 "Only use information from this paper's context blocks when answering.\n"
             )
 
-        # System prompt: structured Claim-Evidence extraction instructions
+        # System prompt: iron-wall instruction set for grounded academic answers
         system_prompt = (
-            "You are a CONSTRAINED SCIENTIFIC EXTRACTOR. Your task is to extract clear, individual claims from the DOCUMENT CONTEXT BLOCKS that are directly relevant to the user query.\n\n"
-            "=== OUTPUT FORMAT ===\n"
-            "You MUST output your findings strictly in the following structured block format. Do NOT write any introduction, conversational filler, summaries, explanations, transitions, or references. Only output raw claim blocks. If there are no relevant claims, output nothing.\n\n"
-            "CLAIM: <One clear, standalone research claim or fact from the passage>\n"
-            "SOURCE: <doc_X>\n"
-            "QUOTE: <The exact, verbatim phrase or sentence from doc_X supporting this claim>\n\n"
-            "Repeat this block for every valid claim you extract. Ensure a blank line separates each block.\n\n"
-            "=== OPERATING RULES ===\n"
-            "1. NO EXTRAPOLATION: Extracted claims must be strictly grounded in the document context. You have NO general knowledge.\n"
-            "2. VERBATIM QUOTES: The QUOTE field MUST contain the exact verbatim substring from the source document. Do NOT paraphrase or alter the quote in any way.\n"
-            "3. NO CITATION BLENDING: Each block can only cite ONE source document. Do NOT mix multiple sources in a single block.\n"
-            "4. SOURCE AVAILABILITY: Only extract from papers listed in the Ingested Paper Library Inventory and document context blocks. If the query cannot be answered, output nothing.\n"
-            "5. NO CONVERSATION: Write absolutely nothing else except the blocks. Zero chat, zero markdown wrappers around the blocks, zero introductions, zero references section.\n"
-            "6. LISTING QUERIES: If the user asks to list all papers or matching topics, extract each matching paper as a separate CLAIM block where CLAIM is the paper title and authors, SOURCE is the doc_X, and QUOTE is the title or first sentence of doc_X.\n\n"
+            "=== ABSOLUTE OPERATING RULES — READ BEFORE EVERYTHING ELSE ===\n"
+            "You are an AI assistant LOCKED to an academic research knowledge base.\n"
+            "You ONLY answer questions using information from the DOCUMENT CONTEXT BLOCKS and the INGESTED PAPER LIBRARY INVENTORY below.\n"
+            "You have NO general knowledge. You are NOT ChatGPT. You CANNOT access the internet.\n"
+            "You MUST REFUSE to answer ANYTHING that is not present in the provided context or library inventory.\n\n"
+            "=== CRITICAL: DO NOT USE EXTERNAL KNOWLEDGE ===\n"
+            "If the user asks about:\n"
+            "- Ada Lovelace, Albert Einstein, Elon Musk, François Chollet, or any person NOT in the library inventory → REFUSE\n"
+            "- Transformers invented by Vaswani et al. (if not in library) → REFUSE\n"
+            "- Keras, TensorFlow, PyTorch (if not explicitly in context) → REFUSE\n"
+            "- FIFA World Cup, sports, entertainment, politics → REFUSE\n"
+            "- Any topic NOT explicitly mentioned in the context blocks or library inventory → REFUSE\n"
+            "DO NOT provide general knowledge about these topics. DO NOT explain who they are. DO NOT cite external papers.\n"
+            "Simply say: 'This question is outside the scope of your ingested research knowledge base.'\n\n"
+            "=== HARD REFUSAL TRIGGERS — ALWAYS REFUSE THESE, NO EXCEPTIONS ===\n"
+            "- Cooking, recipes, food → REFUSE\n"
+            "- Medical advice, health, symptoms → REFUSE (unless paper is medical research)\n"
+            "- News, weather, current events, sports, entertainment → REFUSE\n"
+            "- Any question where the answer requires knowledge NOT in the context blocks or the Ingested Paper Library Inventory → REFUSE\n"
+            "- Any question about a person, paper, or concept not found in the Library Inventory or context blocks → REFUSE\n"
+            "- Questions about famous people, historical events, or general knowledge → REFUSE\n\n"
+            "REFUSAL FORMAT (copy this exactly when refusing):\n"
+            "\"This question is outside the scope of your ingested research knowledge base. "
+            "I can only answer questions based on the papers that have been ingested. "
+            "Please ask a question about the research papers in your library.\"\n\n"
+            "=== WHAT YOU ARE ALLOWED TO DO ===\n"
+            "- Answer research questions strictly using the Document Context Blocks or Ingested Paper Library Inventory provided.\n"
+            "- Summarize, compare, or explain content that is EXPLICITLY present in the context or library inventory.\n"
+            "- List authors, years, titles, DOIs only from the Library Inventory or context.\n\n"
+            "=== OPERATING RULES FOR KEYWORDS & GROUNDING ===\n"
+            "1. NEVER say 'none exist', 'no papers exist', or 'there are no papers on this topic' if any papers in the Ingested Paper Library Inventory or the Document Context Blocks match or mention the query keywords (e.g. 'coffee').\n"
+            "2. WEAK RELEVANCE FALLBACK: If the retrieved papers are only partially or weakly related to the query, you MUST NOT deny their existence. Instead, clearly state: 'There are partially related studies, but they focus on [X, Y, Z] aspects of [topic]' and summarize what they do say.\n"
+            "3. NO CITATION STITCHING/BLENDING: Each statement or claim must map directly to its specific source. Do NOT blend findings from multiple papers into one sentence. Keep claims from different papers in separate sentences, each with its own specific (doc_X) citation.\n\n"
+            "=== CITATION RULES ===\n"
+            "1. ONLY use facts from the Document Context Blocks or the Ingested Paper Library Inventory. Zero exceptions.\n"
+            "2. NEVER invent author names, paper titles, years, DOIs or references.\n"
+            "3. NEVER cite papers that are not in the Library Inventory or Context Blocks.\n"
+            "4. You MUST cite using Document IDs in parentheticals at the end of each sentence or claim: (doc_1) or (doc_3, doc_4). Every non-generic sentence MUST contain at least one doc_X reference.\n"
+            "5. NEVER use (Source 1), [Document 2] or bracket-number citations like [1], [2]. These are FORBIDDEN.\n"
+            "6. End every answer with a References section in APA7 format (EXCEPT when the user asked for a list).\n"
+            "7. TRUTH GAPS: If the concept asked about is NOT in the context, say: 'The retrieved context does not contain information about [topic].' DO NOT guess.\n"
+            "8. ONE PAPER PER SENTENCE: In multi-paper answers, each sentence may cite at most ONE paper (one doc_X). Never blend two papers into one sentence.\n"
+            "9. WRITE NOTHING YOU CANNOT TRACE: If you cannot attach a specific doc_X citation to a sentence, do not write that sentence.\n\n"
+            "=== LISTING QUERY RULES — ABSOLUTE REQUIREMENTS ===\n"
+            "When the user asks you to LIST, ENUMERATE, or TABULATE papers/articles:\n"
+            "1. You MUST output EVERY SINGLE matching paper in your main numbered response.\n"
+            "2. NEVER stop after 3, 5, or 10 papers. You must continue until ALL matching papers are listed.\n"
+            "3. NEVER use '...' or '(remaining papers)' or any truncation placeholder.\n"
+            "4. NEVER put papers in a References section when the user asked for a list.\n\n"
             "=== RETRIEVAL CONFIDENCE WEIGHTING RULES ===\n"
-            "Each document has a Retrieval Confidence Weighting: High, Medium, or Low.\n"
-            "- High confidence documents contain extremely strong, directly relevant primary evidence.\n"
-            "- Medium confidence documents contain moderately strong, related evidence.\n"
-            "- Low/Weak confidence documents contain weakly related evidence and should be interpreted with caution.\n"
-            "Always favor claims from High confidence documents over Medium/Low confidence ones.\n\n"
+            "Each document in the Retrieved Document Set has a Retrieval Confidence Weighting: High, Medium, or Low/Weak.\n"
+            "- High confidence [≥0.60]: Directly relevant. Use as primary evidence.\n"
+            "- Medium confidence [0.45–0.60]: Moderately relevant. Use with appropriate hedging.\n"
+            "- Low/Weak confidence [<0.45]: Weakly related. Mention only if directly asked; clearly flag as peripheral.\n"
+            "Always weight and prioritize claims from High confidence documents.\n\n"
             f"{scope_note}"
-            "=== BEGIN CONSTRAINED EXTRACTION ==="
+            "=== BEGIN ANSWERING ONLY FROM CONTEXT/INVENTORY BELOW ==="
         )
 
         # ── Step 3b: Answer Decision Gate ────────────────────────────────────
@@ -1934,9 +1969,20 @@ class RAGService:
         )
         _is_aggregation_query = any(p in query.lower() for p in _AGG_PATTERNS)
         _aggregation_notice = (
-            "AGGREGATION MODE — Focus on extracting key claims, findings, and methods "
-            "across the papers. Ensure each claim is captured in a separate block with its "
-            "verbatim QUOTE."
+            "AGGREGATION MODE — STRICT STRUCTURE REQUIRED:\n"
+            "You are synthesizing across papers from MULTIPLE DOMAINS. Follow this exact structure:\n\n"
+            "STEP 1 — DOMAIN SEGMENTATION (mandatory first):\n"
+            "  Group the retrieved documents by research domain (e.g., Medical Imaging, AI Safety, "
+            "Agriculture, NLP). For each domain group, summarize ONLY what those papers say. "
+            "Cite each claim with its specific doc_X. Do NOT mix domains in one paragraph.\n\n"
+            "STEP 2 — SHARED THEMES (only if real overlap exists):\n"
+            "  After per-domain summaries, list only themes explicitly mentioned by "
+            "2 or more papers from DIFFERENT domains. Name the doc_IDs. "
+            "If no cross-domain overlap exists, write: 'No significant cross-domain themes identified.'\n\n"
+            "STEP 3 — DIVERGENCES AND GAPS:\n"
+            "  State where papers disagree or cover different aspects.\n\n"
+            "FORBIDDEN: Do NOT produce a single unified conclusion across all papers. "
+            "Do NOT invent consensus. Do NOT blend claims from different domains into one sentence."
         ) if _is_aggregation_query else ""
 
         # User prompt: library inventory + doc-ID summary + full passages
@@ -1957,8 +2003,9 @@ class RAGService:
             + (_partial_notice + "\n\n" if _partial_notice else "")
             + (_aggregation_notice + "\n\n" if _aggregation_notice else "")
             + f"Researcher Query: {query}\n\n"
-            "Provide your extracted claim blocks below. "
-            "You MUST use the exact CLAIM:, SOURCE:, and QUOTE: format."
+            "Provide your structured academic answer below. "
+            "You MUST cite every factual claim using doc_X IDs from the Retrieved Document Set above "
+            "(e.g. (doc_1), (doc_3, doc_5)). Append a References section at the end."
         )
 
         # ── Step 4: Send to Ollama /api/chat ──────────────────────────────────
@@ -2050,24 +2097,17 @@ class RAGService:
                     answer = TABLE_TRUNCATION_REFUSAL
                 else:
                     if not self._is_refusal_answer(answer):
+                        # Optional claim-level enhancement: try to parse CLAIM/SOURCE/QUOTE blocks
+                        # produced by some LLM outputs. If enough valid claims are found, synthesize
+                        # prose from them (higher quality). If not — e.g. the 8B model wrote natural
+                        # language instead of structured blocks — keep the raw LLM answer as-is.
                         parsed_blocks = self._parse_constrained_claims(answer)
                         valid_claims = self._validate_claims(parsed_blocks, chunks)
                         if valid_claims:
                             answer = self._synthesize_prose(valid_claims, query, chunks, papers_metadata, listing_style_query)
                             logger.info(f"Synthesized prose from {len(valid_claims)} valid claims.")
                         else:
-                            logger.warning("No valid claims extracted/verified. Returning limited-evidence notice.")
-                            titles_present = list({
-                                c.get("metadata", {}).get("title", "Untitled")
-                                for c in chunks if c.get("metadata", {}).get("title")
-                            })[:3]
-                            titles_str = "; ".join(titles_present) if titles_present else "the retrieved papers"
-                            answer = (
-                                f"The library contains related studies ({titles_str}) but the "
-                                "retrieved passages do not contain sufficient detail to fully answer "
-                                "this specific question. Try rephrasing or asking about a specific "
-                                "aspect of these papers."
-                            )
+                            logger.info("Claim parser found no structured blocks — keeping raw LLM answer.")
 
                     answer = self._strip_model_references(answer, chunks=chunks)
 
@@ -2089,13 +2129,13 @@ class RAGService:
                         except Exception as _cb:
                             logger.warning(f"Citation binding failed: {_cb}")
 
-                    # FIX 4b: Generic-knowledge injection filter (bypassed since claims are strictly extracted).
-                    # if not listing_style_query and not self._is_refusal_answer(answer):
-                    #     try:
-                    #         answer = self._strip_generic_sentences(answer, chunks)
-                    #     except Exception as _gs:
-                    #         logger.warning(f"Generic sentence filter failed: {_gs}")
-
+                    # FIX 4b: Generic-knowledge injection filter.
+                    # Strips sentences that contain no doc_X anchor and look like general knowledge.
+                    if not listing_style_query and not self._is_refusal_answer(answer):
+                        try:
+                            answer = self._strip_generic_sentences(answer, chunks)
+                        except Exception as _gs:
+                            logger.warning(f"Generic sentence filter failed: {_gs}")
                     if (not listing_style_query) and (not self._is_refusal_answer(answer)):
                         safe_refs = self._build_safe_references(chunks, papers_metadata)
                         if safe_refs:
