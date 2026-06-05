@@ -879,7 +879,6 @@ def answer_catalog_metadata_query(query: str, papers_metadata: dict) -> str | No
 
     return None
 
-
 def apply_verification_or_refuse(
     answer: str,
     *,
@@ -891,67 +890,88 @@ def apply_verification_or_refuse(
     Returns (final_answer, passed).
     
     Enforces strict citation grounding: answers may only cite papers that are
-    either in the retrieved chunks or in the resolved scope. This prevents
-    hallucinated citations like citing PyTorch when asking about Ada Lovelace.
+    either in the retrieved chunks or in the resolved scope.
     """
     if not answer or not answer.strip():
         return answer, True
+
+    # Isolate References section from verification to prevent mutilation
+    answer_body = answer
+    refs_part = ""
+    if "References:" in answer:
+        parts = answer.split("References:", 1)
+        answer_body = parts[0].strip()
+        refs_part = "References:\n" + parts[1].strip()
 
     # ── Verify and clean up citations/claims using CitationVerifier ──
     try:
         from citation_verifier import CitationVerifier
         verifier = CitationVerifier()
-        # 1. Strip unverified citations
-        answer = verifier.strip_unverified_citations(answer, chunks)
-        # 2. Verify and remove unsupported claim sentences
-        verification = verifier.verify_answer(answer, chunks)
-        answer = verifier.regenerate_or_remove_unsupported(answer, verification, action="remove")
-        if not answer.strip():
-            return NOT_IN_LIBRARY_REFUSAL, False
+        # 1. Strip unverified citations on the body only
+        answer_body = verifier.strip_unverified_citations(answer_body, chunks)
+        # 2. Verify and remove unsupported claim sentences on the body only
+        verification = verifier.verify_answer(answer_body, chunks)
+        answer_body = verifier.regenerate_or_remove_unsupported(answer_body, verification, action="remove")
+        
+        if not answer_body.strip():
+            # If body is completely empty and scope is locked, return refusal
+            if scope.is_locked:
+                return NOT_IN_LIBRARY_REFUSAL, False
+            # Otherwise return a limited-evidence notice
+            titles_present = list({
+                c.get("metadata", {}).get("title", "Untitled")
+                for c in chunks if c.get("metadata", {}).get("title")
+            })[:3]
+            titles_str = "; ".join(titles_present) if titles_present else "the retrieved papers"
+            return (
+                f"The library contains related studies ({titles_str}) but the "
+                "retrieved passages do not contain sufficient detail to fully answer "
+                "this specific question. Try rephrasing or asking about a specific "
+                "aspect of these papers."
+            ), True
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"Citation/claim verification failed in strict verification: {e}")
 
+    # Re-append references
+    final_answer = answer_body
+    if refs_part:
+        final_answer = f"{answer_body}\n\n{refs_part}"
+
     # ── Bypass verification for broad/global queries ──────────────────────
-    # When scope is fully open (no author/paper/topic/filter lock), the LLM
-    # is given the complete library inventory and may legitimately cite any
-    # paper. Running strict title/citation checks here causes false failures
-    # on synthesis answers (literature reviews, research questions, gap analyses).
     if scope.entity_kind == "none" and not scope.scoped_titles:
-        return answer, True
+        return final_answer, True
 
     # ── For locked scopes (author/paper/topic/filter), enforce strict verification ──
-    # This prevents the Ada Lovelace problem where the model invents explanations
-    # and supports them with unrelated citations from the context window.
+    # Check scope ONLY on the answer body to prevent references list from causing false refusals
     if scope.is_locked:
         ok, reason = verify_answer_against_scope(
-            answer,
+            answer_body,
             scoped_titles=scope.scoped_titles,
             papers_metadata=papers_metadata,
             chunks=chunks,
             scope_locked=True,
         )
         if ok:
-            return answer, True
+            return final_answer, True
         logger.warning(f"Citation verification failed: {reason}")
         return VERIFICATION_FAILED_REFUSAL, False
 
     # For unlocked but non-empty scopes, apply lighter verification
     if scope.scoped_titles:
         ok, reason = verify_answer_against_scope(
-            answer,
+            answer_body,
             scoped_titles=scope.scoped_titles,
             papers_metadata=papers_metadata,
             chunks=chunks,
             scope_locked=False,
         )
         if ok:
-            return answer, True
+            return final_answer, True
         logger.warning(f"Citation verification failed (unlocked scope): {reason}")
-        # Don't refuse for unlocked scopes, just log the warning
-        return answer, True
+        return final_answer, True
 
-    return answer, True
+    return final_answer, True
 
 
 def verify_author_exists_in_library(author_name: str, papers_metadata: dict) -> bool:

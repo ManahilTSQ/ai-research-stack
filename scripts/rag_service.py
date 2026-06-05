@@ -2098,64 +2098,7 @@ class RAGService:
                             "error": "Answer failed scope verification.",
                         }
                 
-                # ── Hallucination detection: Strip unverified citations and claims ─────────────
-                # Remove citations and claims that don't match retrieved chunk metadata
-                try:
-                    from citation_verifier import CitationVerifier
-                    verifier = CitationVerifier()
-                    
-                    # Isolate references from verification
-                    answer_body = answer
-                    refs_part = ""
-                    if "References:" in answer:
-                        parts = answer.split("References:", 1)
-                        answer_body = parts[0].strip()
-                        refs_part = "References:\n" + parts[1].strip()
-                    
-                    # 1. Strip unverified citations (STRICT MODE)
-                    answer_before = answer_body
-                    answer_body = verifier.strip_unverified_citations(answer_body, chunks)
-                    if answer_body != answer_before:
-                        logger.warning(f"Citation verifier stripped citations, answer changed from {len(answer_before)} to {len(answer_body)} chars")
-                    
-                    # 2. Verify and remove unsupported claim sentences
-                    verification = verifier.verify_answer(answer_body, chunks)
-                    answer_before = answer_body
-                    answer_body = verifier.regenerate_or_remove_unsupported(answer_body, verification, action="remove")
-                    if answer_body != answer_before:
-                        logger.warning(f"Claim verifier removed unsupported claims, answer changed from {len(answer_before)} to {len(answer_body)} chars")
-                    
-                    # 3. Stable refusal threshold — only refuse if very few claims grounded
-                    # Use 0.10 (not 0.30) to avoid false refusals on partial-evidence queries
-                    support_ratio = verification.get("support_ratio", 1.0)
-                    if support_ratio < 0.10 and not scope.is_locked:
-                        logger.warning(f"Very few claims grounded ({support_ratio:.2%}), returning refusal")
-                        answer = NOT_IN_LIBRARY_REFUSAL
-                    # If answer body became empty after aggressive filtering:
-                    # do NOT return a hard refusal — return a limited-evidence notice instead
-                    elif not answer_body.strip():
-                        logger.warning("Answer body empty after filtering — returning limited-evidence notice")
-                        titles_present = list({
-                            c.get("metadata", {}).get("title", "Untitled")
-                            for c in chunks if c.get("metadata", {}).get("title")
-                        })[:3]
-                        titles_str = "; ".join(titles_present) if titles_present else "the retrieved papers"
-                        answer = (
-                            f"The library contains related studies ({titles_str}) but the "
-                            "retrieved passages do not contain sufficient detail to fully answer "
-                            "this specific question. Try rephrasing or asking about a specific "
-                            "aspect of these papers."
-                        )
-                    else:
-                        # Re-append references
-                        if refs_part:
-                            answer = f"{answer_body}\n\n{refs_part}"
-                        else:
-                            answer = answer_body
-                except ImportError:
-                    logger.warning("Citation verifier not available, skipping citation and claim check")
-                except Exception as e:
-                    logger.warning(f"Citation and claim verification failed: {e}")
+
 
                 # ── External knowledge detection DISABLED ───────────────────────────────
                 # Entity extraction was too aggressive and blocked legitimate technical terms
