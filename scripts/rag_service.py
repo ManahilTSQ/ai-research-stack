@@ -863,8 +863,7 @@ class RAGService:
         # ── Fix 6: Multi-Paper Retrieval Floor for Comparison Queries ──
         _COMP_CUES = {
             "compare", "comparison", "contrast", "difference", "differences",
-            "similarities", "versus", "vs", "across", "common", "trends",
-            "which papers"
+            "similarities", "versus", "vs"
         }
         q_lower = query.lower()
         is_comparison = any(cue in q_lower for cue in _COMP_CUES)

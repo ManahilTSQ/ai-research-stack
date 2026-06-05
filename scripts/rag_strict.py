@@ -51,7 +51,7 @@ _YEAR_RANGE_RE = re.compile(
 )
 
 _YEAR_SINGLE_RE = re.compile(
-    r"\b(?:published\s+in|in)\s+(20\d{2})\b|\b(20\d{2})\s+papers?\b",
+    r"\b(?:published\s+in|in|from|of|year|during)?\s*(20\d{2})\b|\b(20\d{2})\s+papers?\b",
     re.I,
 )
 
@@ -628,6 +628,19 @@ def is_catalog_metadata_query(query: str) -> bool:
         if "did not" in q or "not find" in q or "would have" in q or "wanted" in q:
             return False
 
+    # ── Specific paper author query route-to-RAG ──────────────────────────────
+    # Route queries asking about the authors / writers of a specific paper/topic to RAG
+    if re.search(r"\b(?:who\s+(?:wrote|authored)|authors?\s+of)\s+(?:the|this|a|an)?\s*(?:papers?|articles?|publications?|studies|study)\b", q):
+        return False
+
+    # ── Individual paper metadata queries ─────────────────────────────────────
+    if any(pat in q for pat in ["who wrote", "who authored", "who are the authors", "author of", "authors of", "who is the author",
+                                "what year", "when was", "publication year", "published in what year",
+                                "which journal", "which venue", "where was", "published in", "journal of the", "published by which",
+                                "doi of", "what is the doi"]):
+        if re.search(r"\b(papers?|articles?|publications?|studies|study)\b", q):
+            return True
+
     # ── Content-analysis early exit ───────────────────────────────────────────
     # Even if the query contains "papers by X", if it also asks for analytical
     # content (pipelines, thresholds, methodology, etc.) it must NOT be handled
@@ -750,11 +763,98 @@ def _format_numbered_list(header: str, lines: list[str]) -> str:
     return f"{header}\n\n{body}"
 
 
+def answer_individual_paper_metadata_query(query: str, papers_metadata: dict) -> str | None:
+    q = (query or "").lower().strip()
+    
+    # 1. Identify target field
+    target_field = None
+    if (any(pat in q for pat in ["who wrote", "who authored", "who are the authors", "who is the author", "list the authors of", "show the authors of", "name the authors of"])
+        or (("author" in q or "authors" in q) and any(pat in q for pat in ["what is the name of the", "what are the names of the", "names of the author", "name of the author"]))):
+        target_field = "authors"
+    elif any(pat in q for pat in ["what year", "when was", "publication year", "published in what year"]):
+        target_field = "year"
+    elif any(pat in q for pat in ["which journal", "which venue", "where was", "published in", "journal of the", "published by which", "which journal or conference"]):
+        target_field = "venue"
+    elif "doi" in q:
+        target_field = "doi"
+        
+    if not target_field:
+        return None
+        
+    # 2. Match papers
+    matched_papers = fuzzy_match_paper_titles(query, papers_metadata)
+    if not matched_papers:
+        # Extract title keywords
+        words = [w.strip(".,:;?()[]\"'") for w in q.split()]
+        stop_words = {
+            "who", "wrote", "authored", "are", "the", "authors", "author", "of", "paper", "papers",
+            "article", "articles", "publication", "publications", "on", "in", "what", "year", "when",
+            "was", "published", "which", "journal", "venue", "where", "by", "doi", "the", "a", "an",
+            "detection", "using", "based", "system", "approach", "model", "analysis", "for", "methods",
+            "techniques", "algorithms", "studies", "study"
+        }
+        keywords = [w for w in words if len(w) >= 4 and w not in stop_words]
+        if keywords:
+            scored = []
+            for title in papers_metadata:
+                title_lower = title.lower()
+                hits = sum(1 for kw in keywords if kw in title_lower)
+                if hits > 0:
+                    scored.append((hits, title))
+            if scored:
+                scored.sort(reverse=True)
+                best_hits = scored[0][0]
+                matched_papers = [t for h, t in scored if h == best_hits]
+                
+    if not matched_papers or len(matched_papers) > 3:
+        return None
+        
+    # 3. Format answer
+    answers = []
+    for title in matched_papers:
+        meta = papers_metadata[title]
+        val = meta.get(target_field)
+        if not val or val == "N/A":
+            continue
+            
+        if target_field == "authors":
+            answers.append(f"The author(s) of the paper \"{title}\" are: {val}.")
+        elif target_field == "year":
+            answers.append(f"The paper \"{title}\" was published in {val}.")
+        elif target_field == "venue":
+            answers.append(f"The paper \"{title}\" was published in {val}.")
+        elif target_field == "doi":
+            answers.append(f"The DOI of the paper \"{title}\" is {val}.")
+            
+    if not answers:
+        return None
+        
+    references_list = []
+    for title in matched_papers:
+        meta = papers_metadata[title]
+        ref = f"{meta.get('authors', 'Unknown')} ({meta.get('year', 'N/A')}). {title}."
+        v = meta.get("venue")
+        if v and v != "N/A":
+            ref += f" {v}."
+        d = meta.get("doi")
+        if d and d != "N/A":
+            ref += f" https://doi.org/{d}"
+        references_list.append(ref)
+        
+    ref_block = "\n\nReferences:\n\n" + "\n\n".join(references_list)
+    return "\n\n".join(answers) + ref_block
+
+
 def answer_catalog_metadata_query(query: str, papers_metadata: dict) -> str | None:
     """Deterministic answers for library inventory questions (no LLM)."""
     if not papers_metadata or not is_catalog_metadata_query(query):
         return None
     q = (query or "").lower()
+
+    # Deterministic metadata answers for specific paper questions
+    individual_ans = answer_individual_paper_metadata_query(query, papers_metadata)
+    if individual_ans:
+        return individual_ans
 
     # ── Author existence check — refuse queries about authors not in library ──
     if query_expects_named_author(query):
@@ -902,7 +1002,42 @@ def answer_catalog_metadata_query(query: str, papers_metadata: dict) -> str | No
     if re.search(r"\blist\b.{0,40}\b(all\s+)?(ingested\s+)?(papers?|articles?)\b", q) and not re.search(
         r"\bpapers?\s+by\s+|\barticles?\s+by\s+", q
     ):
+        matched_venue = None
+        venues = set()
+        for meta in papers_metadata.values():
+            v = meta.get("venue")
+            if v and v != "N/A":
+                venues.add(v)
+                
+        for v in venues:
+            norm_v = v.lower().replace("&amp;", "&").strip()
+            if norm_v in q:
+                matched_venue = v
+                break
+            words = [w.strip(".,:;()[]") for w in norm_v.split()]
+            words = [w for w in words if len(w) >= 4 and w not in {"journal", "conference", "transactions", "letters", "proceedings", "reports", "report"}]
+            if words and any(w in q for w in words):
+                matched_venue = v
+                break
+
         titles = sorted(papers_metadata.keys())
+        if matched_venue:
+            filtered_titles = []
+            for t in titles:
+                v = papers_metadata[t].get("venue", "")
+                if v and (matched_venue.lower() in v.lower() or v.lower() in matched_venue.lower()):
+                    filtered_titles.append(t)
+            lines = []
+            for i, title in enumerate(filtered_titles, 1):
+                m = papers_metadata[title]
+                lines.append(
+                    f"{i}. {m.get('authors', 'Unknown')} ({m.get('year', 'N/A')}). {title}"
+                )
+            header = f"Papers in your ingested library published in {matched_venue} ({len(lines)} paper(s)):"
+            if not lines:
+                return f"I could not find any ingested papers in your library published in {matched_venue}."
+            return _format_numbered_list(header, lines)
+
         lines = []
         for i, title in enumerate(titles, 1):
             m = papers_metadata[title]
