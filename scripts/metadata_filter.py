@@ -55,6 +55,54 @@ class MetadataFilter:
         
         return None
 
+    def extract_year_constraints(self, query: str) -> dict[str, Any] | None:
+        """
+        Extract year constraints (including operators) from query.
+        Returns a dict like:
+            {"year": 2020, "op": "before"} or {"year": 2020, "op": "after"}
+            or {"year_range": (2020, 2025), "op": "range"}
+            or {"year": 2020, "op": "eq"}
+        """
+        q = (query or "").lower()
+        
+        # 1. Check for year range: "between 2020 and 2025" or "2020-2025"
+        range_match = re.search(
+            r"\b(?:between|from)\s+(19\d{2}|20\d{2})\s+(?:and|to|-)\s+(19\d{2}|20\d{2})\b|"
+            r"\b(19\d{2}|20\d{2})\s*-\s*(19\d{2}|20\d{2})\b",
+            q
+        )
+        if range_match:
+            years = [int(y) for y in range_match.groups() if y]
+            if len(years) == 2:
+                start, end = min(years), max(years)
+                return {"year_range": (start, end), "op": "range"}
+        
+        # 2. Check for before/after/since constraints:
+        # "before 2020", "prior to 2020", "earlier than 2020", "up to 2020", "< 2020"
+        before_match = re.search(
+            r"\b(?:before|prior\s+to|earlier\s+than|up\s+to|before|published\s+before)\s+(\d{4})\b|(?:\b<\s*(\d{4})\b)",
+            q
+        )
+        if before_match:
+            year_str = before_match.group(1) or before_match.group(2)
+            return {"year": int(year_str), "op": "before"}
+            
+        # "after 2020", "since 2020", "later than 2020", "published\s+after", "> 2020"
+        after_match = re.search(
+            r"\b(?:after|since|later\s+than|published\s+after|post)\s+(\d{4})\b|(?:\b>\s*(\d{4})\b)",
+            q
+        )
+        if after_match:
+            year_str = after_match.group(1) or after_match.group(2)
+            return {"year": int(year_str), "op": "after"}
+            
+        # 3. Check for exact year match:
+        year_val = self.extract_year_constraint(query)
+        if year_val:
+            return {"year": year_val, "op": "eq"}
+            
+        return None
+
     def extract_venue_constraint(self, query: str) -> str | None:
         """
         Extract venue constraint from query.
@@ -105,9 +153,9 @@ class MetadataFilter:
         # Extract constraints from query if not provided
         if constraints is None:
             constraints = {}
-            year_constraint = self.extract_year_constraint(query)
-            if year_constraint:
-                constraints["year"] = year_constraint
+            year_info = self.extract_year_constraints(query)
+            if year_info:
+                constraints["year_info"] = year_info
             
             venue_constraint = self.extract_venue_constraint(query)
             if venue_constraint:
@@ -123,11 +171,29 @@ class MetadataFilter:
         for title, meta in papers_metadata.items():
             match = True
             
-            # Year filter
-            if "year" in constraints:
-                paper_year = str(meta.get("year", ""))
-                if paper_year != str(constraints["year"]):
+            # Year info filter
+            if "year_info" in constraints:
+                paper_year_str = str(meta.get("year", ""))
+                try:
+                    paper_year = int(paper_year_str) if paper_year_str.isdigit() else None
+                except ValueError:
+                    paper_year = None
+                
+                if paper_year is None:
                     match = False
+                else:
+                    info = constraints["year_info"]
+                    op = info["op"]
+                    if op == "eq" and paper_year != info["year"]:
+                        match = False
+                    elif op == "before" and paper_year >= info["year"]:
+                        match = False
+                    elif op == "after" and paper_year <= info["year"]:
+                        match = False
+                    elif op == "range":
+                        start, end = info["year_range"]
+                        if not (start <= paper_year <= end):
+                            match = False
             
             # Venue filter (case-insensitive partial match)
             if match and "venue" in constraints:

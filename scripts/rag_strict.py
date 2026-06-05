@@ -72,6 +72,26 @@ _KEYWORD_DISCOVERY_RE = re.compile(
     re.I,
 )
 
+_CATALOG_BLOCKERS = [
+    r"\banalyze\b", r"\banalysis\b", r"\banalyzing\b",
+    r"\bidentify\b", r"\bexamine\b", r"\binvestigate\b",
+    r"\bstep-?by-?step\b", r"\bpipeline\b",
+    r"\bthreshold\b", r"\bparameter\b", r"\bmethodolog",
+    r"\bapproach\s+used\b", r"\btechnique\s+used\b",
+    r"\binformation\s+gain\b", r"\bfeature\s+selection\b",
+    r"\bwhat\s+(?:thresholds?|parameters?|criteria|method|approach)\b",
+    r"\bhow\s+(?:did|does|do)\b",
+    r"\bexact\s+(?:step|pipeline|method|parameter)\b",
+    r"\bcompar(?:e|ison|ative)\b",
+    r"\bcontribution\b", r"\bfinding\b", r"\bframework\b",
+    r"\bexplain\b", r"\bdescribe\b", r"\bdetail\b",
+    r"\bsummarize\b", r"\bsynthesize\b", r"\bcompare\b",
+    r"\bevaluate\b", r"\bassess\b", r"\bdetermine\b",
+    r"\bwhich\s+.*\s+(?:use|used|uses|using)\b",
+    r"\bwhat\s+(?:method|approach|technique|strategy)\b",
+    r"\bhow\s+(?:to|do|does|did)\b",
+]
+
 COMPARE_NEEDS_PICKER_MSG = (
     "To compare two papers, select **Paper A** and **Paper B** in the Focus on Paper "
     "controls (or use the compare template), then ask your comparison question. "
@@ -192,6 +212,9 @@ def is_keyword_discovery_query(query: str) -> bool:
     if "full text" in q or "pdf" in q:
         if "did not" in q or "not find" in q or "would have" in q or "wanted" in q:
             return False
+    # Check catalog blockers (analytical/synthesis queries)
+    if any(re.search(pat, q) for pat in _CATALOG_BLOCKERS):
+        return False
     return bool(_KEYWORD_DISCOVERY_RE.search(q))
 
 
@@ -348,6 +371,25 @@ def resolve_query_scope(
 
     topic_tokens = _significant_query_tokens(query)
     q_lower = (query or "").lower()
+
+    # ── Comparison/synthesis query detection ──
+    is_compare = bool(re.search(r"\b(?:compare|comparison|contrast|difference|differences|similarities|versus|vs)\b", q_lower))
+    if is_compare:
+        # Extract topic keywords (excluding comparison words and query stopwords)
+        compare_stopwords = {"compare", "comparison", "contrast", "difference", "differences", 
+                             "similarities", "versus", "vs", "all", "papers", "paper", "articles", "article",
+                             "in", "my", "library", "ingested", "studies", "study"}
+        tokens = [t for t in topic_tokens if t not in compare_stopwords]
+        if tokens:
+            matched_papers = find_papers_by_metadata_keywords(query, papers_metadata)
+            if matched_papers:
+                return QueryScope(
+                    scoped_titles=matched_papers,
+                    requires_entity=True,
+                    entity_kind="topic",
+                    topic_tokens=tokens,
+                )
+
     profile = detect_topic_profile(query)
     if profile:
         topic_papers = resolve_topic_scoped_papers(query, papers_metadata, profile)
@@ -560,25 +602,6 @@ def is_catalog_metadata_query(query: str) -> bool:
     # Even if the query contains "papers by X", if it also asks for analytical
     # content (pipelines, thresholds, methodology, etc.) it must NOT be handled
     # by the deterministic catalog path — route it to LLM content synthesis.
-    _CATALOG_BLOCKERS = [
-        r"\banalyze\b", r"\banalysis\b", r"\banalyzing\b",
-        r"\bidentify\b", r"\bexamine\b", r"\binvestigate\b",
-        r"\bstep-?by-?step\b", r"\bpipeline\b",
-        r"\bthreshold\b", r"\bparameter\b", r"\bmethodolog",
-        r"\bapproach\s+used\b", r"\btechnique\s+used\b",
-        r"\binformation\s+gain\b", r"\bfeature\s+selection\b",
-        r"\bwhat\s+(?:thresholds?|parameters?|criteria|method|approach)\b",
-        r"\bhow\s+(?:did|does|do)\b",
-        r"\bexact\s+(?:step|pipeline|method|parameter)\b",
-        r"\bcompar(?:e|ison|ative)\b",
-        r"\bcontribution\b", r"\bfinding\b", r"\bframework\b",
-        r"\bexplain\b", r"\bdescribe\b", r"\bdetail\b",
-        r"\bsummarize\b", r"\bsynthesize\b", r"\bcompare\b",
-        r"\bevaluate\b", r"\bassess\b", r"\bdetermine\b",
-        r"\bwhich\s+.*\s+(?:use|used|uses|using)\b",
-        r"\bwhat\s+(?:method|approach|technique|strategy)\b",
-        r"\bhow\s+(?:to|do|does|did)\b",
-    ]
     if any(re.search(pat, q) for pat in _CATALOG_BLOCKERS):
         return False
 
@@ -705,12 +728,20 @@ def answer_catalog_metadata_query(query: str, papers_metadata: dict) -> str | No
 
     # ── Author existence check — refuse queries about authors not in library ──
     if query_expects_named_author(query):
+        # Skip checking if the query is actually targeting a paper title in our library.
+        has_paper_focus = False
+        if fuzzy_match_paper_titles(query, papers_metadata):
+            has_paper_focus = True
+            
         author_phrase = extract_author_search_phrase(query)
         if not author_phrase:
             # Fallback
             author_phrase, _ = resolve_author_from_library(query, papers_metadata)
             
-        if author_phrase:
+        if author_phrase and author_phrase in papers_metadata:
+            has_paper_focus = True
+            
+        if not has_paper_focus and author_phrase:
             author_exists = verify_author_exists_in_library(author_phrase, papers_metadata)
             if not author_exists:
                 # Double-check

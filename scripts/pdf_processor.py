@@ -194,7 +194,7 @@ class PDFProcessorService:
 
         # Common reference section headers used in academic papers
         ref_header_pattern = re.compile(
-            r'\n\s*(?:'
+            r'\n\s*(?:\d+[\.\s]*)?\s*(?:'
             r'references'
             r'|bibliography'
             r'|works cited'
@@ -204,7 +204,7 @@ class PDFProcessorService:
             r'|referenzen'          # German
             r'|bibliographie'       # French/German
             r'|bibliograf[íi]a'    # Spanish/Portuguese
-            r')\s*\n',
+            r')\b[\.:\s]*\n',
             re.IGNORECASE
         )
 

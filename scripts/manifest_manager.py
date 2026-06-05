@@ -77,11 +77,49 @@ class ManifestManagerService:
             Manifest dict (possibly empty {}) on success.
             Returns {} on any read or JSON parse error to avoid crashing.
         """
+        import re
         with self.manifest_lock:
             try:
                 if self.manifest_path.exists():
                     with open(self.manifest_path, "r", encoding="utf-8") as f:
-                        return json.load(f)
+                        manifest = json.load(f)
+                        
+                        # Normalize title and authors to remove newlines/consecutive spaces
+                        changed = False
+                        for filename, meta in list(manifest.items()):
+                            if not isinstance(meta, dict):
+                                continue
+                            if "title" in meta:
+                                orig_title = meta["title"]
+                                if orig_title:
+                                    clean_title = re.sub(r"\s+", " ", orig_title.strip())
+                                    if clean_title != orig_title:
+                                        meta["title"] = clean_title
+                                        changed = True
+                            if "authors" in meta:
+                                orig_authors = meta["authors"]
+                                if orig_authors:
+                                    clean_authors = re.sub(r"\s+", " ", orig_authors.strip())
+                                    if clean_authors != orig_authors:
+                                        meta["authors"] = clean_authors
+                                        changed = True
+                            if "venue" in meta:
+                                orig_venue = meta["venue"]
+                                if orig_venue:
+                                    clean_venue = re.sub(r"\s+", " ", orig_venue.strip())
+                                    if clean_venue != orig_venue:
+                                        meta["venue"] = clean_venue
+                                        changed = True
+                                        
+                        if changed:
+                            # Save back normalized version to disk
+                            try:
+                                with open(self.manifest_path, "w", encoding="utf-8") as wf:
+                                    json.dump(manifest, wf, indent=4, ensure_ascii=False)
+                            except Exception as save_err:
+                                logger.error(f"Failed to save normalized manifest on load: {save_err}")
+                                
+                        return manifest
             except Exception as e:
                 logger.error(f"Error loading ingestion manifest: {e}")
             return {}
@@ -171,21 +209,24 @@ class ManifestManagerService:
         existing_abstract = existing_entry.get("abstract")
         final_abstract = abstract or existing_abstract or ""
 
+        import re
+        clean_title = re.sub(r"\s+", " ", title.strip())
+        clean_authors = re.sub(r"\s+", " ", (authors or "Unknown Authors").strip())
+        clean_venue = re.sub(r"\s+", " ", (venue or "N/A").strip())
+
         # Overwrite or create the entry for this filename
         manifest[filename] = {
-            "title": title,
+            "title": clean_title,
             "doi": doi or "N/A",
             "status": status,
             "error": error,
-            "authors": authors or "Unknown Authors",
+            "authors": clean_authors,
             "year": str(year) if year else "N/A",
-            "venue": venue or "N/A",
+            "venue": clean_venue,
             "abstract": final_abstract,
-            # Semantic Scholar paper ID — used to detect duplicate discovery results
+            # Backwards compatibility and Scholar metadata tracking
             "paper_id": paper_id or existing_entry.get("paper_id") or "",
-            # ISO-format timestamp for human-readable audit trail
             "ingested_at": datetime.now().isoformat(),
-            # Track whether full PDF text was ingested (vs abstract-only)
             "has_full_text": has_full_text if status == "success" else False,
         }
 

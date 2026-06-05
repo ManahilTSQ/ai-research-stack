@@ -69,6 +69,9 @@ class VectorStoreService:
                 metadata={"hnsw:space": "cosine"}
             )
 
+            # Run startup database metadata normalization migration
+            self._normalize_stored_metadata()
+
             logger.info(
                 "ChromaDB client and ONNX embedding function initialised successfully. "
                 f"Collection contains {self.collection.count()} chunks."
@@ -77,6 +80,67 @@ class VectorStoreService:
         except Exception as e:
             logger.error(f"Failed to initialise ChromaDB: {e}")
             raise  # Critical failure — let the caller (server.py / main.py) handle it
+
+    def _normalize_stored_metadata(self) -> None:
+        """
+        One-time startup check to clean up newlines and consecutive spaces
+        in stored chunk titles and metadata inside ChromaDB.
+        """
+        try:
+            total_chunks = self.collection.count()
+            if total_chunks == 0:
+                return
+                
+            data = self.collection.get(include=["metadatas"])
+            metadatas = data.get("metadatas", [])
+            ids = data.get("ids", [])
+            
+            updates_ids = []
+            updates_metadatas = []
+            
+            for idx, meta in enumerate(metadatas):
+                if not meta:
+                    continue
+                changed = False
+                
+                # Normalize title
+                if "title" in meta:
+                    orig_title = meta["title"]
+                    clean_title = re.sub(r"\s+", " ", orig_title.strip())
+                    if clean_title != orig_title:
+                        meta["title"] = clean_title
+                        changed = True
+                        
+                # Normalize authors
+                if "authors" in meta:
+                    orig_authors = meta["authors"]
+                    clean_authors = re.sub(r"\s+", " ", orig_authors.strip())
+                    if clean_authors != orig_authors:
+                        meta["authors"] = clean_authors
+                        changed = True
+                        
+                # Normalize venue
+                if "venue" in meta:
+                    orig_venue = meta["venue"]
+                    clean_venue = re.sub(r"\s+", " ", orig_venue.strip())
+                    if clean_venue != orig_venue:
+                        meta["venue"] = clean_venue
+                        changed = True
+                        
+                if changed:
+                    updates_ids.append(ids[idx])
+                    updates_metadatas.append(meta)
+                    
+            if updates_ids:
+                logger.info(f"Normalizing stored metadata for {len(updates_ids)} chunks in ChromaDB...")
+                # Update in batches of 500 to avoid limits
+                for i in range(0, len(updates_ids), 500):
+                    batch_ids = updates_ids[i:i+500]
+                    batch_metas = updates_metadatas[i:i+500]
+                    self.collection.update(ids=batch_ids, metadatas=batch_metas)
+                logger.info("ChromaDB metadata normalization complete.")
+        except Exception as e:
+            logger.warning(f"Metadata normalization migration failed: {e}")
 
     # ──────────────────────────────────────────────────────────────────────────
     # PRIVATE: Slug Generation

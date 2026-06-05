@@ -61,8 +61,8 @@ class CitationVerifier:
             "present", "study", "paper", "article", "author", "authors", "many",
             "from", "into", "onto", "upon", "within", "without", "throughout"
         }
-        # Extract significant words (nouns, numbers, technical terms) of 4+ characters
-        words = re.findall(r'\b[a-z]{4,}\b|\d+(?:\.\d+)?', claim.lower())
+        # Extract significant words (nouns, numbers, technical terms) of 3+ characters
+        words = re.findall(r'\b[a-z]{3,}\b|\d+(?:\.\d+)?', claim.lower())
         return {w for w in words if w not in stopwords}
 
     def verify_claim_against_chunks(
@@ -100,7 +100,7 @@ class CitationVerifier:
             chunk_text = chunk.get("text", "").lower()
             
             # Check for entity overlap
-            chunk_words = set(re.findall(r'\b[a-z]{4,}\b|\d+(?:\.\d+)?', chunk_text))
+            chunk_words = set(re.findall(r'\b[a-z]{3,}\b|\d+(?:\.\d+)?', chunk_text))
             overlap = claim_entities & chunk_words
             
             # Overlap criteria:
@@ -132,7 +132,7 @@ class CitationVerifier:
         Returns:
             Relevant text snippet.
         """
-        claim_words = set(re.findall(r'\b[a-z]{4,}\b', claim.lower()))
+        claim_words = set(re.findall(r'\b[a-z]{3,}\b', claim.lower()))
         
         # Find sentences in chunk with highest overlap
         sentences = re.split(r'(?<=[.!?])\s+', chunk_text.strip())
@@ -141,7 +141,7 @@ class CitationVerifier:
         best_overlap = 0
         
         for sentence in sentences:
-            sentence_words = set(re.findall(r'\b[a-z]{4,}\b', sentence.lower()))
+            sentence_words = set(re.findall(r'\b[a-z]{3,}\b', sentence.lower()))
             overlap = len(claim_words & sentence_words)
             
             if overlap > best_overlap:
@@ -441,10 +441,11 @@ class CitationVerifier:
             citation_valid = True
             for author in author_candidates:
                 if (author, year) not in valid_pairs:
-                    # Check if surname is present in the chunk text to be safe
+                    # Check if surname is present in the chunk text to be safe (whole word match)
                     surname_in_text = False
                     for chunk in chunks:
-                        if author in chunk.get("text", "").lower():
+                        chunk_text = chunk.get("text", "").lower()
+                        if re.search(r'\b' + re.escape(author) + r'\b', chunk_text):
                             surname_in_text = True
                             break
                     if not surname_in_text:

@@ -51,6 +51,29 @@ TABLE_TRUNCATION_REFUSAL = (
     "title/year/venue only (metadata table)."
 )
 
+_STANDARD_STOPWORDS = frozenset({
+    "a", "about", "above", "after", "again", "against", "all", "am", "an", "and",
+    "any", "are", "aren't", "as", "at", "be", "because", "been", "before", "being",
+    "below", "between", "both", "but", "by", "can", "can't", "cannot", "could",
+    "couldn't", "did", "didn't", "do", "does", "doesn't", "doing", "don't",
+    "down", "during", "each", "few", "for", "from", "further", "had", "hadn't",
+    "has", "hasn't", "have", "haven't", "having", "he", "he'd", "he'll", "he's",
+    "her", "here", "here's", "hers", "herself", "him", "himself", "his", "how",
+    "how's", "i", "i'd", "i'll", "i'm", "i've", "if", "in", "into", "is", "isn't",
+    "it", "it's", "its", "itself", "let's", "me", "more", "most", "mustn't", "my",
+    "myself", "no", "nor", "not", "of", "off", "on", "once", "only", "or", "other",
+    "ought", "our", "ours", "ourselves", "out", "over", "own", "same", "shan't",
+    "she", "she'd", "she'll", "she's", "should", "shouldn't", "so", "some", "such",
+    "than", "that", "that's", "the", "their", "theirs", "them", "themselves",
+    "then", "there", "there's", "these", "they", "they'd", "they'll", "they're",
+    "they've", "this", "those", "through", "to", "too", "under", "until", "up",
+    "very", "was", "wasn't", "we", "we'd", "we'll", "we're", "we've", "were",
+    "weren't", "what", "what's", "when", "when's", "where", "where's", "which",
+    "while", "who", "who's", "whom", "why", "why's", "with", "won't", "would",
+    "wouldn't", "you", "you'd", "you'll", "you're", "you've", "your", "yours",
+    "yourself", "yourselves",
+})
+
 # Listing keywords used across RAG paths.
 LISTING_QUERY_KEYWORDS = (
     "list", "table", "tabulate", "all paper",
@@ -429,9 +452,10 @@ def find_papers_by_metadata_keywords(
     if not papers_metadata:
         return []
     tokens = _topic_specific_tokens(query) or _significant_query_tokens(query)
+    stop = _query_stopwords().union(_STANDARD_STOPWORDS)
     # Short tech tokens (6g, v2x, ai) from the raw query.
     for raw in re.findall(r"[a-z0-9]{2,}", (query or "").lower()):
-        if raw not in tokens and raw not in _GENERIC_TOPIC_TOKENS:
+        if raw not in tokens and raw not in _GENERIC_TOPIC_TOKENS and raw not in stop:
             tokens.append(raw)
     if not tokens:
         return []
@@ -1402,6 +1426,51 @@ def _dedupe_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def is_bibliography_chunk(text: str) -> bool:
+    """
+    Detect if a chunk's text is primarily bibliography / references content.
+    Uses robust heuristics to scan for lists of citations or year patterns.
+    """
+    if not text:
+        return False
+        
+    lines = [line.strip() for line in text.split('\n') if line.strip()]
+    if not lines:
+        return False
+        
+    # Heuristics:
+    # 1. High density of years in parentheses (e.g. (2018), (2020))
+    year_patterns = len(re.findall(r'\b(?:19|20)\d{2}\b', text))
+    
+    # 2. Count lines starting with citation markers like [1], [2], or author names
+    brackets_citations = len(re.findall(r'^\[\d+\]', text, re.M))
+    numbered_citations = len(re.findall(r'^\d+\.\s+[A-Z]', text, re.M))
+    
+    # 3. High density of common bibliography words
+    bib_keywords = ("doi:", "proceedings", "journal of", "vol.", "no.", "pp.", "et al.", "press", "university", "editor")
+    keyword_hits = sum(1 for kw in bib_keywords if kw in text.lower())
+    
+    # Calculate density metrics
+    num_words = len(text.split())
+    if num_words < 10:
+        return False
+        
+    # If the text has many bracketed citations at line starts
+    if brackets_citations >= 3 or numbered_citations >= 3:
+        return True
+        
+    # If a high percentage of words or sentences are citation-heavy
+    # e.g., if there is 1 year per 15 words and some keywords
+    if year_patterns >= 3 and keyword_hits >= 2 and (year_patterns / num_words) > 0.03:
+        return True
+        
+    # If it has a huge number of "et al." and "pp." or "doi"
+    if text.lower().count("et al.") >= 4 or text.lower().count("doi:") >= 3:
+        return True
+        
+    return False
+
+
 def retrieve_relevant_chunks(
     vector_store,
     query: str,
@@ -1552,6 +1621,8 @@ def retrieve_relevant_chunks(
         per_paper = max(3, min(12, int((limit * over_retrieve_multiplier) // n_papers)))
         for title in inventory_titles:
             paper_chunks = vector_store.get_chunks_for_paper(title, max_chunks=per_paper)
+            # Filter out bibliography chunks
+            paper_chunks = [c for c in paper_chunks if not is_bibliography_chunk(c.get("text", ""))]
             author_chunks = _dedupe_chunks(author_chunks + paper_chunks)
         if author_chunks:
             # Apply reranking to author-scoped chunks if enabled
@@ -1586,6 +1657,9 @@ def retrieve_relevant_chunks(
     raw = vector_store.query_similar_chunks(
         query, limit=search_limit, filter_title=filter_title, filter_domain=effective_filter_domain
     )
+
+    # Filter out bibliography chunks
+    raw = [c for c in raw if not is_bibliography_chunk(c.get("text", ""))]
 
     chunks = filter_chunks_by_relevance(raw, max_distance=settings.RAG_MAX_DISTANCE)
 

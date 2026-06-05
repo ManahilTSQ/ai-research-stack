@@ -431,7 +431,7 @@ class RAGService:
         True when the final answer is a refusal / cannot-verify response.
         In these cases we must NOT append a References section.
         """
-        a = (answer or "").strip()
+        a = (answer or "").strip().lower()
         if not a:
             return False
         refusal_markers = (
@@ -439,12 +439,36 @@ class RAGService:
             IRRELEVANT_REFUSAL,
             NOT_IN_LIBRARY_REFUSAL,
             TABLE_TRUNCATION_REFUSAL,
-            "This question is outside the scope of your ingested research knowledge base.",
-            "I cannot provide this answer because it references papers or authors that are not in the retrieved scope",
-            "I could not find any ingested papers in your knowledge base that discuss that topic.",
-            "I could not find any relevant papers or context in the local database",
+            "this question is outside the scope of your ingested research knowledge base",
+            "i cannot provide this answer because it references papers or authors that are not in the retrieved scope",
+            "i could not find any ingested papers in your knowledge base that discuss that topic",
+            "i could not find any relevant papers or context in the local database",
         )
-        return any(marker and marker in a for marker in refusal_markers)
+        if any(marker and marker.lower() in a for marker in refusal_markers if marker):
+            return True
+            
+        semantic_refusal_phrases = (
+            "not related to",
+            "not mention",
+            "not present in",
+            "outside the scope",
+            "outside of the scope",
+            "does not contain",
+            "do not contain",
+            "no papers",
+            "no information",
+            "not found in the",
+            "not available",
+            "is not discussed",
+            "are not discussed",
+            "cannot answer",
+            "unavailable",
+            "not relate to",
+        )
+        if any(phrase in a for phrase in semantic_refusal_phrases):
+            return True
+            
+        return False
 
     def _is_unverifiable_sensitive_claim(self, query: str, chunks: list[dict]) -> bool:
         """
@@ -665,7 +689,7 @@ class RAGService:
         inventory_metadata = inventory_for_scope(papers_metadata, scope)
 
         # ── Author existence check & Broad author query handling — BEFORE retrieval/LLM ──
-        if query_expects_named_author(query):
+        if query_expects_named_author(query) and scope.entity_kind != "paper":
             author_phrase = extract_author_search_phrase(query)
             if not author_phrase:
                 author_phrase, _ = resolve_author_from_library(query, papers_metadata)
