@@ -998,10 +998,9 @@ class RAGService:
         library_inventory_str = build_library_inventory(inventory_metadata)
         
         # ── Off-topic detection BEFORE LLM call ─────────────────────────────
-        # Use retrieval count instead of keyword matching (more reliable)
-        # If no chunks were retrieved and the query is not about a specific paper in the library,
-        # refuse immediately to prevent LLM from hallucinating
-        if not chunks and not filter_title and not matched_titles:
+        # Use retrieval count AND relevance check (more reliable than just count)
+        # If chunks were retrieved but are not relevant to the query, refuse
+        if not filter_title and not matched_titles:
             # Check if query might be about a paper title in the library
             query_matches_paper = False
             for title in papers_metadata.keys():
@@ -1009,7 +1008,55 @@ class RAGService:
                     query_matches_paper = True
                     break
             
-            if not query_matches_paper:
+            # Check relevance of retrieved chunks
+            if chunks:
+                # Extract significant query tokens
+                query_tokens = set(re.findall(r'\b[a-z]{4,}\b', query.lower()))
+                # Remove common stopwords
+                stopwords = {"what", "which", "where", "when", "how", "does", "did", "are", "is", "was", "were", "have", "has", "had", "will", "would", "could", "should", "may", "might", "must", "can", "about", "from", "with", "that", "this", "these", "those"}
+                query_tokens = query_tokens - stopwords
+                
+                # Check if query tokens appear in retrieved chunks
+                relevant_chunks = 0
+                for chunk in chunks:
+                    chunk_text = chunk.get("text", "").lower()
+                    token_hits = sum(1 for token in query_tokens if token in chunk_text)
+                    if token_hits >= 2 or (len(query_tokens) == 1 and query_tokens and query_tokens.pop() in chunk_text):
+                        relevant_chunks += 1
+                
+                # If less than 50% of chunks are relevant, refuse
+                if relevant_chunks < len(chunks) * 0.5 and not query_matches_paper:
+                    logger.warning(f"Low chunk relevance: {relevant_chunks}/{len(chunks)} chunks relevant for query: {query}")
+                    return {
+                        "query": query,
+                        "answer": NOT_IN_LIBRARY_REFUSAL,
+                        "sources": [],
+                        "success": False,
+                        "error": "Retrieved chunks not relevant to query",
+                    }
+                
+                # Additional check: if query asks about specific topic (e.g., "coffee papers"),
+                # ensure chunks are from papers about that topic
+                if "coffee" in query.lower():
+                    coffee_chunks = 0
+                    for chunk in chunks:
+                        chunk_title = chunk.get("metadata", {}).get("title", "").lower()
+                        chunk_text = chunk.get("text", "").lower()
+                        if "coffee" in chunk_title or "coffee" in chunk_text:
+                            coffee_chunks += 1
+                    
+                    if coffee_chunks < len(chunks) * 0.5:
+                        logger.warning(f"Query asks about coffee but only {coffee_chunks}/{len(chunks)} chunks are coffee-related")
+                        return {
+                            "query": query,
+                            "answer": NOT_IN_LIBRARY_REFUSAL,
+                            "sources": [],
+                            "success": False,
+                            "error": "Retrieved chunks not relevant to coffee topic",
+                        }
+            
+            # If no chunks retrieved and query doesn't match paper title, refuse
+            if not chunks and not query_matches_paper:
                 logger.warning(f"No chunks retrieved and query doesn't match any paper title: {query}")
                 return {
                     "query": query,
