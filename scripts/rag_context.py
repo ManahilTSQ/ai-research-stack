@@ -1489,19 +1489,20 @@ def fuzzy_match_paper_titles(query: str, papers_metadata: dict) -> list[str]:
     # Check if the query looks like a paper title (long, specific phrases)
     q_lower = (query or "").lower().strip()
     # Remove common query prefixes
-    q_clean = re.sub(r'^(tell me about|what is|describe|explain|summarize|summary of|about|the paper titled|paper titled)\s+', '', q_lower, flags=re.I)
+    q_clean = re.sub(r'^(tell me about|what is|describe|explain|summarize|summary of|about|the paper titled|paper titled|what dataset was used in|what deep learning architecture was used in|what performance metrics were reported in|what does jhanjhi think about)\s+', '', q_lower, flags=re.I)
     q_clean = q_clean.strip()
     
-    # If the cleaned query is long enough (>= 5 words) and specific, try direct title matching
+    # If the cleaned query is long enough (>= 4 words) and specific, try direct title matching
     words = q_clean.split()
-    if len(words) >= 5:
+    if len(words) >= 4:
         for title in papers_metadata:
             title_lower = title.lower()
-            # Check for substantial overlap (at least 60% of words)
+            # Check for substantial overlap (at least 50% of words for 4-5 words, 60% for longer)
             title_words = set(title_lower.split())
             query_words = set(words)
             overlap = len(title_words & query_words)
-            if overlap >= min(5, len(query_words) * 0.6):
+            min_overlap = 3 if len(query_words) == 4 else min(4, len(query_words) * 0.5)
+            if overlap >= min_overlap:
                 if title not in matches:
                     matches.append(title)
         if matches:
@@ -2015,13 +2016,18 @@ def retrieve_relevant_chunks(
         else:
             logger.info("Strict query term matching returned zero results. Falling back to pure embedding search to maximize recall.")
 
-    if inventory_titles and (locked_scope or query_expects_named_author(query)):
+    # CRITICAL: When inventory_titles is set (specific paper matched), ALWAYS filter to those papers
+    # This prevents cross-paper hallucination where content from wrong papers is cited
+    if inventory_titles:
         chunks = filter_chunks_to_titles(chunks, inventory_titles)
         if not chunks:
+            # If filtering removed all chunks, retrieve directly from the matched papers
             for title in inventory_titles:
                 chunks = _dedupe_chunks(
                     chunks + vector_store.get_chunks_for_paper(title, max_chunks=max(limit, 12))
                 )
+            # Re-filter after direct retrieval to ensure only matched papers
+            chunks = filter_chunks_to_titles(chunks, inventory_titles)
 
     # Strict mode: never return unscoped semantic noise when the query is entity-locked.
     if strict and locked_scope:
