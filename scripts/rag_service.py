@@ -1074,22 +1074,57 @@ class RAGService:
             blocks.append(header)
         return "\n\n".join(blocks)
 
+    # Specific model/architecture names that must appear in the cited chunk
+    # if the sentence claims to be about that architecture.
+    _ARCHITECTURE_NAMES: frozenset = frozenset({
+        "rnn", "rnns", "lstm", "lstms", "gru", "grus",
+        "autoencoder", "autoencoders",
+        "transformer", "transformers",
+        "xception", "resnet", "vgg", "inception", "densenet",
+        "mobilenet", "efficientnet", "alexnet",
+        "unet", "u-net",
+        "bert", "gpt",
+        "yolo",
+    })
+
     def _verify_claim_chunk_support(self, sentence: str, doc_num: int, chunks: list[dict]) -> bool:
         """
         Span-level evidence check: verify that the chunk cited by doc_<doc_num> actually
         contains keyword evidence for the claim made in `sentence`.
 
-        Returns True if at least 2 significant tokens from the sentence appear in the
-        cited chunk’s text, or if the chunk’s title appears in the sentence (title match).
-        Returns False if the citation is being used as a soft/filler reference.
+        Rules (in order):
+        1. Architecture-name check: if the sentence names a specific model/architecture
+           (e.g. RNN, LSTM, GAN, Xception), that name MUST appear in the cited chunk.
+           This prevents e.g. "RNNs used in security" being attributed to an agriculture paper.
+        2. Token-overlap check:
+           - Long sentences (5+ significant tokens): require >= 2 matching tokens.
+           - Short sentences (< 5 tokens): require >= 1 matching token.
+           - Title-word match from the cited paper also counts as a pass.
         """
         if doc_num < 1 or doc_num > len(chunks):
             return False
         chunk = chunks[doc_num - 1]
         chunk_text = (chunk.get("text") or "").lower()
         chunk_title = (chunk.get("metadata", {}).get("title") or "").lower()
+        chunk_full = chunk_text + " " + chunk_title
 
-        # Generic stop-words that should not count as evidence
+        # ── Rule 1: Architecture-name gate ──────────────────────────────────
+        # If the sentence explicitly mentions a specific architecture or model,
+        # the cited chunk MUST contain that name.  This eliminates the pattern
+        # where the LLM says "RNNs are used in security (doc_3)" when doc_3 is
+        # an agriculture paper that never mentions RNNs.
+        sent_lower = sentence.lower()
+        for arch in self._ARCHITECTURE_NAMES:
+            # Only fire when the architecture name appears as a whole word in the sentence
+            if re.search(rf"\b{re.escape(arch)}\b", sent_lower):
+                if arch not in chunk_full:
+                    logger.debug(
+                        f"Architecture gate: '{arch}' in sentence but absent from "
+                        f"cited chunk '{chunk_title[:60]}' — rejecting"
+                    )
+                    return False
+
+        # ── Rule 2: Token-overlap check ──────────────────────────────────────
         _STOP = {
             "the", "this", "that", "is", "are", "was", "were", "has", "have",
             "had", "with", "and", "for", "from", "into", "which", "their",
