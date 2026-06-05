@@ -412,6 +412,7 @@ class VectorStoreService:
         if not paper_title:
             return []
         try:
+            # Try exact match first
             data = self.collection.get(
                 where={"title": paper_title},
                 include=["documents", "metadatas"],
@@ -420,6 +421,18 @@ class VectorStoreService:
             ids = data.get("ids") or []
             docs = data.get("documents") or []
             metas = data.get("metadatas") or []
+            
+            # If exact match returns no results, try case-insensitive match via title_lower field
+            if not docs:
+                data = self.collection.get(
+                    where={"title_lower": paper_title.lower().strip()},
+                    include=["documents", "metadatas"],
+                    limit=max_chunks,
+                )
+                ids = data.get("ids") or []
+                docs = data.get("documents") or []
+                metas = data.get("metadatas") or []
+            
             results = []
             for i, doc_text in enumerate(docs):
                 if not doc_text:

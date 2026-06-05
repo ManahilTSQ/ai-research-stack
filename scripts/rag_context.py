@@ -1566,10 +1566,10 @@ def filter_chunks_to_titles(
 ) -> list[dict[str, Any]]:
     if not allowed_titles:
         return chunks
-    allowed = {t.strip() for t in allowed_titles}
+    allowed = {t.strip().lower() for t in allowed_titles}
     return [
         c for c in chunks
-        if (c.get("metadata") or {}).get("title", "").strip() in allowed
+        if (c.get("metadata") or {}).get("title", "").strip().lower() in allowed
     ]
 
 
@@ -1707,34 +1707,18 @@ def is_bibliography_chunk(text: str) -> bool:
     if not lines:
         return False
         
-    # Heuristics:
-    # 1. High density of years in parentheses (e.g. (2018), (2020))
-    year_patterns = len(re.findall(r'\b(?:19|20)\d{2}\b', text))
+    # Count lines that are citation lines (start with [1] or 1. Author pattern)
+    citation_lines = sum(
+        1 for l in lines
+        if re.match(r'^\[\d+\]', l) or re.match(r'^\d+\.\s+[A-Z]', l)
+    )
     
-    # 2. Count lines starting with citation markers like [1], [2], or author names
-    brackets_citations = len(re.findall(r'^\[\d+\]', text, re.M))
-    numbered_citations = len(re.findall(r'^\d+\.\s+[A-Z]', text, re.M))
-    
-    # 3. High density of common bibliography words
-    bib_keywords = ("doi:", "proceedings", "journal of", "vol.", "no.", "pp.", "et al.", "press", "university", "editor")
-    keyword_hits = sum(1 for kw in bib_keywords if kw in text.lower())
-    
-    # Calculate density metrics
-    num_words = len(text.split())
-    if num_words < 10:
-        return False
-        
-    # If the text has many bracketed citations at line starts
-    if brackets_citations >= 3 or numbered_citations >= 3:
+    # Require at least 60% of lines to be citation lines for it to be a bibliography chunk
+    if len(lines) >= 4 and (citation_lines / len(lines)) >= 0.6:
         return True
-        
-    # If a high percentage of words or sentences are citation-heavy
-    # e.g., if there is 1 year per 15 words and some keywords
-    if year_patterns >= 3 and keyword_hits >= 2 and (year_patterns / num_words) > 0.03:
-        return True
-        
-    # If it has a huge number of "et al." and "pp." or "doi"
-    if text.lower().count("et al.") >= 4 or text.lower().count("doi:") >= 3:
+    
+    # Also flag if it has a huge number of DOI references
+    if text.lower().count("doi:") >= 5:
         return True
         
     return False
@@ -1850,12 +1834,15 @@ def retrieve_relevant_chunks(
                         inventory_titles = domain_filtered_titles
                     logger.info(f"Domain filtering applied: {len(inventory_titles)} papers in domain '{filter_domain}'")
                     
-                    # HARD CONSTRAINT: If no papers match domain, return empty
+                    # If no papers match domain, skip domain filter and fall through to unfiltered search
                     if not inventory_titles:
-                        logger.warning(f"No papers match domain constraint '{filter_domain}' for query: {query}")
-                        return []
+                        logger.warning(f"Domain filter '{filter_domain}' matched no papers — skipping domain filter")
+                        filter_domain = None  # fall through to unfiltered search
+                        inventory_titles = []  # do not apply empty filter
                 else:
-                    logger.warning(f"No papers found in domain '{filter_domain}'")
+                    logger.warning(f"No papers found in domain '{filter_domain}' — skipping domain filter")
+                    filter_domain = None
+                    inventory_titles = []
         except ImportError:
             logger.warning("Topic classifier not available, skipping domain filtering")
         except Exception as e:
@@ -1907,7 +1894,7 @@ def retrieve_relevant_chunks(
             author_chunks = _dedupe_chunks(author_chunks + paper_chunks)
         if author_chunks:
             # Apply reranking to author-scoped chunks if enabled
-            if use_reranking and len(author_chunks) > limit:
+            if use_reranking and len(author_chunks) > 1:
                 # Use cross-encoder reranking for better precision
                 author_chunks = rerank_chunks(query, author_chunks, top_n=limit)
                 logger.info(f"Cross-encoder reranking applied to author-scoped chunks: {len(author_chunks)} chunks")
@@ -2051,7 +2038,7 @@ def retrieve_relevant_chunks(
     # Strict mode: never return unscoped semantic noise when the query is entity-locked.
     if strict and locked_scope:
         filtered = filter_chunks_to_titles(chunks, inventory_titles)
-        if use_reranking and len(filtered) > limit:
+        if use_reranking and len(filtered) > 1:
             # Use cross-encoder reranking for better precision
             filtered = rerank_chunks(query, filtered, top_n=limit)
             logger.info(f"Cross-encoder reranking applied in strict mode: {len(filtered)} chunks")
@@ -2069,7 +2056,7 @@ def retrieve_relevant_chunks(
         chunks = filter_chunks_for_topic_profile(chunks, profile)
 
     # Apply reranking if enabled and we have enough chunks
-    if use_reranking and len(chunks) > limit:
+    if use_reranking and len(chunks) > 1:
         # Use cross-encoder reranking for better precision
         chunks = rerank_chunks(query, chunks, top_n=limit)
         logger.info(f"Cross-encoder reranking applied: returned {len(chunks)} chunks")

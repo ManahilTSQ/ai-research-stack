@@ -1303,14 +1303,13 @@ class RAGService:
 
         new_body = " ".join(kept_sentences).strip()
 
-        # Safety net: if ALL sentences were stripped, return the original body
-        # (minus any References block) so the UI always receives displayable text.
+        # Safety net: if ALL sentences were stripped, return a refusal instead of unverified answer
         if not new_body:
             logger.warning(
                 "_enforce_hard_grounding_rules stripped every sentence — "
-                "returning original answer body to prevent blank/hung response."
+                "returning refusal message instead of unverified answer."
             )
-            new_body = answer_body
+            return "I could not find sufficient grounded information in the ingested papers to answer this question."
 
         if refs_part:
             return f"{new_body}\n\n{refs_part}"
@@ -2090,34 +2089,19 @@ class RAGService:
                 "Only use information from this paper's context blocks when answering.\n"
             )
 
-        # System prompt: strict research assistant with chunk labels
-        # Format chunks with structured labels for mechanical citation tracking
-        chunk_labels = []
-        for i, chunk in enumerate(chunks, start=1):
-            meta = chunk.get("metadata", {}) or {}
-            title = meta.get("title", "Unknown")
-            section = meta.get("section", "Unknown")
-            text = chunk.get("text", "")
-            chunk_labels.append(f"[CHUNK {i} — Source: \"{title}\", Section: \"{section}\"]\n{text}")
-        
-        chunks_formatted = "\n\n".join(chunk_labels)
-        
+        # System prompt: strict research assistant with behavioral rules only
+        # Chunk content is provided in the user prompt using doc_N format
         system_prompt = (
-            "You are a strict research assistant. You answer ONLY from the source chunks provided below.\n\n"
-            "RULES — follow every one without exception:\n"
-            "1. If the answer is not explicitly stated in the chunks, respond with exactly: "
-            "\"I could not find this information in the ingested papers.\"\n"
+            "You are a strict research assistant. Answer ONLY from the source chunks provided in the user message.\n\n"
+            "RULES:\n"
+            "1. If the answer is not explicitly stated in the chunks, respond with: "
+            "'I could not find this information in the ingested papers.'\n"
             "2. Do NOT use your own knowledge under any circumstances.\n"
             "3. Do NOT infer, extrapolate, or fill gaps beyond what is written.\n"
-            "4. Do NOT generate any citation, author name, paper title, DOI, or year that does not appear verbatim in the chunks below.\n"
-            "5. Every factual claim you make must be directly traceable to one of the chunks below.\n"
-            "6. When citing, use only the [CHUNK N] label provided. Do not invent citation formats.\n"
-            "7. If retrieved chunks do not directly answer the question, say: "
-            "\"I could not find this information in the ingested papers.\" Do not attempt to summarize unrelated chunks.\n\n"
-            f"{scope_note}\n\n"
-            "SOURCE CHUNKS:\n"
-            f"{chunks_formatted}\n\n"
-            f"USER QUESTION: {query}"
+            "4. Do NOT generate any citation, author name, paper title, DOI, or year not present verbatim in the chunks.\n"
+            "5. Cite every factual claim using the doc_X ID from the chunk header (e.g. (doc_1), (doc_3)).\n"
+            "6. If chunks do not answer the question, say: 'I could not find this information in the ingested papers.'\n"
+            f"{scope_note}"
         )
 
         # ── Step 3b: Answer Decision Gate ────────────────────────────────────
@@ -2240,53 +2224,6 @@ class RAGService:
             if response.status_code == 200:
                 data = response.json()
                 answer = data["message"]["content"]
-                
-                # Fallback logic: if the LLM refuses, but we have chunks containing query terms
-                if self._is_refusal_answer(answer) and self._has_keyword_match_in_chunks(query, chunks):
-                    logger.warning("LLM returned refusal, but chunks contain query keywords. Re-querying with fallback grounding prompt...")
-                    fallback_system_prompt = (
-                        f"{system_prompt}\n\n"
-                        "=== CRITICAL INSTRUCTION FOR WEAK RELEVANCE ===\n"
-                        "You previously claimed that no information or papers exist on this topic. This is WRONG.\n"
-                        "There ARE matching papers in the provided library/context blocks.\n"
-                        "You MUST NOT refuse to answer, and you MUST NOT say that no papers exist.\n"
-                        "If the retrieved papers are only partially or weakly related, state that 'partially related papers exist, but they focus on [X, Y, Z] aspects' and summarize their findings.\n"
-                        "Report whatever evidence is present in the context, even if it is a weak match. Do not deny existence.\n"
-                    )
-                    
-                    messages_fallback = [{"role": "system", "content": fallback_system_prompt}]
-                    if history_for_llm:
-                        for turn in history_for_llm[-12:]:
-                            role = (turn.get("role") or "").strip().lower()
-                            content = (turn.get("content") or "").strip()
-                            if role in {"user", "assistant"} and content:
-                                messages_fallback.append({"role": role, "content": content})
-                    messages_fallback.append({"role": "user", "content": user_prompt})
-                    
-                    payload_fallback = {
-                        "model": settings.OLLAMA_MODEL,
-                        "messages": messages_fallback,
-                        "stream": False,
-                        "options": {
-                            "temperature": 0.05,
-                            "top_p": 0.8,
-                            "repeat_penalty": 1.1
-                        }
-                    }
-                    
-                    try:
-                        fallback_response = requests.post(url, json=payload_fallback, timeout=settings.OLLAMA_TIMEOUT)
-                        if fallback_response.status_code == 200:
-                            fallback_data = fallback_response.json()
-                            fallback_answer = fallback_data["message"]["content"]
-                            if not self._is_refusal_answer(fallback_answer):
-                                logger.info("Fallback prompt successfully generated grounded answer.")
-                                answer = fallback_answer
-                            else:
-                                logger.warning("Fallback prompt also returned a refusal.")
-                    except Exception as fe:
-                        logger.warning(f"Fallback generation failed: {fe}")
-
                 # Global guardrail against unsupported sensitive-topic stance claims.
                 if self._is_unverifiable_sensitive_claim(query, chunks):
                     answer = (
