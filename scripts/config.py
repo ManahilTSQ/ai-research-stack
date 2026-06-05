@@ -88,8 +88,11 @@ class Settings:
 
     # ── RAG Relevance Threshold ───────────────────────────────────────────────
     # Maximum ChromaDB cosine distance for a chunk to count as "relevant".
-    # Lower = stricter (fewer off-topic chunks sent to the LLM). Typical good matches: < 0.85.
-    RAG_MAX_DISTANCE: float = float(os.getenv("RAG_MAX_DISTANCE", "0.85"))
+    # Lower = stricter. Cosine distance range: 0 (identical) to 2 (opposite).
+    # 0.85 → only ~57% similarity required (too loose, lets off-topic chunks through)
+    # 0.72 → ~64% similarity required (tighter, blocks weak semantic matches)
+    # This is the FIRST line of defense before the reranker.
+    RAG_MAX_DISTANCE: float = float(os.getenv("RAG_MAX_DISTANCE", "0.72"))
 
     # ── RAG Query Term Guard ──────────────────────────────────────────────────
     # If True, retrieved chunks must include at least one significant query term.

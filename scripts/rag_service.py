@@ -1653,25 +1653,29 @@ class RAGService:
                     "error": "No relevant chunks retrieved",
                 }
         
-        # ── Additional safety check: refuse obviously off-topic queries ─────────
-        # Even if chunks were retrieved, refuse if query is clearly outside scope
-        off_topic_patterns = {
-            "who won", "world cup", "fifa", "sports", "election", "president",
-            "weather", "temperature", "forecast", "movie", "film", "actor",
-            "celebrity", "music", "song", "recipe", "cook", "cooking", "food",
-            "travel", "vacation", "hotel", "flight", "airport"
-        }
+        # ── Evidence-based off-topic gate ─────────────────────────────────────
+        # ONLY refuse on truly non-research structural patterns: sport scores,
+        # entertainment gossip, personal advice, weather forecasts.
+        # Do NOT refuse on domain/topic terms (cryptocurrency, autonomous driving,
+        # blockchain) — if the library has no evidence, the Answer Decision Gate
+        # (below) will handle it via the refuse mode.
+        NON_RESEARCH_PATTERNS = (
+            "who won", "world cup", "fifa", "match score", "election result",
+            "weather forecast", "temperature today", "what's on tv",
+            "movie review", "celebrity gossip", "song lyrics",
+            "vacation plan", "hotel booking", "flight ticket",
+        )
         query_lower = query.lower()
-        has_off_topic = any(pattern in query_lower for pattern in off_topic_patterns)
-        
-        if has_off_topic and not query_matches_paper and not filter_title:
-            logger.warning(f"Off-topic query detected: {query}")
+        is_non_research = any(p in query_lower for p in NON_RESEARCH_PATTERNS)
+
+        if is_non_research and not query_matches_paper and not filter_title:
+            logger.warning(f"Non-research structural query detected: {query}")
             return {
                 "query": query,
                 "answer": NOT_IN_LIBRARY_REFUSAL,
                 "sources": [],
                 "success": False,
-                "error": "Off-topic query",
+                "error": "Non-research query",
             }
         
         # ── Context quality gate before LLM ───────────────────────────────────
@@ -1767,7 +1771,11 @@ class RAGService:
             "9. TRUTH GAPS: If the concept asked about is NOT in the context blocks or library inventory, "
             "say: 'The retrieved context does not contain information about [topic].' DO NOT guess.\n"
             "10. If context is insufficient, say so explicitly.\n"
-            "11. Formal, neutral academic tone always.\n\n"
+            "11. Formal, neutral academic tone always.\n"
+            "12. ONE PAPER PER SENTENCE: In multi-paper answers, each sentence may cite at most ONE "
+            "paper (one doc_X). Never blend two different papers into one sentence.\n"
+            "13. WRITE NOTHING YOU CANNOT TRACE: If you cannot attach a specific doc_X citation to "
+            "a sentence, do not write that sentence. Every non-introductory sentence must cite a doc_X.\n\n"
             "=== LISTING QUERY RULES — ABSOLUTE REQUIREMENTS ===\n"
             "When the user asks you to LIST, ENUMERATE, or TABULATE papers/articles:\n"
             "1. You MUST output EVERY SINGLE matching paper in your main numbered response.\n"
@@ -1831,18 +1839,21 @@ class RAGService:
         )
         _is_aggregation_query = any(p in query.lower() for p in _AGG_PATTERNS)
         _aggregation_notice = (
-            "AGGREGATION MODE — STRICT RULES:\\n"
-            "You are synthesizing across MULTIPLE papers. You MUST follow these rules:\\n"
-            "1. SHARED THEMES: Only state a theme as 'shared' if it is explicitly supported "
-            "by 2 or more different doc_X documents. Name the doc_IDs.\\n"
-            "2. DIVERGENCE: If papers disagree or cover different aspects, state this explicitly. "
-            "Do NOT invent a consensus that does not exist in the text.\\n"
-            "3. GAPS: If some papers are [SURVEY] type, note they provide secondary evidence "
-            "only — do not treat their referenced works as primary results.\\n"
-            "4. FORBIDDEN: Do NOT merge claims from different papers into one sentence. "
-            "Do NOT write a 'super conclusion' that summarizes all papers as one finding.\\n"
-            "5. FORMAT: Structure as: (a) Shared themes [with doc citations], "
-            "(b) Divergences, (c) Evidence gaps."
+            "AGGREGATION MODE — STRICT STRUCTURE REQUIRED:\n"
+            "You are synthesizing across papers from MULTIPLE DOMAINS. Follow this exact structure:\n\n"
+            "STEP 1 — DOMAIN SEGMENTATION (mandatory first):\n"
+            "  Group the retrieved documents by research domain (e.g., Medical Imaging, AI Safety, "
+            "Agriculture, NLP). For each domain group, summarize ONLY what those papers say. "
+            "Cite each claim with its specific doc_X. Do NOT mix domains in one paragraph.\n\n"
+            "STEP 2 — SHARED THEMES (only if real overlap exists):\n"
+            "  After per-domain summaries, list only themes that are explicitly mentioned by "
+            "2 or more papers from DIFFERENT domains. Name the doc_IDs. "
+            "If no cross-domain overlap exists, write: 'No significant cross-domain themes identified.'\n\n"
+            "STEP 3 — DIVERGENCES AND GAPS:\n"
+            "  State where papers disagree or cover different aspects. Note which papers are "
+            "[SURVEY] (secondary evidence) vs [METHOD] (primary experimental evidence).\n\n"
+            "FORBIDDEN: Do NOT produce a single unified conclusion across all papers. "
+            "Do NOT invent consensus. Do NOT blend claims from different domains into one sentence."
         ) if _is_aggregation_query else ""
 
         # User prompt: library inventory + doc-ID summary + full passages
