@@ -204,7 +204,7 @@ def reconcile(force_reset: bool = False):
                 pages, has_full_text = pdf_service.extract_text_by_page(full_path)
                 if not has_full_text:
                     logger.warning(f"  [!] Extracted minimal text from '{rel_path}' - likely abstract-only or scanned PDF")
-                chunks = pdf_service.chunk_text(pages, chunk_size=1000, chunk_overlap=200)
+                chunks = pdf_service.chunk_text(pages, chunk_size=1800, chunk_overlap=350)
 
             # Fallback to abstract-only chunking if PDF couldn't be obtained/parsed but abstract is present
             if not chunks and abstract:

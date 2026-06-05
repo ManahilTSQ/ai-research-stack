@@ -436,6 +436,11 @@ class PDFProcessorService:
         
         # Track paragraph positions for metadata
         para_start = 0
+        # Track actual character positions of all paragraphs
+        para_positions = [0]
+        for i, para in enumerate(paragraphs):
+            if i > 0:
+                para_positions.append(para_positions[-1] + len(paragraphs[i-1]) + 2)  # +2 for \n\n
         
         for i, para in enumerate(paragraphs):
             para_len = len(para)
@@ -468,11 +473,17 @@ class PDFProcessorService:
                 overlap_paras = current_chunk[-2:] if len(current_chunk) >= 2 else current_chunk[-1:] if current_chunk else []
                 current_chunk = overlap_paras
                 current_length = sum(len(p) for p in overlap_paras)
+                
+                # Reset para_start to the start of the first overlap paragraph
+                if overlap_paras:
+                    # Find the index of the first overlap paragraph in original paragraphs
+                    overlap_start_idx = i - len(overlap_paras)
+                    para_start = para_positions[overlap_start_idx]
             
             # Add current paragraph
             current_chunk.append(para)
             current_length += para_len
-            para_start += para_len + 2  # +2 for \n\n
+            para_start = para_positions[i] + para_len + 2  # +2 for \n\n
         
         # Don't forget the last chunk
         if current_chunk:
