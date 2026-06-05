@@ -507,13 +507,20 @@ def _topic_specific_tokens(query: str) -> list[str]:
 
 
 def query_has_library_topic_cue(query: str) -> bool:
-    """True for 'what do my papers say about X' style questions."""
+    """True for 'what do my papers say about X' style questions OR listing queries with topic keywords."""
     q_lower = (query or "").lower()
     cues = (
         "about", "on ", " regarding ", " related to ", " topic ", " theme ",
         "discuss", "discusses", "cover", "covers", "concerning", " say about",
     )
-    return any(c in q_lower for c in cues)
+    if any(c in q_lower for c in cues):
+        return True
+    
+    # Also recognize listing queries with topic keywords (e.g., "List SDN papers")
+    if re.search(r'\b(?:list|show|table)\s+(?:\w+\s+){1,}(?:papers?|articles?|studies)\b', q_lower):
+        return True
+    
+    return False
 
 
 # Tokens so generic that a single hit should NOT qualify a paper as on-topic.
@@ -831,32 +838,31 @@ def is_content_extraction_query(query: str) -> bool:
 
 
 def is_simple_inventory_listing(query: str) -> bool:
-    """Metadata-only list/table (title, year, venue) — safe to generate without LLM."""
+    """Metadata-only list/table (title, year, venue) — safe to generate without LLM.
+    
+    Returns True ONLY for very generic listing queries like "List all papers", "Show papers".
+    Returns False for any query with topic-specific keywords that require filtering.
+    """
     # Allow contextual questions about chat history to pass through to RAG handler
     if "above questions" in query.lower() or "this chat" in query.lower():
         return False
     
-    # If the query contains topic-specific keywords (e.g., "ransomware papers", "phishing detection papers"),
-    # this is NOT a simple inventory listing - it requires topic filtering
     q_lower = (query or "").lower()
     
-    # Check for explicit topic filtering patterns
-    # These patterns indicate the user wants to filter by topic, not list all papers
-    topic_filter_patterns = [
-        r"\b(?:list|show|table)\s+(?:all\s+)?(?:\w+\s+){0,3}(?:papers?|articles?|studies)\b",
+    # Very generic listing patterns that should return all papers
+    generic_patterns = [
+        r"^list\s+(all\s+)?papers?$",
+        r"^show\s+(all\s+)?papers?$",
+        r"^what\s+papers\s+(do\s+you\s+have|are\s+in\s+the\s+library)?$",
+        r"^papers?\s+in\s+(your\s+)?(library|database)$",
     ]
     
-    # Extract potential topic keywords from the query
-    # Remove common words to find the actual topic
-    words = re.findall(r'\b[a-z]{3,}\b', q_lower)
-    stop_words = {"list", "show", "table", "all", "papers", "paper", "articles", "article", "studies", "study", "for", "the", "and", "or", "in", "on", "about"}
-    potential_topics = [w for w in words if w not in stop_words]
+    for pattern in generic_patterns:
+        if re.search(pattern, q_lower):
+            return True
     
-    # If we have potential topic keywords, this requires topic filtering via RAG
-    if potential_topics:
-        return False
-    
-    return is_listing_query(query) and not is_content_extraction_query(query)
+    # Any other listing query with additional words is NOT simple - requires filtering
+    return False
 
 
 def is_per_paper_extraction_query(query: str) -> bool:
