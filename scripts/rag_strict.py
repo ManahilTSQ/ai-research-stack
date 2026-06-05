@@ -805,7 +805,7 @@ def answer_individual_paper_metadata_query(query: str, papers_metadata: dict) ->
     # 1. Identify target field (or "all" for multi-field requests)
     target_field = None
     _META_FIELD_COUNT = sum(1 for f in ("author", "authors", "venue", "year", "doi") if f in q)
-    if (any(pat in q for pat in ["who wrote", "who authored", "who are the authors", "who is the author", "list the authors of", "show the authors of", "name the authors of"])
+    if (any(pat in q for pat in ["who wrote", "who authored", "who are the authors", "who is the author", "list the authors of", "show the authors of", "name the authors of", "what are the authors of", "what is the authors of"])
         or (("author" in q or "authors" in q) and any(pat in q for pat in ["what is the name of the", "what are the names of the", "names of the author", "name of the author"]))):
         target_field = "authors"
     elif any(pat in q for pat in ["what year", "when was", "publication year", "published in what year"]):

@@ -39,6 +39,7 @@ from rag_context import (
     extract_author_search_phrase,
     resolve_author_from_library,
     fuzzy_match_paper_titles,
+    is_bibliography_chunk,
 )
 from rag_strict import (
     resolve_query_scope,
@@ -1348,6 +1349,49 @@ class RAGService:
         
         return issues
 
+    def _log_retrieval_metrics(self, query: str, chunks: list[dict], mode: str, faithfulness_issues: list[str]) -> None:
+        """
+        Log detailed retrieval metrics for debugging.
+        """
+        logger.info("=" * 80)
+        logger.info("RETRIEVAL METRICS DASHBOARD")
+        logger.info("=" * 80)
+        logger.info(f"Query: {query[:100]}")
+        logger.info(f"Retrieved chunks: {len(chunks)}")
+        logger.info(f"Answer mode: {mode}")
+        logger.info(f"Faithfulness issues: {len(faithfulness_issues)}")
+        
+        if chunks:
+            # Check for reference section pollution
+            bibliography_count = 0
+            for chunk in chunks:
+                text = chunk.get("text", "").lower()
+                if self._is_bibliography_chunk(text):
+                    bibliography_count += 1
+            
+            ref_percentage = (bibliography_count / len(chunks)) * 100 if chunks else 0
+            logger.info(f"Bibliography chunks: {bibliography_count}/{len(chunks)} ({ref_percentage:.1f}%)")
+            
+            if ref_percentage > 15:
+                logger.warning(f"High reference section pollution: {ref_percentage:.1f}% of chunks are from bibliography sections")
+            
+            # Log top 5 chunks with scores
+            logger.info("Top 5 chunks:")
+            for i, chunk in enumerate(chunks[:5], start=1):
+                meta = chunk.get("metadata", {}) or {}
+                title = meta.get("title", "Unknown")[:60]
+                distance = chunk.get("distance", "N/A")
+                rerank_score = chunk.get("rerank_score", "N/A")
+                is_bib = "[BIB]" if self._is_bibliography_chunk(chunk.get("text", "")) else ""
+                logger.info(f"  {i}. {title}... | distance={distance:.3f} | rerank={rerank_score} {is_b}")
+        
+        if faithfulness_issues:
+            logger.info("Faithfulness issues:")
+            for issue in faithfulness_issues[:5]:
+                logger.info(f"  - {issue}")
+        
+        logger.info("=" * 80)
+
     def _strip_generic_sentences(self, answer: str, chunks: list[dict]) -> str:
         """
         Remove sentences from `answer` that share NO significant keywords with any
@@ -1503,8 +1547,21 @@ class RAGService:
             r"\b(?:summarize|summary of|describe|explain|the paper|this paper)\b.*\b(?:titled|called|named)\b",
             r"\b(?:summarize|describe|explain)\b\s+(?:the\s+)?paper\s+",
             r"\bthe\s+paper\s+",
+            r"^\s*(?:summarize|describe|explain)\s+[A-Z]",  # Starts with action verb + capitalized title
         ]
         is_paper_specific = any(re.search(pat, q_lower) for pat in paper_specific_patterns)
+        
+        # Additional check: if query starts with "Summarize" or "Describe" followed by a capitalized phrase
+        # that looks like a paper title (contains multiple words, some capitalized), treat as paper-specific
+        if not is_paper_specific:
+            action_pattern = r"^\s*(?:summarize|describe|explain)\s+([A-Z][A-Za-z0-9\s\-:]{10,100})"
+            match = re.match(action_pattern, query)
+            if match:
+                potential_title = match.group(1).strip()
+                # Check if this looks like a title (has multiple words, some capitals)
+                if len(potential_title.split()) >= 3 and re.search(r'[A-Z]', potential_title):
+                    is_paper_specific = True
+                    logger.info(f"Detected paper-specific query by action+title pattern: '{query[:60]}...'")
         
         if is_paper_specific and not filter_title:
             # Extract potential paper title from query
@@ -2312,6 +2369,9 @@ class RAGService:
                             # Add warning to answer if issues found
                             if len(faithfulness_issues) > 0:
                                 answer += "\n\n⚠️ Note: Some claims in this answer could not be fully verified against source material."
+                    
+                    # Log retrieval metrics for debugging
+                    self._log_retrieval_metrics(query, chunks, _answer_mode, faithfulness_issues if not listing_style_query and not self._is_refusal_answer(answer) else [])
                 
 
 

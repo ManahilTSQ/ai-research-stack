@@ -26,12 +26,15 @@ def _get_reranker():
         try:
             from sentence_transformers import CrossEncoder
             _reranker = CrossEncoder("BAAI/bge-reranker-base")
-            logger.info("Cross-encoder reranker loaded successfully")
-        except ImportError:
-            logger.warning("sentence-transformers not installed, reranking disabled")
-            logger.warning("Install with: pip install sentence-transformers")
+            logger.info("Cross-encoder reranker loaded successfully: BAAI/bge-reranker-base")
+        except ImportError as e:
+            logger.error(f"sentence-transformers not installed: {e}")
+            logger.error("Reranking DISABLED. Install with: pip install sentence-transformers")
         except Exception as e:
-            logger.warning(f"Failed to load cross-encoder reranker: {e}")
+            logger.error(f"Failed to load cross-encoder reranker: {e}")
+            logger.error("Reranking DISABLED due to error")
+    else:
+        logger.debug("Using cached cross-encoder reranker")
     return _reranker
 
 def rerank_chunks(question: str, chunks: list[dict], top_n: int = 5) -> list[dict]:
@@ -47,10 +50,15 @@ def rerank_chunks(question: str, chunks: list[dict], top_n: int = 5) -> list[dic
         Re-ranked list of chunks (top_n or fewer)
     """
     reranker = _get_reranker()
-    if not reranker or not chunks:
+    if not reranker:
+        logger.warning("Cross-encoder reranker not available, returning original chunks without reranking")
         return chunks[:top_n]
     
+    if not chunks:
+        return chunks
+    
     try:
+        logger.info(f"Cross-encoder reranking {len(chunks)} chunks for query: '{question[:60]}...'")
         # Extract chunk texts
         chunk_texts = [chunk.get("text", "") for chunk in chunks]
         
@@ -63,10 +71,16 @@ def rerank_chunks(question: str, chunks: list[dict], top_n: int = 5) -> list[dic
         # Sort by score (descending)
         ranked = sorted(zip(scores, chunks), key=lambda x: x[0], reverse=True)
         
+        # Log top scores for debugging
+        top_scores = [f"{s:.3f}" for s, _ in ranked[:5]]
+        logger.info(f"Cross-encoder top scores: {top_scores}")
+        
         # Return top_n chunks
-        return [chunk for _, chunk in ranked[:top_n]]
+        result = [chunk for _, chunk in ranked[:top_n]]
+        logger.info(f"Cross-encoder reranking complete: returned {len(result)} chunks")
+        return result
     except Exception as e:
-        logger.warning(f"Cross-encoder reranking failed: {e}, returning original chunks")
+        logger.error(f"Cross-encoder reranking failed: {e}, returning original chunks")
         return chunks[:top_n]
 
 
@@ -558,6 +572,8 @@ def find_papers_by_metadata_keywords(
       generic word (e.g. "deep" or "network") are excluded.
     - Single-token matches are allowed only when the token is long and specific
       (>=7 characters, not in _WEAK_TOPIC_TOKENS).
+    - For multi-token queries with specific terms (e.g., "SDN security"), require
+      ALL significant tokens to be present to prevent over-retrieval.
     
     Query expansion: When use_expansion=True, expands query terms with synonyms
     to improve retrieval breadth for multi-term queries.
@@ -572,6 +588,9 @@ def find_papers_by_metadata_keywords(
     for raw in re.findall(r"[a-z0-9]{2,}", (query or "").lower()):
         if raw not in tokens and raw not in _GENERIC_TOPIC_TOKENS and raw not in stop:
             tokens.append(raw)
+    
+    # Identify significant tokens (non-generic) for strict matching
+    significant_tokens = [t for t in tokens if t not in _GENERIC_TOPIC_TOKENS and len(t) >= 3]
     
     # Hierarchical topic expansion for broader terms
     # If query contains a broad term like "cancer", also search for its subtypes
@@ -601,6 +620,8 @@ def find_papers_by_metadata_keywords(
     
     if not tokens:
         return []
+    
+    # Determine matching requirements
     need = min_token_hits
     if need is None:
         if len(tokens) >= 3:
@@ -614,12 +635,23 @@ def find_papers_by_metadata_keywords(
                 need = 2  # Force no single-generic-token matches.
             else:
                 need = 1
+    
     matched: list[str] = []
     for title, meta in papers_metadata.items():
         hay = _paper_haystack(title, meta)
         hits = sum(1 for t in tokens if t in hay)
+        
+        # Strict mode: for multi-token queries with 2+ significant tokens,
+        # require ALL significant tokens to be present
+        if len(significant_tokens) >= 2 and need >= 2:
+            significant_hits = sum(1 for t in significant_tokens if t in hay)
+            if significant_hits < len(significant_tokens):
+                continue  # Skip papers that don't have all significant tokens
+        
         if hits >= need:
             matched.append(title)
+    
+    logger.info(f"Metadata keyword search: query='{query[:40]}...', tokens={len(tokens)}, significant={len(significant_tokens)}, matched={len(matched)} papers")
     return sorted(matched)
 
 
@@ -1407,6 +1439,21 @@ def fuzzy_match_paper_titles(query: str, papers_metadata: dict) -> list[str]:
                     matches.append(title)
     if matches:
         return matches
+
+    # Extract acronyms from query (e.g., "SH-IDS", "YOLO")
+    acronyms = re.findall(r'\b[A-Z]{2,}(?:-[A-Z]{2,})*\b', query)
+    if acronyms:
+        # Try to match papers by acronym in title
+        for acronym in acronyms:
+            acronym_lower = acronym.lower()
+            for title in papers_metadata:
+                title_lower = title.lower()
+                # Check if acronym appears as a standalone word in title
+                if re.search(rf'\b{re.escape(acronym_lower)}\b', title_lower):
+                    if title not in matches:
+                        matches.append(title)
+        if matches:
+            return matches
 
     tokens = _significant_query_tokens(query)
     if not tokens:
