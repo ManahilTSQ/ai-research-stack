@@ -1232,11 +1232,27 @@ class RAGService:
             "future directions",
             "research directions",
             "investigate the phenomenon",
+            "another direction",
+            "integrating insights",
+            "addressing methodological",
+            "firstly, there is a need",
+            "another direction for",
+            "integrating insights from",
+            "addressing methodological limitations",
         ]
+
+        # Pattern to detect bracketed placeholders like [specific phenomenon or concept]
+        PLACEHOLDER_PATTERN = re.compile(r'\[([^\]]+)\]', re.IGNORECASE)
 
         for sent in sentences:
             # Check for generic academic filler patterns
             is_filler = any(p in sent.lower() for p in GENERIC_FILLER_PATTERNS)
+            
+            # Check for bracketed placeholders (template text)
+            has_placeholder = bool(PLACEHOLDER_PATTERN.search(sent))
+            if has_placeholder:
+                logger.warning(f"Removing sentence with placeholder template: '{sent[:80]}'")
+                continue
 
             # Always keep generic/structural sentences (headings, transitions)
             # EXCEPT when they contain academic filler pattern words (which need grounding)
@@ -1425,6 +1441,37 @@ class RAGService:
             query, papers_metadata, filter_title=filter_title
         )
         scope = apply_scope_resilience(scope, query, papers_metadata)
+        
+        # ── Pre-retrieval paper existence check for specific paper queries ─────
+        # Detect queries asking for a specific paper by title/name and refuse if not in library
+        # This prevents hallucination of summaries for non-existent papers
+        q_lower = (query or "").lower()
+        paper_specific_patterns = [
+            r"\b(?:summarize|summary of|describe|explain|the paper|this paper)\b.*\b(?:titled|called|named)\b",
+            r"\b(?:summarize|describe|explain)\b\s+(?:the\s+)?paper\s+",
+            r"\bthe\s+paper\s+",
+        ]
+        is_paper_specific = any(re.search(pat, q_lower) for pat in paper_specific_patterns)
+        
+        if is_paper_specific and not filter_title:
+            # Extract potential paper title from query
+            from rag_strict import fuzzy_match_paper_titles
+            matched_papers = fuzzy_match_paper_titles(query, papers_metadata)
+            if not matched_papers:
+                # No paper found - refuse immediately
+                logger.warning(f"Paper-specific query with no match in library: '{query[:80]}'")
+                return {
+                    "query": query,
+                    "answer": (
+                        "I could not find a paper with that title in your ingested library. "
+                        "Please check the spelling or ingest the paper first. "
+                        "I cannot summarize papers that are not in your knowledge base."
+                    ),
+                    "sources": [],
+                    "success": False,
+                    "error": "Paper not found in library.",
+                }
+        
         if compare_query_needs_paper_pickers(query, papers_metadata) and not filter_title:
             return {
                 "query": query,

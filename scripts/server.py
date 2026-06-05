@@ -842,10 +842,40 @@ async def upload_pdfs(
                     
                     year = int(year_str) if year_str.isdigit() else None
 
-                    pages, has_full_text = pdf_service.extract_text_by_page(pdf_path)
-                    if not has_full_text:
-                        logger.warning(f"Extracted minimal text from '{filename}' - likely abstract-only or scanned PDF")
-                    chunks = pdf_service.chunk_text(pages, chunk_size=1000, chunk_overlap=200)
+                    # ── Unpaywall recovery for stubs ──
+                    has_valid_pdf = False
+                    if pdf_path.exists() and pdf_path.stat().st_size > 10240:
+                        has_valid_pdf = True
+
+                    if not has_valid_pdf and doi and doi != "N/A":
+                        logger.info(f"Uploaded file '{rel}' is missing or a stub. Fetching via Unpaywall...")
+                        oa_url = discover_service.fetch_open_access_pdf_url(doi)
+                        if oa_url:
+                            downloaded = discover_service.download_pdf(oa_url, pdf_path.name)
+                            if downloaded and downloaded.exists():
+                                has_valid_pdf = True
+
+                    chunks = []
+                    has_full_text = False
+                    if has_valid_pdf and pdf_path.exists():
+                        pages, has_full_text = pdf_service.extract_text_by_page(pdf_path)
+                        if not has_full_text:
+                            logger.warning(f"Extracted minimal text from '{rel}' - likely abstract-only or scanned PDF")
+                        chunks = pdf_service.chunk_text(pages, chunk_size=1000, chunk_overlap=200)
+
+                    # Fallback to abstract-only chunking if PDF couldn't be obtained/parsed but abstract exists
+                    if not chunks and abstract:
+                        logger.info(f"No PDF text extracted for '{title}'. Falling back to abstract-only.")
+                        chunks = [{
+                            "chunk_index": 0,
+                            "text": abstract,
+                            "metadata": {
+                                "pages": [0], "char_start": 0,
+                                "char_end": len(abstract), "length": len(abstract)
+                            }
+                        }]
+                        has_full_text = False
+
                     if chunks:
                         success = vector_store.add_paper_chunks(
                             paper_title=title, doi=doi if doi != "N/A" else None, chunks=chunks,
@@ -861,7 +891,7 @@ async def upload_pdfs(
                     else:
                         manifest_service.mark_as_ingested(
                             rel, title, doi=doi if doi != "N/A" else None, status="failed",
-                            error="No text extracted — may be a scanned/image PDF.",
+                            error="No text extracted — may be a scanned/image PDF or missing abstract.",
                             authors=authors, year=year,
                             abstract=abstract
                         )

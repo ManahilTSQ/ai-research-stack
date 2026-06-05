@@ -373,11 +373,30 @@ class PipelineOrchestrator:
             classifier = TopicClassifier()
             filter_domain = classifier.get_domain_filter(query)
             if filter_domain:
+                # Strict domain filtering: only keep chunks with matching domain metadata
                 filtered = [
                     c for c in filtered
                     if c.get("metadata", {}).get("domain") == filter_domain
                 ]
                 logger.debug(f"Domain filter applied: {filter_domain}")
+                
+                # Additional cross-domain contamination check
+                # Remove chunks that contain keywords from other domains
+                domain_keywords = {
+                    "medical_imaging": ["chain of thought", "alignment", "latent reasoning", "ai safety", "model alignment"],
+                    "smart_city_cyber": ["medical", "diagnosis", "clinical", "patient", "treatment"],
+                    "coffee_landscape": ["malware", "intrusion", "cybersecurity", "network security"],
+                }
+                
+                if filter_domain in domain_keywords:
+                    forbidden_keywords = domain_keywords[filter_domain]
+                    for kw in forbidden_keywords:
+                        filtered = [
+                            c for c in filtered
+                            if kw not in c.get("text", "").lower()
+                        ]
+                        if len(filtered) < len(chunks):
+                            logger.debug(f"Cross-domain contamination filter removed chunks with keyword: {kw}")
         except ImportError:
             pass
 

@@ -458,12 +458,42 @@ _WEAK_TOPIC_TOKENS = frozenset({
     "mobile", "user", "service", "layer",
 })
 
+# Hierarchical topic mappings for broader term matching
+# When a query uses a broad term, also search for its subtypes
+_HIERARCHICAL_TOPIC_MAP = {
+    "cancer": [
+        "skin cancer", "melanoma", "brain tumor", "brain tumour", "glioma",
+        "lung carcinoma", "lung cancer", "breast cancer", "breast tumor",
+        "colon cancer", "colorectal cancer", "retinoblastoma", "prostate cancer",
+        "leukemia", "lymphoma", "pancreatic cancer", "liver cancer",
+        "ovarian cancer", "cervical cancer", "thyroid cancer", "kidney cancer",
+        "bladder cancer", "esophageal cancer", "gastric cancer", "stomach cancer"
+    ],
+    "tumor": [
+        "brain tumor", "brain tumour", "glioma", "meningioma", "pituitary tumor",
+        "breast tumor", "lung tumor", "colon tumor", "liver tumor", "kidney tumor"
+    ],
+    "malware": [
+        "ransomware", "trojan", "virus", "worm", "spyware", "adware",
+        "botnet", "rootkit", "backdoor", "keylogger"
+    ],
+    "explainability": [
+        "interpretable", "interpretability", "transparency", "shap", "lime",
+        "attention", "saliency", "visualization", "visualisation"
+    ],
+    "medical": [
+        "clinical", "diagnosis", "patient", "treatment", "therapy",
+        "healthcare", "hospital", "medicine", "physician"
+    ]
+}
+
 
 def find_papers_by_metadata_keywords(
     query: str,
     papers_metadata: dict,
     *,
     min_token_hits: int | None = None,
+    use_expansion: bool = True,
 ) -> list[str]:
     """
     Match papers by distinctive words in title / authors / manifest abstract.
@@ -475,15 +505,47 @@ def find_papers_by_metadata_keywords(
       generic word (e.g. "deep" or "network") are excluded.
     - Single-token matches are allowed only when the token is long and specific
       (>=7 characters, not in _WEAK_TOPIC_TOKENS).
+    
+    Query expansion: When use_expansion=True, expands query terms with synonyms
+    to improve retrieval breadth for multi-term queries.
     """
     if not papers_metadata:
         return []
+    
+    # Base tokens from query
     tokens = _topic_specific_tokens(query) or _significant_query_tokens(query)
     stop = _query_stopwords().union(_STANDARD_STOPWORDS)
     # Short tech tokens (6g, v2x, ai) from the raw query.
     for raw in re.findall(r"[a-z0-9]{2,}", (query or "").lower()):
         if raw not in tokens and raw not in _GENERIC_TOPIC_TOKENS and raw not in stop:
             tokens.append(raw)
+    
+    # Hierarchical topic expansion for broader terms
+    # If query contains a broad term like "cancer", also search for its subtypes
+    for broad_term, subtypes in _HIERARCHICAL_TOPIC_MAP.items():
+        if broad_term in [t.lower() for t in tokens]:
+            # Add all subtypes to the token list
+            for subtype in subtypes:
+                subtype_tokens = subtype.lower().split()
+                for st in subtype_tokens:
+                    if st not in [t.lower() for t in tokens]:
+                        tokens.append(st)
+            logger.debug(f"Hierarchical expansion: '{broad_term}' expanded to include {len(subtypes)} subtypes")
+    
+    # Query expansion for better retrieval breadth
+    if use_expansion and len(tokens) >= 1:
+        try:
+            from query_expansion import QueryExpansion
+            expander = QueryExpansion()
+            # Expand key terms with synonyms
+            expanded_terms = expander.expand_with_key_terms(tokens, max_terms=15)
+            # Add expanded terms that aren't already in tokens
+            for term in expanded_terms:
+                if term.lower() not in [t.lower() for t in tokens]:
+                    tokens.append(term.lower())
+        except ImportError:
+            pass  # Query expansion not available, continue with original tokens
+    
     if not tokens:
         return []
     need = min_token_hits

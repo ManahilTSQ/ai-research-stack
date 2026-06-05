@@ -236,11 +236,13 @@ class ManifestManagerService:
     def resolve_metadata(self, pdf_path: Path, title_guess: str, existing_doi: str | None = None) -> dict:
         """
         Attempt to resolve academic metadata (title, authors, year, doi, abstract) for a PDF file.
-        Tries:
-          1. Direct lookup if existing_doi is provided.
-          2. Extract DOI from PDF text, then direct lookup.
-          3. Search Semantic Scholar by clean title guess.
-          4. Extract internal PDF metadata using PyMuPDF (fitz) as fallback.
+        Cascades:
+          1. Extract DOI/arXiv from filename or first page.
+          2. Query Crossref as primary metadata source for DOI-based papers.
+          3. If Crossref fails, try OpenAlex as fallback.
+          4. If both fail (or no DOI resolved yet), try OpenAlex title search.
+          5. Query Semantic Scholar as secondary fallback and for abstract/citation enrichment.
+          6. Fallback to fitz/internal PDF metadata and filename parsing if offline/failed.
         """
         import re
         from paper_discovery import PaperDiscoveryService
@@ -251,7 +253,6 @@ class ManifestManagerService:
 
         # Clean up title_guess (strip subfolder prefix and leading dates/digits)
         title_guess = Path(title_guess).name
-        # Match YYYY-MM-DD- or YYYY_MM_DD_ or space-separated equivalents
         title_guess = re.sub(r'^\d{4}[-_]\d{2}[-_]\d{2}[-_]?', '', title_guess)
         title_guess = re.sub(r'^\d{4}\s+\d{2}\s+\d{2}\s+', '', title_guess)
         title_guess = re.sub(r'^\d{4}[-_]?', '', title_guess)
@@ -270,27 +271,11 @@ class ManifestManagerService:
             "year": "N/A",
             "doi": existing_doi or "N/A",
             "venue": "N/A",
-            "abstract": ""
+            "abstract": "",
+            "paper_id": ""
         }
 
-        # ── Inline helper: fill abstract from PDF text if S2 didn't return one ──
-        def _fill_abstract(r: dict, text: str) -> None:
-            """Populate r['abstract'] from the first meaningful paragraph in text."""
-            if r.get("abstract") or not text:
-                return
-            paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-            for p in paragraphs[:5]:
-                if len(p) > 100 and not any(
-                    x in p.lower() for x in ['http', 'downloaded', 'vol.', 'issn', '@', 'page', 'journal']
-                ):
-                    r["abstract"] = p[:600] + ("..." if len(p) > 600 else "")
-                    return
-            if paragraphs:
-                r["abstract"] = paragraphs[0][:400] + "..."
-
-        # ── Pre-step: Always extract first-page text & DOI from PDF before S2 lookups ──
-        # Having first_page_text available at every lookup path means we can always
-        # use it as an abstract fallback, even when S2 returns metadata without one.
+        # ── Pre-step: Always extract first-page text & DOI from PDF before lookups ──
         first_page_text = ""
         extracted_doi = None
         if pdf_path.exists():
@@ -305,93 +290,82 @@ class ManifestManagerService:
             except Exception as pdf_err:
                 logger.warning(f"Failed to extract text from PDF '{pdf_path.name}' for DOI lookup: {pdf_err}")
 
-        # Step 1: Direct lookup if existing_doi is provided
+        # Determine the target DOI to query (existing or extracted)
+        target_doi = None
         if existing_doi and existing_doi != "N/A":
-            try:
-                cand = discovery_service.get_paper_details(existing_doi)
-                if cand:
-                    resolved["title"] = cand.get("title") or title_guess
-                    resolved["authors"] = _format_authors_helper(cand.get("authors", []))
-                    resolved["year"] = str(cand.get("year") or "N/A")
-                    resolved["doi"] = (cand.get("externalIds") or {}).get("DOI") or existing_doi
-                    resolved["venue"] = cand.get("venue") or "N/A"
-                    resolved["abstract"] = cand.get("abstract") or ""
-                    _fill_abstract(resolved, first_page_text)  # use PDF text if S2 gave no abstract
-                    return resolved
-            except Exception as e:
-                logger.warning(f"Metadata lookup failed for DOI '{existing_doi}': {e}")
+            target_doi = existing_doi
+        elif extracted_doi:
+            target_doi = extracted_doi
 
-        # Step 2: DOI already extracted in pre-step above — skip to Step 3
+        # ── Step 1: Query APIs by DOI (Crossref first, then OpenAlex) ──
+        api_resolved = None
+        if target_doi:
+            # Try Crossref
+            crossref_res = discovery_service.fetch_crossref_metadata(target_doi)
+            if crossref_res:
+                logger.info(f"Resolved metadata via Crossref for DOI '{target_doi}'")
+                api_resolved = crossref_res
+            else:
+                # Fallback to OpenAlex
+                openalex_res = discovery_service.fetch_openalex_metadata(target_doi)
+                if openalex_res:
+                    logger.info(f"Resolved metadata via OpenAlex fallback for DOI '{target_doi}'")
+                    api_resolved = openalex_res
 
-        # Step 3: If DOI extracted from PDF text, do a direct S2 lookup
-        if extracted_doi:
-            try:
-                cand = discovery_service.get_paper_details(extracted_doi)
-                if cand:
-                    resolved["title"] = cand.get("title") or title_guess
-                    resolved["authors"] = _format_authors_helper(cand.get("authors", []))
-                    resolved["year"] = str(cand.get("year") or "N/A")
-                    resolved["doi"] = (cand.get("externalIds") or {}).get("DOI") or extracted_doi
-                    resolved["venue"] = cand.get("venue") or "N/A"
-                    resolved["abstract"] = cand.get("abstract") or ""
-                    _fill_abstract(resolved, first_page_text)  # use PDF text if S2 gave no abstract
-                    return resolved
-            except Exception as doi_err:
-                logger.warning(f"Direct S2 DOI lookup failed for '{extracted_doi}': {doi_err}")
-
-        # Step 4: Search Semantic Scholar by clean title guess
-        search_title = title_guess.replace("+", " ").replace("_", " ").replace("-", " ").strip(".")
-        is_short_code = (
-            len(search_title) < 15 or 
-            search_title.isdigit() or 
-            re.match(r'^[a-zA-Z0-9_\-\s\.]+$', search_title) and any(x in search_title.lower() for x in ['vol', 'no', 'issue', 'page', 'gjcs'])
-        )
-        if is_short_code and first_page_text:
-            lines = [l.strip() for l in first_page_text.split("\n") if l.strip()]
-            clean_lines = []
-            for l in lines[:8]:
-                if any(x in l.lower() for x in ['http', 'doi:', 'vol.', 'no.', 'issn', '@', 'page', 'journal']):
-                    continue
-                clean_lines.append(l)
-                if len(clean_lines) >= 2:
-                    break
-            if clean_lines:
-                search_title = " ".join(clean_lines)[:150].strip()
-
-        logger.info(f"Querying Semantic Scholar to resolve metadata for: '{search_title}'")
-        try:
-            results = discovery_service.search_papers(search_title, limit=5)
-            for cand in results:
-                c_title = (cand.get("title") or "").lower().strip()
+        # ── Step 2: Query APIs by Title search if no DOI query resolved yet ──
+        if not api_resolved:
+            # Query OpenAlex search by title
+            search_title = title_guess.replace("+", " ").replace("_", " ").replace("-", " ").strip(".")
+            openalex_res = discovery_service.fetch_openalex_metadata(search_title)
+            if openalex_res:
+                # Basic similarity check to ensure we didn't resolve a completely different paper
+                c_title = openalex_res.get("title", "").lower().strip()
                 t_clean = search_title.lower().strip()
                 c_title_norm = re.sub(r'[^a-z0-9\s]', '', c_title)
                 t_clean_norm = re.sub(r'[^a-z0-9\s]', '', t_clean)
                 
-                matched = False
-                if c_title_norm == t_clean_norm or t_clean_norm in c_title_norm or c_title_norm in t_clean_norm:
-                    matched = True
-                else:
-                    t_words = set(t_clean_norm.split())
-                    c_words = set(c_title_norm.split())
-                    if t_words and c_words:
-                        overlap = len(t_words & c_words) / max(len(t_words), 1)
-                        if overlap >= 0.7:
-                            matched = True
-                
-                if matched:
-                    resolved["title"] = cand.get("title") or title_guess
-                    resolved["authors"] = _format_authors_helper(cand.get("authors", []))
-                    resolved["year"] = str(cand.get("year") or "N/A")
-                    resolved["doi"] = (cand.get("externalIds") or {}).get("DOI") or resolved["doi"]
-                    resolved["venue"] = cand.get("venue") or "N/A"
-                    resolved["abstract"] = cand.get("abstract") or ""
-                    _fill_abstract(resolved, first_page_text)  # use PDF text if S2 gave no abstract
-                    return resolved
-        except Exception as search_err:
-            logger.warning(f"S2 search failed for '{search_title}': {search_err}")
+                t_words = set(t_clean_norm.split())
+                c_words = set(c_title_norm.split())
+                overlap = len(t_words & c_words) / max(len(t_words), 1) if t_words else 0
+                if overlap >= 0.7:
+                    logger.info(f"Resolved metadata via OpenAlex title search for '{search_title}' (overlap={overlap:.0%})")
+                    api_resolved = openalex_res
 
-        # Step 5: Fallback to internal PDF metadata via fitz
-        if pdf_path.exists():
+        # ── Step 3: Populate Resolved dictionary from API results ──
+        if api_resolved:
+            resolved["title"] = api_resolved.get("title") or resolved["title"]
+            resolved["authors"] = _format_authors_helper(api_resolved.get("authors"))
+            resolved["year"] = str(api_resolved.get("year") or "N/A")
+            resolved["doi"] = api_resolved.get("doi") or target_doi or "N/A"
+            resolved["venue"] = api_resolved.get("venue") or "N/A"
+            resolved["abstract"] = api_resolved.get("abstract") or ""
+
+        # ── Step 4: Secondary Enrichment from Semantic Scholar (specifically for Abstract, Paper ID, and Citation reports) ──
+        s2_paper_id = target_doi or resolved["doi"]
+        if s2_paper_id == "N/A":
+            s2_paper_id = resolved["title"]
+            
+        try:
+            logger.info(f"Querying Semantic Scholar for abstract enrichment: '{s2_paper_id}'")
+            s2_res = discovery_service.get_paper_details(s2_paper_id)
+            if s2_res:
+                resolved["paper_id"] = s2_res.get("paperId") or ""
+                # Populate abstract if it was missing from Crossref/OpenAlex
+                if not resolved["abstract"] and s2_res.get("abstract"):
+                    resolved["abstract"] = s2_res["abstract"].strip()
+                # If OpenAlex/Crossref failed entirely, use S2 as final API fallback
+                if not api_resolved:
+                    resolved["title"] = s2_res.get("title") or resolved["title"]
+                    resolved["authors"] = _format_authors_helper(s2_res.get("authors"))
+                    resolved["year"] = str(s2_res.get("year") or "N/A")
+                    resolved["doi"] = (s2_res.get("externalIds") or {}).get("DOI") or resolved["doi"]
+                    resolved["venue"] = s2_res.get("venue") or "N/A"
+        except Exception as s2_err:
+            logger.warning(f"Semantic Scholar enrichment failed for '{s2_paper_id}': {s2_err}")
+
+        # ── Step 5: Fallbacks to fitz & filename metadata (for offline or failed lookups) ──
+        # Fill year and authors if still Unknown/N/A
+        if pdf_path.exists() and (resolved["title"] == title_guess.title() or resolved["authors"] == "Unknown Authors" or resolved["year"] == "N/A"):
             try:
                 import fitz
                 with fitz.open(pdf_path) as doc:
@@ -408,28 +382,26 @@ class ManifestManagerService:
                                 internal_year = match.group(0)
                                 break
                     
-                    if internal_author and internal_author.strip() and internal_author.lower() not in ["unknown", "none", "null"]:
+                    if resolved["authors"] == "Unknown Authors" and internal_author and internal_author.strip() and internal_author.lower() not in ["unknown", "none", "null"]:
                         resolved["authors"] = internal_author.strip()
-                    if internal_year:
+                    if resolved["year"] == "N/A" and internal_year:
                         resolved["year"] = str(internal_year)
-                    if internal_title and internal_title.strip() and len(internal_title.strip()) > 5 and internal_title.lower() not in ["unknown", "none", "null", "untitled"]:
+                    if resolved["title"] == title_guess.title() and internal_title and internal_title.strip() and len(internal_title.strip()) > 5 and internal_title.lower() not in ["unknown", "none", "null", "untitled"]:
                         resolved["title"] = internal_title.strip()
-            except Exception as e:
-                logger.warning(f"Failed to extract internal metadata from '{pdf_path.name}': {e}")
+            except Exception as fitz_err:
+                logger.warning(f"Failed to extract internal PDF metadata: {fitz_err}")
 
-        # Step 6: Extract year and author from filename/title_guess if still Unknown/N/A
+        # Hard extract year/authors from filename/text as last resort
         if resolved["year"] == "N/A" or not resolved["year"]:
             year_match = re.search(r'\b(19[5-9]\d|20[0-2]\d)\b', pdf_path.name)
             if not year_match:
                 year_match = re.search(r'\b(19[5-9]\d|20[0-2]\d)\b', title_guess)
             if year_match:
                 resolved["year"] = year_match.group(1)
-            else:
-                # Try to extract year from first page text as last resort
-                if first_page_text:
-                    year_match = re.search(r'\b(19[5-9]\d|20[0-2]\d)\b', first_page_text)
-                    if year_match:
-                        resolved["year"] = year_match.group(1)
+            elif first_page_text:
+                year_match = re.search(r'\b(19[5-9]\d|20[0-2]\d)\b', first_page_text)
+                if year_match:
+                    resolved["year"] = year_match.group(1)
 
         if resolved["authors"] == "Unknown Authors" or not resolved["authors"]:
             fn_clean = pdf_path.stem
@@ -438,31 +410,26 @@ class ManifestManagerService:
                 year_idx = year_match.start()
                 prefix = fn_clean[:year_idx].strip("-_ ()[]{},")
                 if prefix and len(prefix.split()) <= 4:
-                    cleaned_author = re.sub(r'[-_]', ' ', prefix).strip()
-                    resolved["authors"] = cleaned_author.title()
+                    resolved["authors"] = re.sub(r'[-_]', ' ', prefix).strip().title()
             
-            # If still unknown, try to extract from first page text
             if resolved["authors"] == "Unknown Authors" and first_page_text:
                 lines = [l.strip() for l in first_page_text.split("\n") if l.strip()]
                 for line in lines[:5]:
-                    # Look for lines that look like author names (contain commas, not too long)
                     if ',' in line and len(line) < 200 and not any(x in line.lower() for x in ['http', 'doi:', 'vol.', 'no.', 'issn', '@', 'university', 'department']):
-                        # Remove common non-author text
-                        line = re.sub(r'\d+', '', line)  # Remove numbers
+                        line = re.sub(r'\d+', '', line)
                         if len(line.split(',')) >= 2 and len(line.split(',')) <= 10:
                             resolved["authors"] = line[:200].strip()
                             break
 
-        # Step 7: Fallback abstract from first page text if empty
+        # Fallback abstract from first page text if still empty
         if not resolved["abstract"] and first_page_text:
             paragraphs = [p.strip() for p in first_page_text.split("\n\n") if p.strip()]
-            if paragraphs:
-                for p in paragraphs[:5]:
-                    if len(p) > 100 and not any(x in p.lower() for x in ['http', 'downloaded', 'vol.', 'issn', '@', 'page', 'journal']):
-                        resolved["abstract"] = p[:600] + ("..." if len(p) > 600 else "")
-                        break
-                if not resolved["abstract"]:
-                    resolved["abstract"] = paragraphs[0][:400] + "..."
+            for p in paragraphs[:5]:
+                if len(p) > 100 and not any(x in p.lower() for x in ['http', 'downloaded', 'vol.', 'issn', '@', 'page', 'journal']):
+                    resolved["abstract"] = p[:600] + ("..." if len(p) > 600 else "")
+                    break
+            if not resolved["abstract"] and paragraphs:
+                resolved["abstract"] = paragraphs[0][:400] + "..."
 
         return resolved
 

@@ -29,12 +29,14 @@ from config import settings
 from pdf_processor import PDFProcessorService
 from vector_store import VectorStoreService
 from manifest_manager import ManifestManagerService
+from paper_discovery import PaperDiscoveryService
 
 
 def reconcile(force_reset: bool = False):
     pdf_service = PDFProcessorService()
     vector_store = VectorStoreService()
     manifest_svc = ManifestManagerService()
+    discovery_svc = PaperDiscoveryService()
 
     pdf_dir = settings.PDF_DOWNLOAD_DIR
     logger.info(f"Target PDF Directory: {pdf_dir.resolve()}")
@@ -140,7 +142,14 @@ def reconcile(force_reset: bool = False):
     ingested_count = 0
     failed_count = 0
 
-    for rel_path, full_path in physical_files.items():
+    # Ensure all manifest files are checked (even if missing on disk, if pending/failed)
+    all_targets = list(physical_files.items())
+    for rel_path, meta in manifest.items():
+        if rel_path not in physical_files and meta.get("status") in ("pending", "failed"):
+            full_path = pdf_dir / rel_path
+            all_targets.append((rel_path, full_path))
+
+    for rel_path, full_path in all_targets:
         meta = manifest.get(rel_path, {})
         title_guess = meta.get("title", full_path.stem.replace("_", " ").title())
         doi_guess = meta.get("doi") if meta.get("doi") != "N/A" else None
@@ -158,32 +167,65 @@ def reconcile(force_reset: bool = False):
 
         # If it is in the database and manifest is marked success, we skip it
         if is_already_in_db and status == "success":
-            # Just keep manifest in sync
             continue
+
+        # ── Safely check/recover PDF using Unpaywall if it is missing or under 10KB ──
+        has_valid_pdf = False
+        if full_path.exists() and full_path.stat().st_size > 10240:
+            has_valid_pdf = True
+
+        if not has_valid_pdf and doi_guess:
+            logger.info(f"Local PDF missing or stub for '{title_guess}'. Querying Unpaywall...")
+            oa_url = discovery_svc.fetch_open_access_pdf_url(doi_guess)
+            if oa_url:
+                logger.info(f"Found OA link on Unpaywall: {oa_url}. Downloading...")
+                downloaded_path = discovery_svc.download_pdf(oa_url, full_path.name)
+                if downloaded_path and downloaded_path.exists():
+                    logger.info(f"Successfully downloaded full PDF to: {downloaded_path}")
+                    has_valid_pdf = True
 
         logger.info(f"Ingesting: '{title_guess}' ({rel_path})...")
         try:
-            # 1. Resolve proper academic metadata via S2
+            # 1. Resolve proper academic metadata via Crossref / OpenAlex / S2
             resolved = manifest_svc.resolve_metadata(full_path, title_guess, doi_guess)
             title = resolved["title"]
             authors = resolved["authors"]
             year_str = resolved["year"]
             doi = resolved["doi"]
             abstract = resolved.get("abstract", "")
+            venue = resolved.get("venue")
 
             year = int(year_str) if year_str.isdigit() else None
 
-            # 2. Extract and Chunk PDF text
-            pages, has_full_text = pdf_service.extract_text_by_page(full_path)
-            if not has_full_text:
-                logger.warning(f"  [!] Extracted minimal text from '{rel_path}' - likely abstract-only or scanned PDF")
-            chunks = pdf_service.chunk_text(pages, chunk_size=1000, chunk_overlap=200)
+            # 2. Extract and Chunk PDF text if file exists and is valid
+            chunks = []
+            has_full_text = False
+            if has_valid_pdf and full_path.exists():
+                pages, has_full_text = pdf_service.extract_text_by_page(full_path)
+                if not has_full_text:
+                    logger.warning(f"  [!] Extracted minimal text from '{rel_path}' - likely abstract-only or scanned PDF")
+                chunks = pdf_service.chunk_text(pages, chunk_size=1000, chunk_overlap=200)
+
+            # Fallback to abstract-only chunking if PDF couldn't be obtained/parsed but abstract is present
+            if not chunks and abstract:
+                logger.info(f"  [!] No PDF chunks generated. Falling back to abstract-only chunking for '{title_guess}'.")
+                chunks = [{
+                    "chunk_index": 0,
+                    "text": abstract,
+                    "metadata": {
+                        "pages": [0],
+                        "char_start": 0,
+                        "char_end": len(abstract),
+                        "length": len(abstract)
+                    }
+                }]
+                has_full_text = False
 
             if not chunks:
-                logger.warning(f"  [!] No text could be extracted from '{rel_path}'. May be a scanned PDF. Skipping.")
+                logger.warning(f"  [!] No text could be extracted or resolved for '{rel_path}'. Skipping.")
                 manifest_svc.mark_as_ingested(
                     rel_path, title, doi=doi if doi != "N/A" else None, status="failed",
-                    error="No text extracted — may be scanned/image-only PDF.",
+                    error="No text extracted — may be scanned/image-only PDF or missing abstract.",
                     authors=authors, year=year, abstract=abstract
                 )
                 failed_count += 1
@@ -192,13 +234,14 @@ def reconcile(force_reset: bool = False):
             # 3. Embed and upsert into ChromaDB
             ok = vector_store.add_paper_chunks(
                 paper_title=title, doi=doi if doi != "N/A" else None, chunks=chunks,
-                authors=authors, year=year, venue=None
+                authors=authors, year=year, venue=venue
             )
 
             if ok:
                 manifest_svc.mark_as_ingested(
                     rel_path, title, doi=doi if doi != "N/A" else None, status="success",
-                    authors=authors, year=year, abstract=abstract, has_full_text=has_full_text
+                    authors=authors, year=year, abstract=abstract, has_full_text=has_full_text,
+                    venue=venue
                 )
                 logger.info(f"  [✓] SUCCESS: '{title}' ingested with {len(chunks)} chunks.")
                 ingested_count += 1
@@ -206,7 +249,8 @@ def reconcile(force_reset: bool = False):
                 manifest_svc.mark_as_ingested(
                     rel_path, title, doi=doi if doi != "N/A" else None, status="failed",
                     error="ChromaDB vector insertion returned False.",
-                    authors=authors, year=year, abstract=abstract, has_full_text=has_full_text
+                    authors=authors, year=year, abstract=abstract, has_full_text=has_full_text,
+                    venue=venue
                 )
                 logger.error(f"  [✗] FAILED: ChromaDB write error for '{title}'.")
                 failed_count += 1

@@ -591,3 +591,162 @@ class PaperDiscoveryService:
             if save_path.exists():
                 save_path.unlink()
             return None
+
+    def fetch_crossref_metadata(self, doi: str) -> dict | None:
+        """
+        Query the Crossref API for verified publisher metadata of a DOI.
+        """
+        if not doi:
+            return None
+        doi = doi.replace("https://doi.org/", "").strip()
+        url = f"https://api.crossref.org/works/{quote(doi, safe='/')}"
+        headers = {
+            "User-Agent": f"AIResearchStack/1.0 (mailto:{settings.UNPAYWALL_EMAIL})"
+        }
+        try:
+            logger.info(f"Querying Crossref for DOI: {doi}")
+            resp = requests.get(url, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                message = data.get("message") or {}
+                
+                # Title
+                titles = message.get("title") or []
+                title = titles[0].strip() if titles else "Untitled Paper"
+                
+                # Format authors: list of dicts with name key
+                crossref_authors = message.get("author") or []
+                authors = []
+                for a in crossref_authors:
+                    given = a.get("given", "").strip()
+                    family = a.get("family", "").strip()
+                    name = f"{given} {family}".strip()
+                    if name:
+                        authors.append({"name": name})
+                
+                # Year
+                created = message.get("created") or {}
+                pub_print = message.get("published-print") or {}
+                pub_online = message.get("published-online") or {}
+                year = "N/A"
+                for date_source in [pub_print, pub_online, created]:
+                    date_parts = date_source.get("date-parts")
+                    if date_parts and date_parts[0]:
+                        year = str(date_parts[0][0])
+                        break
+                
+                # Venue
+                container = message.get("container-title") or []
+                venue = container[0].strip() if container else "N/A"
+                
+                return {
+                    "title": title,
+                    "authors": authors,
+                    "year": year,
+                    "venue": venue,
+                    "doi": doi
+                }
+            elif resp.status_code == 404:
+                logger.info(f"Crossref: DOI '{doi}' not found.")
+            else:
+                logger.warning(f"Crossref returned HTTP {resp.status_code} for DOI '{doi}'")
+        except Exception as e:
+            logger.error(f"Crossref lookup failed for '{doi}': {e}")
+        return None
+
+    def fetch_openalex_metadata(self, doi_or_title: str) -> dict | None:
+        """
+        Query OpenAlex API by DOI or search by title.
+        """
+        if not doi_or_title:
+            return None
+            
+        doi_or_title = doi_or_title.strip()
+        headers = {
+            "User-Agent": f"AIResearchStack/1.0 (mailto:{settings.UNPAYWALL_EMAIL})"
+        }
+        
+        # Determine if it's a DOI or a title query
+        import re
+        is_doi = bool(re.match(r"^(10\.\d{4,9}/[-._;()/:A-Z0-9]+)$", doi_or_title, re.IGNORECASE) or "doi.org" in doi_or_title)
+        
+        if is_doi:
+            bare_doi = doi_or_title.replace("https://doi.org/", "").strip()
+            url = f"https://api.openalex.org/works/doi:{bare_doi}"
+            params = {}
+            logger.info(f"Querying OpenAlex by DOI: {bare_doi}")
+        else:
+            url = "https://api.openalex.org/works"
+            params = {"search": doi_or_title, "per_page": 1}
+            logger.info(f"Querying OpenAlex by Title search: '{doi_or_title}'")
+            
+        try:
+            resp = requests.get(url, headers=headers, params=params, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                
+                # If searching, data is a list under "results"
+                if not is_doi:
+                    results = data.get("results") or []
+                    if not results:
+                        logger.info("OpenAlex title search returned no results.")
+                        return None
+                    work = results[0]
+                else:
+                    work = data
+                
+                # Title
+                title = work.get("title") or "Untitled Paper"
+                
+                # Format authors to list of {"name": name}
+                authorships = work.get("authorships") or []
+                authors = []
+                for auth in authorships:
+                    author_meta = auth.get("author") or {}
+                    name = author_meta.get("display_name", "").strip()
+                    if name:
+                        authors.append({"name": name})
+                
+                # Year
+                year = str(work.get("publication_year") or "N/A")
+                
+                # Venue
+                primary_loc = work.get("primary_location") or {}
+                source = primary_loc.get("source") or {}
+                venue = source.get("display_name") or "N/A"
+                
+                # DOI
+                resolved_doi = work.get("doi") or ""
+                if resolved_doi:
+                    resolved_doi = resolved_doi.replace("https://doi.org/", "").strip()
+                else:
+                    resolved_doi = bare_doi if is_doi else "N/A"
+                    
+                # Reconstruct Abstract if inverted index exists
+                abstract = ""
+                abstract_index = work.get("abstract_inverted_index")
+                if abstract_index:
+                    try:
+                        word_list = []
+                        for word, positions in abstract_index.items():
+                            for pos in positions:
+                                word_list.append((pos, word))
+                        word_list.sort()
+                        abstract = " ".join([w[1] for w in word_list])
+                    except Exception as abs_err:
+                        logger.warning(f"Failed to reconstruct abstract from OpenAlex index: {abs_err}")
+                
+                return {
+                    "title": title,
+                    "authors": authors,
+                    "year": year,
+                    "venue": venue,
+                    "doi": resolved_doi,
+                    "abstract": abstract
+                }
+            else:
+                logger.warning(f"OpenAlex returned HTTP {resp.status_code} for query '{doi_or_title}'")
+        except Exception as e:
+            logger.error(f"OpenAlex lookup failed for '{doi_or_title}': {e}")
+        return None
+

@@ -298,6 +298,40 @@ def compare_query_needs_paper_pickers(query: str, papers_metadata: dict) -> bool
     if len(quoted) >= 2:
         resolved = fuzzy_match_paper_titles(query, papers_metadata)
         return len(resolved) < 2
+    
+    # NEW: Extract unquoted paper names from comparison queries
+    # Pattern: "compare the X paper and the Y paper" or "compare X and Y"
+    paper_name_patterns = [
+        r"(?:the\s+)?([A-Z][A-Za-z0-9\s\-]{3,50})\s+paper",
+        r"(?:the\s+)?([A-Z][A-Za-z0-9\s\-]{3,50})\s+(?:model|approach|method|system)",
+    ]
+    
+    extracted_names = []
+    for pattern in paper_name_patterns:
+        matches = re.findall(pattern, query)
+        extracted_names.extend([m.strip() for m in matches if len(m.strip()) >= 3])
+    
+    # Also try to extract capitalized phrases that might be paper names
+    # Pattern: "Compare SimCLR-GRU and BERT ensemble"
+    capitalized_phrases = re.findall(r'\b([A-Z][a-zA-Z0-9\-]{2,}(?:\s+[A-Z][a-zA-Z0-9\-]{2,})*)\b', query)
+    extracted_names.extend(capitalized_phrases)
+    
+    # Remove duplicates and very short matches
+    extracted_names = list(set([n for n in extracted_names if len(n) >= 3]))
+    
+    if len(extracted_names) >= 2:
+        # Try to resolve these names against the library
+        resolved_count = 0
+        for name in extracted_names:
+            matched = fuzzy_match_paper_titles(name, papers_metadata)
+            if matched:
+                resolved_count += 1
+        
+        # If we can resolve at least 2 papers, don't need pickers
+        if resolved_count >= 2:
+            logger.info(f"Comparison query resolved {resolved_count} papers from extracted names: {extracted_names}")
+            return False
+    
     return True
 
 
