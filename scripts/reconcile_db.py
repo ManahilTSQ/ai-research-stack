@@ -264,6 +264,60 @@ def reconcile(force_reset: bool = False):
             )
             failed_count += 1
 
+    # ── Phase 3: Sync Metadata from Manifest to ChromaDB ────────────────────────
+    logger.info("Starting Phase 3: Syncing metadata from manifest to ChromaDB...")
+    synced_meta_count = 0
+    # Fetch current collection stats to get the most updated db_papers mapping
+    current_stats = vector_store.get_collection_stats()
+    current_db_papers = current_stats.get("papers_metadata", {}) or {}
+
+    for filename, meta in manifest.items():
+        if meta.get("status") != "success":
+            continue
+            
+        title = meta.get("title")
+        authors = meta.get("authors")
+        year = str(meta.get("year", "N/A"))
+        doi = meta.get("doi")
+        venue = meta.get("venue")
+        
+        # Check if this title is in ChromaDB
+        db_meta = None
+        db_title_key = None
+        for db_title, db_m in current_db_papers.items():
+            if db_title.lower().strip() == title.lower().strip():
+                db_meta = db_m
+                db_title_key = db_title
+                break
+                
+        if db_meta:
+            db_authors = db_meta.get("authors", "Unknown Authors")
+            db_year = str(db_meta.get("year", "N/A"))
+            db_doi = db_meta.get("doi", "N/A")
+            db_venue = db_meta.get("venue", "N/A")
+            
+            clean_doi = doi if doi else "N/A"
+            clean_venue = venue if venue else "N/A"
+            
+            # If any metadata fields are different, update them
+            if (db_authors != authors or 
+                db_year != year or 
+                (clean_doi != "N/A" and db_doi != clean_doi) or 
+                (clean_venue != "N/A" and db_venue != clean_venue)):
+                
+                logger.info(f"Syncing ChromaDB metadata for '{title}' (Authors: '{authors}', Year: '{year}', DOI: '{doi}', Venue: '{venue}')")
+                ok = vector_store.update_paper_metadata(
+                    title=db_title_key,
+                    authors=authors,
+                    year=year,
+                    doi=doi,
+                    venue=venue
+                )
+                if ok:
+                    synced_meta_count += 1
+                    
+    logger.info(f"Phase 3 complete. Synced metadata for {synced_meta_count} papers in ChromaDB.")
+
     # ── Final Report ──────────────────────────────────────────────────────────
     final_stats = vector_store.get_collection_stats()
     print(f"\n{'-'*60}")

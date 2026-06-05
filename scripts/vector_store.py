@@ -292,16 +292,21 @@ class VectorStoreService:
             ids = data["ids"]
             metadatas = data["metadatas"]
             
-            # Update metadata fields
+            # Update metadata fields using dictionary merge to avoid overwriting existing fields with None
+            new_fields = {}
+            if authors is not None:
+                new_fields["authors"] = authors
+            if year is not None:
+                new_fields["year"] = str(year)
+            if venue and venue != "N/A":
+                new_fields["venue"] = venue
+            if doi and doi != "N/A":
+                new_fields["doi"] = doi
+            if new_title:
+                new_fields["title"] = new_title
+
             for meta in metadatas:
-                meta["authors"] = authors
-                meta["year"] = str(year)
-                if venue and venue != "N/A":
-                    meta["venue"] = venue
-                if doi and doi != "N/A":
-                    meta["doi"] = doi
-                if new_title:
-                    meta["title"] = new_title
+                meta.update(new_fields)
 
             # Batch update in ChromaDB
             self.collection.update(ids=ids, metadatas=metadatas)

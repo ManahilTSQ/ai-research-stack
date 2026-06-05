@@ -898,10 +898,23 @@ class RAGService:
 
         logger.info(f"Query confidence metrics: avg_top_3={avg_top_3:.3f}, max_score={max_score:.3f}")
 
-        # ── Fix 5: Refuse Answer on Weak Retrieval Scores ──
+        # ── Weak retrieval: caution mode instead of hard-refuse ──────────────
+        # User rule: "If chunks exist but similarity is very low → still answer
+        # BUT explicitly say 'I found weak matches; answer may be approximate'."
+        # Hard refuse is only correct for zero-chunk or comparison-needs-2-papers.
         if max_score < 0.35:
-            logger.warning(f"Refusing query '{query}' because max_score {max_score:.3f} < 0.35")
-            return "refuse", ""
+            logger.warning(
+                f"Weak retrieval for query '{query}': max_score={max_score:.3f} < 0.35. "
+                "Switching to caution/partial mode instead of hard-refusing."
+            )
+            return "partial", (
+                "⚠️ WEAK MATCH NOTICE: The retrieved documents scored below the normal "
+                "confidence threshold. You MUST begin your answer with exactly this sentence:\n"
+                "'I found weak matches in your library; this answer may be approximate.'\n"
+                "Then summarize ONLY what the retrieved passages explicitly state. "
+                "Do not extrapolate, invent details, or use general knowledge. "
+                "If a passage is only tangentially related, say so explicitly."
+            )
 
         # Routing based on normalized query-level confidence
         if avg_top_3 >= 0.52 and max_score >= 0.58:
@@ -2047,25 +2060,29 @@ class RAGService:
         _answer_mode, _partial_notice = self._compute_answer_decision(chunks, query)
         logger.info(f"Answer Decision Gate: mode='{_answer_mode}' for query: {query[:80]}")
 
-        # Hard refuse: scored below minimum threshold — return before calling LLM
+        # Hard refuse: only fires when retrieval returned zero usable chunks
+        # (e.g. comparison query needs 2+ papers but got only 1).
+        # Weak-score cases are now handled as 'partial' above, not refused here.
         if _answer_mode == "refuse" and not listing_style_query:
             titles_found = list({
                 c.get("metadata", {}).get("title", "")
                 for c in chunks if c.get("metadata", {}).get("title")
             })
             if titles_found:
+                # Should rarely reach here — weak scores are now caution mode.
+                # This branch only fires for comparison queries missing a second paper.
                 titles_str = "; ".join(titles_found[:3])
                 return {
                     "query": query,
                     "answer": (
-                        f"The library contains papers related to this area ({titles_str}) "
-                        "but the retrieved evidence scored below the minimum confidence "
-                        "threshold to generate a reliable answer. "
-                        "Try a more specific query or ask about a particular paper directly."
+                        f"The library contains papers related to this area ({titles_str}), "
+                        "but this comparison query requires evidence from at least 2 different "
+                        "papers. Try selecting specific papers with the paper filter, or "
+                        "rephrase your comparison to name both papers explicitly."
                     ),
                     "sources": chunks,
                     "success": False,
-                    "error": "Below confidence threshold.",
+                    "error": "Comparison requires >= 2 papers.",
                 }
             else:
                 return {

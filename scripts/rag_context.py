@@ -1768,9 +1768,69 @@ def retrieve_relevant_chunks(
                 effective_filter_domain = paper_domain
                 logger.info(f"Inferred domain from inventory_titles: {effective_filter_domain}")
     
-    raw = vector_store.query_similar_chunks(
-        query, limit=search_limit, filter_title=filter_title, filter_domain=effective_filter_domain
-    )
+    # Generate expanded queries for search to improve recall
+    search_queries = [query]
+    
+    # 1. Cleaned query (e.g. replace hyphens with spaces)
+    cleaned_q = query.replace("-", " ")
+    if cleaned_q.lower() != query.lower():
+        search_queries.append(cleaned_q)
+        
+    # 2. Extract acronyms/words
+    acronyms = re.findall(r"\b[A-Z0-9\-]{2,}\b", query)
+    if acronyms:
+        for ac in acronyms:
+            if "-" in ac:
+                search_queries.append(ac.replace("-", " "))
+            search_queries.append(ac)
+            
+    # 3. Title-based expansion
+    for t in inventory_titles[:2]:
+        title_words = t.split()[:6]
+        title_q = " ".join(title_words)
+        if title_q not in search_queries:
+            search_queries.append(title_q)
+
+    # 4. Author-based expansion (combining author surname with key terms)
+    words = re.findall(r"\b[a-zA-Z0-9]{3,}\b", query.lower())
+    stop_words = {"papers", "paper", "article", "articles", "using", "uses", "with", "from", "library", "ingested"}
+    sig_words = [w for w in words if w not in stop_words and not w.isdigit()]
+    
+    for title in inventory_titles:
+        meta = papers_metadata.get(title) or {}
+        authors_field = meta.get("authors") or ""
+        for part in re.split(r"[,;&]| and ", authors_field):
+            name_words = [w.strip() for w in part.split() if w.strip() and len(w.strip()) >= 3]
+            if name_words:
+                surname = name_words[-1]
+                if sig_words:
+                    author_q = f"{surname} " + " ".join(sig_words)
+                    if author_q not in search_queries:
+                        search_queries.append(author_q)
+                    cleaned_sig = [w.replace("-", " ") for w in sig_words]
+                    author_q_clean = f"{surname} " + " ".join(cleaned_sig)
+                    if author_q_clean not in search_queries:
+                        search_queries.append(author_q_clean)
+
+    # Deduplicate queries
+    search_queries = list(dict.fromkeys(search_queries))
+    logger.info(f"Retrieving using expanded queries: {search_queries}")
+
+    # Query vector store for all queries and merge/deduplicate
+    raw = []
+    seen_ids = set()
+    for sq in search_queries:
+        results = vector_store.query_similar_chunks(
+            sq, limit=search_limit, filter_title=filter_title, filter_domain=effective_filter_domain
+        )
+        for r in results:
+            rid = r.get("id")
+            if rid not in seen_ids:
+                seen_ids.add(rid)
+                raw.append(r)
+                
+    # Sort merged results by distance ascending (most similar first)
+    raw.sort(key=lambda x: x.get("distance", 1.0))
 
     # Filter out bibliography chunks
     raw = [c for c in raw if not is_bibliography_chunk(c.get("text", ""))]
@@ -1798,11 +1858,15 @@ def retrieve_relevant_chunks(
     chunks = filter_chunks_by_relevance(raw, max_distance=adaptive_distance)
 
     if settings.RAG_REQUIRE_QUERY_TERM_MATCH:
-        chunks = _filter_chunks_by_query_term_presence(
+        filtered_term_chunks = _filter_chunks_by_query_term_presence(
             chunks,
             query,
             skip_if_empty=False,
         )
+        if filtered_term_chunks:
+            chunks = filtered_term_chunks
+        else:
+            logger.info("Strict query term matching returned zero results. Falling back to pure embedding search to maximize recall.")
 
     if inventory_titles and (locked_scope or query_expects_named_author(query)):
         chunks = filter_chunks_to_titles(chunks, inventory_titles)
