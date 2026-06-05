@@ -2,13 +2,13 @@
 vector_store.py — ChromaDB Vector Database Interface.
 
 Manages all interactions with the local ChromaDB persistent vector database:
-  - Initialises the ChromaDB client and ONNX embedding function on startup.
+  - Initialises the ChromaDB client and sentence-transformer embedding function on startup.
   - Upserts text chunks (with metadata) for ingested papers.
   - Performs cosine-similarity vector search for RAG retrieval.
   - Returns collection statistics (chunk counts, paper list).
 
 ChromaDB runs entirely locally — no cloud or internet connection required.
-Embeddings are generated using a bundled ONNX MiniLM model (also local/offline).
+Embeddings are generated using BAAI/bge-base-en-v1.5 (requires re-ingestion after model change).
 """
 
 import re
@@ -28,7 +28,7 @@ class VectorStoreService:
 
     Responsibilities:
       1. Initialise a persistent ChromaDB client at the vectordb/ path.
-      2. Set up a local ONNX-based embedding function (no GPU, no internet).
+      2. Set up a sentence-transformer embedding function using BAAI/bge-base-en-v1.5.
       3. Get-or-create the "research_papers" collection with cosine distance.
       4. Provide upsert (add/update) and query (similarity search) operations.
       5. Return collection health statistics.
@@ -52,11 +52,14 @@ class VectorStoreService:
             # The database survives process restarts automatically.
             self.client = chromadb.PersistentClient(path=str(settings.VECTOR_DB_DIR))
 
-            # ── Local ONNX Embedding Function ─────────────────────────────────
-            # ONNXMiniLM_L6_V2 is a bundled sentence-transformer model that runs
-            # using onnxruntime — no GPU, no internet, no separate download needed.
-            # It produces 384-dimensional dense vector embeddings.
-            self.embedding_function = embedding_functions.ONNXMiniLM_L6_V2()
+            # ── Sentence-Transformer Embedding Function ─────────────────────────────
+            # BAAI/bge-base-en-v1.5 is a high-performance sentence-transformer model
+            # that produces 768-dimensional dense vector embeddings.
+            # This model requires re-ingestion of all papers after switching from ONNXMiniLM_L6_V2.
+            self.embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
+                model_name="BAAI/bge-base-en-v1.5",
+                device="cpu"
+            )
 
             # ── Collection Setup ──────────────────────────────────────────────
             # get_or_create_collection is idempotent — safe to call on every startup.
@@ -73,7 +76,7 @@ class VectorStoreService:
             self._normalize_stored_metadata()
 
             logger.info(
-                "ChromaDB client and ONNX embedding function initialised successfully. "
+                "ChromaDB client and sentence-transformer embedding function initialised successfully. "
                 f"Collection contains {self.collection.count()} chunks."
             )
 
