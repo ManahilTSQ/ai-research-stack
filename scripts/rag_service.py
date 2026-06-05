@@ -898,14 +898,22 @@ class RAGService:
 
         logger.info(f"Query confidence metrics: avg_top_3={avg_top_3:.3f}, max_score={max_score:.3f}")
 
-        # ── Weak retrieval: caution mode instead of hard-refuse ──────────────
-        # User rule: "If chunks exist but similarity is very low → still answer
-        # BUT explicitly say 'I found weak matches; answer may be approximate'."
-        # Hard refuse is only correct for zero-chunk or comparison-needs-2-papers.
+        # ── Improved caution mode using retrieval scores (not keyword counting) ──────
+        # More robust thresholds based on reranker scores:
+        # - max_score < 0.20: refuse (chunks too irrelevant even for cautious answer)
+        # - 0.20 <= max_score < 0.35: partial/caution mode
+        # - max_score >= 0.35: confident or partial based on avg_top_3
+        if max_score < 0.20:
+            logger.warning(
+                f"Refusing query '{query}': max_score={max_score:.3f} < 0.20. "
+                "Chunks are too irrelevant for even a cautious answer."
+            )
+            return "refuse", ""
+        
         if max_score < 0.35:
             logger.warning(
                 f"Weak retrieval for query '{query}': max_score={max_score:.3f} < 0.35. "
-                "Switching to caution/partial mode instead of hard-refusing."
+                "Switching to caution/partial mode."
             )
             return "partial", (
                 "⚠️ WEAK MATCH NOTICE: The retrieved documents scored below the normal "
@@ -1306,6 +1314,39 @@ class RAGService:
         if refs_part:
             return f"{new_body}\n\n{refs_part}"
         return new_body
+
+    def _check_answer_faithfulness(self, answer: str, chunks: list[dict]) -> list[str]:
+        """
+        Check if the answer contains claims not supported by the chunks.
+        
+        Returns a list of issues found (empty if faithful).
+        """
+        from citation_verifier import CitationVerifier
+        verifier = CitationVerifier()
+        
+        issues = []
+        sentences = verifier.split_into_claims(answer)
+        
+        for sent in sentences:
+            # Skip generic/structural sentences
+            if verifier.is_generic_sentence(sent):
+                continue
+            
+            # Check for chunk citations
+            doc_ids = re.findall(r"\bdoc_(\d+)\b", sent)
+            
+            if not doc_ids:
+                # Sentence has no citation - potential issue
+                # Check if it looks like a factual claim
+                factual_indicators = [
+                    "found", "showed", "demonstrated", "reported", "concluded",
+                    "achieved", "improved", "reduced", "increased", "used",
+                    "proposed", "developed", "implemented", "evaluated"
+                ]
+                if any(indicator in sent.lower() for indicator in factual_indicators):
+                    issues.append(f"Uncited factual claim: '{sent[:80]}...'")
+        
+        return issues
 
     def _strip_generic_sentences(self, answer: str, chunks: list[dict]) -> str:
         """
@@ -1992,72 +2033,34 @@ class RAGService:
                 "Only use information from this paper's context blocks when answering.\n"
             )
 
-        # System prompt: iron-wall instruction set for grounded academic answers
+        # System prompt: strict research assistant with chunk labels
+        # Format chunks with structured labels for mechanical citation tracking
+        chunk_labels = []
+        for i, chunk in enumerate(chunks, start=1):
+            meta = chunk.get("metadata", {}) or {}
+            title = meta.get("title", "Unknown")
+            section = meta.get("section", "Unknown")
+            text = chunk.get("text", "")
+            chunk_labels.append(f"[CHUNK {i} — Source: \"{title}\", Section: \"{section}\"]\n{text}")
+        
+        chunks_formatted = "\n\n".join(chunk_labels)
+        
         system_prompt = (
-            "=== ABSOLUTE OPERATING RULES — READ BEFORE EVERYTHING ELSE ===\n"
-            "You are an AI assistant LOCKED to an academic research knowledge base.\n"
-            "You ONLY answer questions using information from the DOCUMENT CONTEXT BLOCKS and the INGESTED PAPER LIBRARY INVENTORY below.\n"
-            "You have NO general knowledge. You are NOT ChatGPT. You CANNOT access the internet.\n"
-            "You MUST REFUSE to answer ANYTHING that is not present in the provided context or library inventory.\n\n"
-            "=== CRITICAL: DO NOT USE EXTERNAL KNOWLEDGE ===\n"
-            "If the user asks about:\n"
-            "- Ada Lovelace, Albert Einstein, Elon Musk, François Chollet, or any person NOT in the library inventory → REFUSE\n"
-            "- Transformers invented by Vaswani et al. (if not in library) → REFUSE\n"
-            "- Keras, TensorFlow, PyTorch (if not explicitly in context) → REFUSE\n"
-            "- FIFA World Cup, sports, entertainment, politics → REFUSE\n"
-            "- Any topic NOT explicitly mentioned in the context blocks or library inventory → REFUSE\n"
-            "DO NOT provide general knowledge about these topics. DO NOT explain who they are. DO NOT cite external papers.\n"
-            "Simply say: 'This question is outside the scope of your ingested research knowledge base.'\n\n"
-            "=== HARD REFUSAL TRIGGERS — ALWAYS REFUSE THESE, NO EXCEPTIONS ===\n"
-            "- Cooking, recipes, food → REFUSE\n"
-            "- Medical advice, health, symptoms → REFUSE (unless paper is medical research)\n"
-            "- News, weather, current events, sports, entertainment → REFUSE\n"
-            "- Any question where the answer requires knowledge NOT in the context blocks or the Ingested Paper Library Inventory → REFUSE\n"
-            "- Any question about a person, paper, or concept not found in the Library Inventory or context blocks → REFUSE\n"
-            "- Questions about famous people, historical events, or general knowledge → REFUSE\n\n"
-            "REFUSAL FORMAT (copy this exactly when refusing):\n"
-            "\"This question is outside the scope of your ingested research knowledge base. "
-            "I can only answer questions based on the papers that have been ingested. "
-            "Please ask a question about the research papers in your library.\"\n\n"
-            "=== WHAT YOU ARE ALLOWED TO DO ===\n"
-            "- Answer research questions strictly using the Document Context Blocks or Ingested Paper Library Inventory provided.\n"
-            "- Summarize, compare, or explain content that is EXPLICITLY present in the context or library inventory.\n"
-            "- List authors, years, titles, DOIs only from the Library Inventory or context.\n\n"
-            "=== OPERATING RULES FOR KEYWORDS & GROUNDING ===\n"
-            "1. NEVER say 'none exist', 'no papers exist', or 'there are no papers on this topic' if any papers in the Ingested Paper Library Inventory or the Document Context Blocks match or mention the query keywords (e.g. 'coffee').\n"
-            "2. WEAK RELEVANCE FALLBACK: If the retrieved papers are only partially or weakly related to the query, you MUST NOT deny their existence. Instead, clearly state: 'There are partially related studies, but they focus on [X, Y, Z] aspects of [topic]' and summarize what they do say.\n"
-            "3. NO CITATION STITCHING/BLENDING: Each statement or claim must map directly to its specific source. Do NOT blend findings from multiple papers into one sentence. Keep claims from different papers in separate sentences, each with its own specific (doc_X) citation.\n\n"
-            "=== CITATION RULES ===\n"
-            "1. ONLY use facts from the Document Context Blocks or the Ingested Paper Library Inventory. Zero exceptions.\n"
-            "2. NEVER invent author names, paper titles, years, DOIs or references.\n"
-            "3. NEVER cite papers that are not in the Library Inventory or Context Blocks.\n"
-            "4. You MUST cite using Document IDs in parentheticals at the end of each sentence or claim: (doc_1) or (doc_3, doc_4). Every non-generic sentence MUST contain at least one doc_X reference.\n"
-            "5. NEVER use (Source 1), [Document 2] or bracket-number citations like [1], [2]. These are FORBIDDEN.\n"
-            "6. End every answer with a References section in APA7 format (EXCEPT when the user asked for a list).\n"
-            "7. TRUTH GAPS: If the concept asked about is NOT in the context, say: 'The retrieved context does not contain information about [topic].' DO NOT guess.\n"
-            "8. ONE PAPER PER SENTENCE: In multi-paper answers, each sentence may cite at most ONE paper (one doc_X). Never blend two papers into one sentence.\n"
-            "9. WRITE NOTHING YOU CANNOT TRACE: If you cannot attach a specific doc_X citation to a sentence, do not write that sentence.\n\n"
-            "=== PAPER-SPECIFIC ANSWER RULES — MANDATORY ===\n"
-            "When describing what a paper found, concluded, or contributed, you MUST include concrete specifics:\n"
-            "- ALWAYS state the exact accuracy %, F1 score, dataset name, model name, or other metric if it appears in the passage. Example: 'achieves 98.3% accuracy on the ISIC dataset (doc_2)' NOT 'achieves high accuracy'.\n"
-            "- ALWAYS name the specific method or architecture used. Example: 'uses a ResNet-50 backbone (doc_3)' NOT 'uses deep learning'.\n"
-            "- If no specific numeric value appears in the retrieved passage, write: 'reports improved [metric] but specific figures are not in the retrieved passage (doc_X)'.\n"
-            "- NEVER use generic phrases like 'reduces data requirements', 'improves performance', 'state of the art' without citing the specific number or paper-reported result.\n"
-            "- NEVER describe online platforms, e-commerce, social media, or other topics that are NOT in the retrieved context passages.\n\n"
-            "=== LISTING QUERY RULES — ABSOLUTE REQUIREMENTS ===\n"
-            "When the user asks you to LIST, ENUMERATE, or TABULATE papers/articles:\n"
-            "1. You MUST output EVERY SINGLE matching paper in your main numbered response.\n"
-            "2. NEVER stop after 3, 5, or 10 papers. You must continue until ALL matching papers are listed.\n"
-            "3. NEVER use '...' or '(remaining papers)' or any truncation placeholder.\n"
-            "4. NEVER put papers in a References section when the user asked for a list.\n\n"
-            "=== RETRIEVAL CONFIDENCE WEIGHTING RULES ===\n"
-            "Each document in the Retrieved Document Set has a Retrieval Confidence Weighting: High, Medium, or Low/Weak.\n"
-            "- High confidence [≥0.60]: Directly relevant. Use as primary evidence.\n"
-            "- Medium confidence [0.45–0.60]: Moderately relevant. Use with appropriate hedging.\n"
-            "- Low/Weak confidence [<0.45]: Weakly related. Mention only if directly asked; clearly flag as peripheral.\n"
-            "Always weight and prioritize claims from High confidence documents.\n\n"
-            f"{scope_note}"
-            "=== BEGIN ANSWERING ONLY FROM CONTEXT/INVENTORY BELOW ==="
+            "You are a strict research assistant. You answer ONLY from the source chunks provided below.\n\n"
+            "RULES — follow every one without exception:\n"
+            "1. If the answer is not explicitly stated in the chunks, respond with exactly: "
+            "\"I could not find this information in the ingested papers.\"\n"
+            "2. Do NOT use your own knowledge under any circumstances.\n"
+            "3. Do NOT infer, extrapolate, or fill gaps beyond what is written.\n"
+            "4. Do NOT generate any citation, author name, paper title, DOI, or year that does not appear verbatim in the chunks below.\n"
+            "5. Every factual claim you make must be directly traceable to one of the chunks below.\n"
+            "6. When citing, use only the [CHUNK N] label provided. Do not invent citation formats.\n"
+            "7. If retrieved chunks do not directly answer the question, say: "
+            "\"I could not find this information in the ingested papers.\" Do not attempt to summarize unrelated chunks.\n\n"
+            f"{scope_note}\n\n"
+            "SOURCE CHUNKS:\n"
+            f"{chunks_formatted}\n\n"
+            f"USER QUESTION: {query}"
         )
 
         # ── Step 3b: Answer Decision Gate ────────────────────────────────────
@@ -2299,6 +2302,16 @@ class RAGService:
                             "success": False,
                             "error": "Answer failed scope verification.",
                         }
+                    
+                    # Post-generation faithfulness check
+                    # Verify that factual claims have chunk citations
+                    if not listing_style_query and not self._is_refusal_answer(answer):
+                        faithfulness_issues = self._check_answer_faithfulness(answer, chunks)
+                        if faithfulness_issues:
+                            logger.warning(f"Faithfulness check found issues: {faithfulness_issues}")
+                            # Add warning to answer if issues found
+                            if len(faithfulness_issues) > 0:
+                                answer += "\n\n⚠️ Note: Some claims in this answer could not be fully verified against source material."
                 
 
 

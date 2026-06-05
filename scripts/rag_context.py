@@ -16,6 +16,59 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
+# Cross-encoder reranker for improved retrieval quality
+_reranker = None
+
+def _get_reranker():
+    """Lazy-load the cross-encoder reranker."""
+    global _reranker
+    if _reranker is None:
+        try:
+            from sentence_transformers import CrossEncoder
+            _reranker = CrossEncoder("BAAI/bge-reranker-base")
+            logger.info("Cross-encoder reranker loaded successfully")
+        except ImportError:
+            logger.warning("sentence-transformers not installed, reranking disabled")
+            logger.warning("Install with: pip install sentence-transformers")
+        except Exception as e:
+            logger.warning(f"Failed to load cross-encoder reranker: {e}")
+    return _reranker
+
+def rerank_chunks(question: str, chunks: list[dict], top_n: int = 5) -> list[dict]:
+    """
+    Re-rank chunks using cross-encoder for better relevance.
+    
+    Args:
+        question: The user's query
+        chunks: List of chunk dictionaries with 'text' field
+        top_n: Number of top chunks to return
+        
+    Returns:
+        Re-ranked list of chunks (top_n or fewer)
+    """
+    reranker = _get_reranker()
+    if not reranker or not chunks:
+        return chunks[:top_n]
+    
+    try:
+        # Extract chunk texts
+        chunk_texts = [chunk.get("text", "") for chunk in chunks]
+        
+        # Create query-chunk pairs
+        pairs = [[question, text] for text in chunk_texts]
+        
+        # Get relevance scores
+        scores = reranker.predict(pairs)
+        
+        # Sort by score (descending)
+        ranked = sorted(zip(scores, chunks), key=lambda x: x[0], reverse=True)
+        
+        # Return top_n chunks
+        return [chunk for _, chunk in ranked[:top_n]]
+    except Exception as e:
+        logger.warning(f"Cross-encoder reranking failed: {e}, returning original chunks")
+        return chunks[:top_n]
+
 
 # Standard refusal when vector search finds nothing sufficiently similar.
 IRRELEVANT_REFUSAL = (
@@ -1741,14 +1794,9 @@ def retrieve_relevant_chunks(
         if author_chunks:
             # Apply reranking to author-scoped chunks if enabled
             if use_reranking and len(author_chunks) > limit:
-                try:
-                    from reranker import RerankerService
-                    reranker = RerankerService()
-                    author_chunks = reranker.rerank(author_chunks, query, top_k=limit)
-                except ImportError:
-                    logger.warning("Reranker not available, skipping reranking")
-                except Exception as e:
-                    logger.warning(f"Reranking failed: {e}, using original chunks")
+                # Use cross-encoder reranking for better precision
+                author_chunks = rerank_chunks(query, author_chunks, top_n=limit)
+                logger.info(f"Cross-encoder reranking applied to author-scoped chunks: {len(author_chunks)} chunks")
             return _ensure_rerank_scores(rank_and_cap_chunks(author_chunks, query, limit=limit), query)
 
     # ── Standard semantic search path with over-retrieval ─────────────────────
@@ -1880,14 +1928,9 @@ def retrieve_relevant_chunks(
     if strict and locked_scope:
         filtered = filter_chunks_to_titles(chunks, inventory_titles)
         if use_reranking and len(filtered) > limit:
-            try:
-                from reranker import RerankerService
-                reranker = RerankerService()
-                return reranker.rerank(filtered, query, top_k=limit)
-            except ImportError:
-                logger.warning("Reranker not available, skipping reranking")
-            except Exception as e:
-                logger.warning(f"Reranking failed: {e}, using original chunks")
+            # Use cross-encoder reranking for better precision
+            filtered = rerank_chunks(query, filtered, top_n=limit)
+            logger.info(f"Cross-encoder reranking applied in strict mode: {len(filtered)} chunks")
         return _ensure_rerank_scores(filtered[:limit], query)
 
     if not chunks and inventory_titles and not strict:
@@ -1903,15 +1946,9 @@ def retrieve_relevant_chunks(
 
     # Apply reranking if enabled and we have enough chunks
     if use_reranking and len(chunks) > limit:
-        try:
-            from reranker import RerankerService
-            reranker = RerankerService()
-            chunks = reranker.rerank(chunks, query, top_k=limit)
-            logger.info(f"Reranking applied: returned {len(chunks)} chunks")
-        except ImportError:
-            logger.warning("Reranker not available, skipping reranking")
-        except Exception as e:
-            logger.warning(f"Reranking failed: {e}, using original chunks")
+        # Use cross-encoder reranking for better precision
+        chunks = rerank_chunks(query, chunks, top_n=limit)
+        logger.info(f"Cross-encoder reranking applied: returned {len(chunks)} chunks")
 
     return _ensure_rerank_scores(rank_and_cap_chunks(chunks, query, limit=limit), query)
 
