@@ -72,8 +72,15 @@ class VectorStoreService:
                 metadata={"hnsw:space": "cosine"}
             )
 
-            # Run startup database metadata normalization migration
-            self._normalize_stored_metadata()
+            # Step 2b: Run startup database metadata normalization migration only once
+            # Use a flag file to track if normalization has been done
+            normalization_flag = Path(settings.VECTOR_DB_DIR) / ".metadata_normalized"
+            if not normalization_flag.exists():
+                self._normalize_stored_metadata()
+                normalization_flag.touch()
+                logger.info("Metadata normalization completed and flag file created.")
+            else:
+                logger.info("Metadata normalization already completed (flag file exists).")
 
             logger.info(
                 "ChromaDB client and sentence-transformer embedding function initialised successfully. "
@@ -468,6 +475,8 @@ class VectorStoreService:
         Fetches all metadata entries to identify distinct paper titles.
         Used by the health check endpoint and the web UI's stats badges.
 
+        Step 2a: Added 30-second cache to avoid loading ALL metadata on every query.
+
         Returns:
             Dict with:
               - "total_chunks" (int): Total number of vectors stored.
@@ -475,6 +484,11 @@ class VectorStoreService:
               - "papers_list" (list[str]): Sorted list of unique paper titles.
               - "papers_metadata" (dict): Mapping from paper title (str) to dict containing 'authors', 'year', and 'doi'.
         """
+        import time
+        now = time.time()
+        if hasattr(self, '_stats_cache') and (now - self._stats_cache_time) < 30:
+            return self._stats_cache
+
         try:
             total_chunks = self.collection.count()
             unique_papers = set()
@@ -495,12 +509,15 @@ class VectorStoreService:
                                 "venue": meta.get("venue", "N/A")
                             }
 
-            return {
+            result = {
                 "total_chunks": total_chunks,
                 "total_papers": len(unique_papers),
                 "papers_list": sorted(list(unique_papers)),
                 "papers_metadata": papers_metadata
             }
+            self._stats_cache = result
+            self._stats_cache_time = now
+            return result
 
         except Exception as e:
             logger.error(f"Failed to fetch ChromaDB collection stats: {e}")

@@ -79,6 +79,13 @@ discover_service = PaperDiscoveryService()
 pdf_service      = PDFProcessorService()
 vector_store     = VectorStoreService()
 manifest_service = ManifestManagerService()
+# Step 1c: Initialize RAGService at startup instead of per-query
+rag_service = None
+try:
+    rag_service = RAGService()
+    logger.info("RAG Service initialised.")
+except OllamaUnavailableError:
+    logger.warning("Ollama not available at startup - RAG disabled until Ollama starts.")
 logger.info("All backend services initialised.")
 
 citation_jobs: dict[str, dict] = {}
@@ -1154,7 +1161,12 @@ def query_rag(request: RAGQueryRequest):
         if request.prompt_template and not _should_fallback_to_standard_rag(request):
             return _execute_template_rag(request)
 
-        rag_service = RAGService()
+        # Step 1c: Use global RAGService instance instead of per-query instantiation
+        if rag_service is None:
+            raise HTTPException(
+                status_code=503,
+                detail="RAG Service not available. Ollama may not be running.",
+            )
         result = rag_service.generate_answer(
             request.query,
             limit=request.limit or 15,

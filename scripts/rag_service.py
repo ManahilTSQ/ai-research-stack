@@ -2461,7 +2461,8 @@ class RAGService:
                 "temperature": 0.05, # Near-zero: almost fully deterministic, kills creativity/hallucination
                 "top_p": 0.8,        # Tighter nucleus sampling
                 "repeat_penalty": 1.1,  # Reduces repetitive hallucination loops
-                "num_predict": 2048  # Allow longer responses to prevent table truncation
+                "num_predict": 2048,  # Allow longer responses to prevent table truncation
+                "num_ctx": 8192       # Increase context window for better retrieval
             }
         }
 
