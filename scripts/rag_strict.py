@@ -956,9 +956,12 @@ def answer_catalog_metadata_query(query: str, papers_metadata: dict) -> str | No
 
     # ── Deterministic direct-match for exact keyword lookups in titles ──
     # Handle queries like "Which papers contain 'Deep Learning' in the title?"
-    title_keyword_match = re.search(r'\b(?:which|what|list)\s+(?:papers?|articles?)\s+(?:contain|have|with)\s+[\'"](.+?)[\'"]\s+(?:in\s+)?(?:the\s+)?title\b', q)
+    # Also handle variations without quotes: "Which papers contain Deep Learning in the title"
+    title_keyword_match = re.search(r'\b(?:which|what|list)\s+(?:papers?|articles?)\s+(?:contain|have|with)\s+(?:[\'"]?(.+?)[\'"]?\s+)?(?:in\s+)?(?:the\s+)?title\b', q)
     if title_keyword_match:
         keyword = title_keyword_match.group(1).strip().lower()
+        # Remove any trailing punctuation or stop words
+        keyword = re.sub(r'[\'".,;:?!\s]+$', '', keyword)
         matched = []
         for title, meta in papers_metadata.items():
             if keyword in title.lower():

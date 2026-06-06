@@ -560,6 +560,7 @@ def _topic_specific_tokens(query: str) -> list[str]:
         "neural network", "neural networks", "convolutional network",
         "recurrent network", "network security", "cyber security",
         "software defined", "software defined network", "software defined networking",
+        "explainable ai", "explainable artificial intelligence",
     ]
     
     # Build a set of tokens to keep (including generic ones in compounds)
@@ -574,7 +575,9 @@ def _topic_specific_tokens(query: str) -> list[str]:
                     tokens_to_keep.add(word)
     
     # Filter out generic tokens unless they're in a compound phrase
-    return [t for t in tokens if t not in _GENERIC_TOPIC_TOKENS or t in tokens_to_keep]
+    # Also keep "blockchain", "explainable" as they are specific topics
+    specific_topic_tokens = {"blockchain", "explainable", "explainableai"}
+    return [t for t in tokens if (t not in _GENERIC_TOPIC_TOKENS or t in tokens_to_keep) or t in specific_topic_tokens]
 
 
 def query_has_library_topic_cue(query: str) -> bool:
@@ -666,6 +669,10 @@ def find_papers_by_metadata_keywords(
     for raw in re.findall(r"[a-z0-9]{2,}", (query or "").lower()):
         if raw not in tokens and raw not in _GENERIC_TOPIC_TOKENS and raw not in stop:
             tokens.append(raw)
+    
+    # Remove listing words from tokens for better matching
+    listing_words = {"list", "show", "only", "papers", "paper", "articles", "article", "studies", "study", "all"}
+    tokens = [t for t in tokens if t not in listing_words]
     
     # Identify significant tokens (non-generic) for strict matching
     significant_tokens = [t for t in tokens if t not in _GENERIC_TOPIC_TOKENS and len(t) >= 3]
@@ -1634,6 +1641,26 @@ def fuzzy_match_paper_titles(query: str, papers_metadata: dict) -> list[str]:
                     matches.append(title)
         if matches:
             return matches
+
+    # Handle descriptive paper queries like "the SDN traffic classification paper"
+    # Extract key descriptive terms and match against titles
+    if "paper" in q_lower:
+        # Remove "paper" and common words, keep descriptive terms
+        desc_terms = [w for w in words if w not in {"paper", "the", "a", "an", "who", "are", "authors", "of", "what", "is", "which"} and len(w) >= 3]
+        if desc_terms:
+            scored: list[tuple[int, str]] = []
+            for title in papers_metadata:
+                title_lower = title.lower()
+                # Score based on how many descriptive terms match
+                score = sum(1 for term in desc_terms if term in title_lower)
+                if score >= 1:
+                    scored.append((score, title))
+            if scored:
+                scored.sort(reverse=True)
+                best_score = scored[0][0]
+                # Return only papers with the best score to avoid false positives
+                if best_score >= 2:
+                    return [t for s, t in scored if s == best_score]
 
     tokens = _significant_query_tokens(query)
     if not tokens:
