@@ -46,6 +46,8 @@ class QueryRouter:
         r"\bpapers?\s+published\s+(?:before|after|in|during)\s+\d{4}",
         r"\bpapers?\s+from\s+\d{4}",
         r"\bdois?\s+(?:of\s+)?(?:all\s+)?papers?\b",
+        r"\bshow\s+(?:all\s+)?papers?\s+with\s+doi\b",
+        r"\bshow\s+doi\s+information\b",
         r"\benumerate\s+papers?\b",
     ]
     
@@ -120,7 +122,7 @@ class QueryRouter:
         year_after = re.search(r'\b(?:after|since|later than)\s+(\d{4})\b', q_lower)
         if year_after:
             year = int(year_after.group(1))
-            filters['year'] = {"$gt": str(year)}
+            filters['year'] = {"$gte": str(year)}
             logger.info(f"Parsed year filter: after {year}")
         
         year_in = re.search(r'\b(?:in|from|of)\s+(\d{4})\b', q_lower)
@@ -158,6 +160,15 @@ class QueryRouter:
             venue = venue_match.group(1).strip()
             filters['venue'] = {"$contains": venue}
             logger.info(f"Parsed venue filter: {venue}")
+        
+        # Special handling for "newest" and "oldest" queries
+        # These need special sorting, not just filtering
+        if re.search(r'\b(?:newest|latest)\b', q_lower):
+            filters['_sort_by_year'] = 'desc'
+            logger.info("Detected newest paper query - will sort by year descending")
+        elif re.search(r'\boldest\b', q_lower):
+            filters['_sort_by_year'] = 'asc'
+            logger.info("Detected oldest paper query - will sort by year ascending")
         
         return filters
     
