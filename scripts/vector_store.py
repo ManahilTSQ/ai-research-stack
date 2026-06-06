@@ -435,16 +435,29 @@ class VectorStoreService:
             docs = data.get("documents") or []
             metas = data.get("metadatas") or []
             
-            # If exact match returns no results, try case-insensitive match via title_lower field
+            # If exact match returns no results, try matching by metadata inspection
             if not docs:
-                data = self.collection.get(
-                    where={"title_lower": paper_title.lower().strip()},
-                    include=["documents", "metadatas"],
-                    limit=max_chunks,
-                )
-                ids = data.get("ids") or []
-                docs = data.get("documents") or []
-                metas = data.get("metadatas") or []
+                # We need to find the chunks where the metadata "title" field matches paper_title
+                all_data = self.collection.get(include=["metadatas"])
+                metadatas = all_data.get("metadatas", [])
+                all_ids = all_data.get("ids", [])
+                
+                target_ids = []
+                for i, meta in enumerate(metadatas):
+                    if meta and meta.get("title") == paper_title:
+                        target_ids.append(all_ids[i])
+                        if len(target_ids) >= max_chunks:
+                            break
+                
+                if target_ids:
+                    data = self.collection.get(
+                        ids=target_ids,
+                        include=["documents", "metadatas"]
+                    )
+                    ids = data.get("ids") or []
+                    docs = data.get("documents") or []
+                    metas = data.get("metadatas") or []
+
             
             results = []
             for i, doc_text in enumerate(docs):
