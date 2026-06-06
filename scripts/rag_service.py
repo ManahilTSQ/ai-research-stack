@@ -1579,8 +1579,14 @@ class RAGService:
             }
 
         # ── Fix 2: Metadata query interceptor — fires before retrieval ─────────────
+        # Fetch stats ONCE at the top - never fetch again inside this function
         stats = self.vector_store.get_collection_stats()
         papers_metadata = stats.get("papers_metadata", {}) or {}
+        
+        if not papers_metadata:
+            return {"query": query, "answer": EMPTY_DB_REFUSAL, 
+                    "sources": [], "success": False}
+        
         metadata_answer = self._try_answer_from_metadata(query, papers_metadata)
         if metadata_answer:
             return metadata_answer
@@ -1590,10 +1596,6 @@ class RAGService:
         # This must not trigger keyword discovery ("papers on ...") or strict scope verification.
         if self._is_academic_drafting_request(query):
             return self._draft_academic_text(query)
-
-        # Fetch library index to support meta-queries
-        stats = self.vector_store.get_collection_stats()
-        papers_metadata = stats.get("papers_metadata", {})
 
         # ── Detect author-scoped and listing/tabulation queries ─────────────
         # When the query names a specific author, we:

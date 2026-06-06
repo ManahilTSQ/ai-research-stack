@@ -18,11 +18,7 @@ def inspect():
         
     print("\n=== QUERY TEST ===")
     # Let's search for framework chunks specifically
-<<<<<<< Updated upstream
     query = "malware detection"
-=======
-    query = "cmalware detection"
->>>>>>> Stashed changes
     chunks = store.query_similar_chunks(query, limit=5)
     print(f"Searching for '{query}' retrieved {len(chunks)} chunks:")
     for idx, c in enumerate(chunks):
