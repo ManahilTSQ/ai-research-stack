@@ -739,6 +739,11 @@ def delete_all_papers():
             embedding_function=vector_store.embedding_function,
             metadata={"hnsw:space": "cosine"}
         )
+        # Clear the stats cache to reflect the deletion immediately
+        if hasattr(vector_store, '_stats_cache'):
+            del vector_store._stats_cache
+        if hasattr(vector_store, '_stats_cache_time'):
+            del vector_store._stats_cache_time
         success_db = True
     except Exception as e:
         logger.error(f"Failed to clear ChromaDB collection: {e}")
