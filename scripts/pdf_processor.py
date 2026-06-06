@@ -271,9 +271,14 @@ class PDFProcessorService:
             chunk_pages_slice = char_to_page[start:slice_end]
             
             if chunk_pages_slice:
-                unique_pages = sorted(list(set(chunk_pages_slice)))
+                # Filter out None, empty, and invalid values, then deduplicate
+                valid_pages = [p for p in chunk_pages_slice if p is not None and isinstance(p, int)]
+                unique_pages = sorted(list(set(valid_pages)))
                 # Format as human readable 1-indexed comma separated string
-                pages_metadata_str = ",".join(str(p + 1) for p in unique_pages if p is not None)
+                if unique_pages:
+                    pages_metadata_str = ",".join(str(p + 1) for p in unique_pages)
+                else:
+                    pages_metadata_str = "1"
             else:
                 pages_metadata_str = "1"
 
