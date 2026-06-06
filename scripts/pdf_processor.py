@@ -272,28 +272,30 @@ class PDFProcessorService:
     def chunk_text(
         self,
         pages: list[dict],
-        chunk_size: int = 2000,
-        chunk_overlap: int = 400,
-        use_structure_aware: bool = True
+        chunk_size: int = 1500,
+        chunk_overlap: int = 300,
+        use_structure_aware: bool = False
     ) -> list[dict]:
         """
         Chunk the full document text into overlapping segments.
 
-        Structure-aware mode (default):
+        Character-based sliding window mode (default):
+          - Extracts all text from all pages into a single unified string
+          - Implements strict character-based sliding window chunking
+          - Target: 1500 characters per chunk with 300 character overlap
+          - Validates and drops empty/near-empty chunks (< 100 characters)
+
+        Structure-aware mode (use_structure_aware=True):
           - Detects section headings (Abstract, Introduction, Methodology, etc.)
           - Splits by sections first to preserve semantic boundaries
           - Within sections, splits by paragraphs (not fixed character count)
           - Overlap preserves last complete paragraph/sentence, not just characters
 
-        Legacy character-based mode (use_structure_aware=False):
-          - Original sliding window approach by character count
-          - Kept for backward compatibility
-
         Args:
             pages: List of page dicts as returned by extract_text_by_page().
-            chunk_size: Target chunk size in characters (soft limit in structure-aware mode).
-            chunk_overlap: Overlap in characters (used in legacy mode).
-            use_structure_aware: If True, use semantic section-aware chunking.
+            chunk_size: Target chunk size in characters (default: 1500).
+            chunk_overlap: Overlap in characters (default: 300).
+            use_structure_aware: If True, use semantic section-aware chunking (default: False).
 
         Returns:
             List of chunk dicts, each containing:
@@ -584,50 +586,84 @@ class PDFProcessorService:
         chunk_overlap: int
     ) -> list[dict]:
         """
-        Legacy character-based chunking (original implementation).
-        Kept for backward compatibility.
+        Character-based sliding window chunking with validation.
+
+        Implements strict character-based sliding window:
+          - Extracts all text from all pages into a single unified string
+          - Slides a window of chunk_size characters with chunk_overlap overlap
+          - Validates and drops empty/near-empty chunks (< 100 characters)
+          - Logs the number of valid chunks generated
+
+        Args:
+            full_text: Complete concatenated document text.
+            char_to_page: List mapping each character to its page number.
+            chunk_size: Target chunk size in characters (default: 1500).
+            chunk_overlap: Overlap in characters (default: 300).
+
+        Returns:
+            List of validated chunk dicts.
         """
         text_len = len(full_text)
-        
+
+        # Validate parameters
         if chunk_size <= 0:
-            chunk_size = 2000  # Step 6b: Updated default from 1000 to 2000
-        
+            chunk_size = 1500
+            logger.warning(f"Invalid chunk_size — reset to default: {chunk_size}")
+
         if chunk_overlap >= chunk_size or chunk_overlap < 0:
             chunk_overlap = int(chunk_size * 0.2)
             logger.warning(f"Invalid chunk_overlap — reset to 20% of chunk_size: {chunk_overlap}")
-        
+
         chunks = []
         start = 0
         chunk_idx = 0
-        
+
+        # Sliding window iteration through ALL text
         while start < text_len:
             end = min(start + chunk_size, text_len)
-            
+
+            # Skip tiny final chunks
             if len(chunks) > 0 and (end - start) < 100:
+                logger.debug(f"Skipping tiny final chunk ({end - start} chars)")
                 break
-            
-            chunk_text_content = full_text[start:end]
+
+            chunk_text_content = full_text[start:end].strip()
+            chunk_length = len(chunk_text_content)
+
+            # Validation: drop empty or near-empty chunks
+            if chunk_length < 100:
+                logger.debug(f"Skipping chunk {chunk_idx} (too short: {chunk_length} chars)")
+                start += (chunk_size - chunk_overlap)
+                continue
+
+            # Get pages for this chunk
             chunk_pages = sorted(set(char_to_page[start:end]))
-            
+
             chunks.append({
                 "chunk_index": chunk_idx,
-                "text": chunk_text_content.strip(),
+                "text": chunk_text_content,
                 "metadata": {
                     "section": "Unknown",
                     "pages": chunk_pages,
                     "char_start": start,
                     "char_end": end,
-                    "length": len(chunk_text_content)
+                    "length": chunk_length
                 }
             })
-            
+
             chunk_idx += 1
-            
+
+            # Move to next window with overlap
             if end == text_len:
                 break
-            
+
             start += (chunk_size - chunk_overlap)
-        
-        logger.info(f"Character-based chunking: {len(chunks)} chunks (chunk_size={chunk_size}, overlap={chunk_overlap})")
+
+        # Log validation results
+        logger.info(
+            f"Character-based chunking: Generated {len(chunks)} valid chunks "
+            f"(chunk_size={chunk_size}, overlap={chunk_overlap}, total_text={text_len} chars)"
+        )
+
         return chunks
 
