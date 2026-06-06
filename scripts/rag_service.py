@@ -840,8 +840,8 @@ class RAGService:
     #   'refuse'     → 0 chunks with score ≥ 0.15 (no usable evidence)
     # Modes NEVER overlap; transitions are deterministic.
     # ─────────────────────────────────────────────────────────────────────────────
-    _CONFIDENT_THRESHOLD = 0.35
-    _PARTIAL_THRESHOLD   = 0.15
+        _CONFIDENT_THRESHOLD = 0.35
+    _PARTIAL_THRESHOLD   = 0.08  # Lowered from 0.15 to prevent aggressive refusals
 
     def _compute_answer_decision(
         self,
@@ -871,11 +871,11 @@ class RAGService:
         if is_comparison:
             unique_papers = {c.get("metadata", {}).get("title", "") for c in chunks if c.get("metadata", {}).get("title")}
             if len(unique_papers) < 2:
+                # Instead of hard refusal, allow the LLM to try to answer from what it has
                 logger.warning(
-                    f"Refusing query '{query}' because comparison requires >=2 papers, "
-                    f"but only retrieved from {len(unique_papers)} paper(s): {unique_papers}"
+                    f"Comparison query '{query}' retrieved only {len(unique_papers)} paper(s). "
+                    "Proceeding with caution instead of hard refusal."
                 )
-                return "refuse", ""
 
         scored = sorted(
             [c for c in chunks if "rerank_score" in c],
@@ -901,19 +901,19 @@ class RAGService:
 
         # ── Improved caution mode using retrieval scores (not keyword counting) ──────
         # More robust thresholds based on reranker scores:
-        # - max_score < 0.15: refuse (chunks too irrelevant even for cautious answer)
-        # - 0.15 <= max_score < 0.30: partial/caution mode
-        # - max_score >= 0.30: confident or partial based on avg_top_3
-        if max_score < 0.15:
+        # - max_score < 0.08: refuse (chunks too irrelevant even for cautious answer)
+        # - 0.08 <= max_score < 0.25: partial/caution mode
+        # - max_score >= 0.25: confident or partial based on avg_top_3
+        if max_score < self._PARTIAL_THRESHOLD:
             logger.warning(
-                f"Refusing query '{query}': max_score={max_score:.3f} < 0.15. "
+                f"Refusing query '{query}': max_score={max_score:.3f} < {self._PARTIAL_THRESHOLD}. "
                 "Chunks are too irrelevant for even a cautious answer."
             )
             return "refuse", ""
         
-        if max_score < 0.30:
+        if max_score < 0.25:
             logger.warning(
-                f"Weak retrieval for query '{query}': max_score={max_score:.3f} < 0.30. "
+                f"Weak retrieval for query '{query}': max_score={max_score:.3f} < 0.25. "
                 "Switching to caution/partial mode."
             )
             return "partial", (
@@ -924,6 +924,7 @@ class RAGService:
                 "Do not extrapolate, invent details, or use general knowledge. "
                 "If a passage is only tangentially related, say so explicitly."
             )
+
 
         # Routing based on normalized query-level confidence
         if avg_top_3 >= 0.40 and max_score >= 0.45:
@@ -1785,32 +1786,37 @@ class RAGService:
                 # Remove common trailing words
                 topic = re.sub(r'\b(papers?|articles?|studies?)\s*$', '', topic).strip()
                 
-                # Search chunk texts and titles for the topic
-                matched_titles = set()
-                for title, meta in inventory_metadata.items():
-                    title_lower = title.lower()
-                    if topic in title_lower:
-                        matched_titles.add(title)
-                        continue
-                    # Search actual chunk text
-                    chunks = self.vector_store.get_chunks_for_paper(title)
-                    for chunk in chunks:
-                        if topic in chunk.get('text', '').lower():
-                            matched_titles.add(title)
-                            break
-                
-                if matched_titles:
-                    inventory_metadata = {
-                        t: papers_metadata[t]
-                        for t in matched_titles
-                    }
+                # Special case: if the topic is just "all", don't filter
+                if topic == "all":
+                    topic_match = None
                 else:
-                    return {
-                        "query": query,
-                        "answer": f"No papers in your library explicitly cover '{topic}'.",
-                        "sources": [],
-                        "success": True
-                    }
+                    # Search chunk texts and titles for the topic
+                    matched_titles = set()
+                    for title, meta in inventory_metadata.items():
+                        title_lower = title.lower()
+                        if topic in title_lower:
+                            matched_titles.add(title)
+                            continue
+                        # Search actual chunk text
+                        chunks = self.vector_store.get_chunks_for_paper(title)
+                        for chunk in chunks:
+                            if topic in chunk.get('text', '').lower():
+                                matched_titles.add(title)
+                                break
+                    
+                    if matched_titles:
+                        inventory_metadata = {
+                            t: papers_metadata[t]
+                            for t in matched_titles
+                        }
+                    else:
+                        return {
+                            "query": query,
+                            "answer": f"No papers in your library explicitly cover '{topic}'.",
+                            "sources": [],
+                            "success": True
+                        }
+
             # else: no topic filter, show all (for "list all papers")
 
             answer = self._render_inventory_listing(query, inventory_metadata)
@@ -2095,480 +2101,4 @@ class RAGService:
                     logger.warning(
                         f"Very low chunk relevance: {relevant_chunks}/{len(chunks)} for query: {query}"
                     )
-                    return {
-                        "query": query,
-                        "answer": NOT_IN_LIBRARY_REFUSAL,
-                        "sources": [],
-                        "success": False,
-                        "error": "Retrieved chunks not relevant to query",
-                    }
-
-                # Universal domain-term zero-match check.
-                # If the query contains a high-specificity term (5+ chars, not a stopword)
-                # and that term appears in ZERO retrieved chunks (text OR title),
-                # then refuse — retrieval missed the domain entirely.
-                # This is domain-agnostic: works for coffee, blockchain, UAV, etc.
-                _COMMON = {
-                    "paper", "study", "model", "method", "approach", "system",
-                    "learning", "detection", "classification", "analysis", "review",
-                    "using", "based", "these", "their", "which", "about",
-                    # Library/ingestion meta-terms: never trigger domain-term checks
-                    # (they won't appear in chunk text but are valid library queries)
-                    "ingested", "successfully", "library", "database", "knowledge",
-                    "papers", "document", "documents", "full", "text", "pdfs", "abstract",
-                    "ingest", "ingestion", "corpus",
-                }
-                specific_terms = [
-                    t for t in query_tokens
-                    if len(t) >= 5 and t not in _COMMON
-                ]
-                if specific_terms:
-                    for term in specific_terms:
-                        term_in_any_chunk = any(
-                            term in c.get("text", "").lower()
-                            or term in c.get("metadata", {}).get("title", "").lower()
-                            for c in chunks
-                        )
-                        if not term_in_any_chunk:
-                            logger.info(
-                                f"Domain term '{term}' absent from all chunks — "
-                                "but other terms match; continuing (not refusing)"
-                            )
-                    # Only refuse if ALL specific terms are absent from ALL chunks
-                    all_terms_absent = all(
-                        not any(
-                            term in c.get("text", "").lower()
-                            or term in c.get("metadata", {}).get("title", "").lower()
-                            for c in chunks
-                        )
-                        for term in specific_terms
-                    )
-                    if all_terms_absent and not query_matches_paper:
-                        logger.warning(
-                            f"All specific query terms absent from chunks: {specific_terms}. Refusing."
-                        )
-                        return {
-                            "query": query,
-                            "answer": NOT_IN_LIBRARY_REFUSAL,
-                            "sources": [],
-                            "success": False,
-                            "error": "Domain terms not present in retrieved chunks",
-                        }
-            
-            # If no chunks retrieved and query doesn't match paper title, refuse
-            if not chunks and not query_matches_paper:
-                logger.warning(f"No chunks retrieved and query doesn't match any paper title: {query}")
-                return {
-                    "query": query,
-                    "answer": NOT_IN_LIBRARY_REFUSAL,
-                    "sources": [],
-                    "success": False,
-                    "error": "No relevant chunks retrieved",
-                }
-        
-        # ── Evidence-based off-topic gate ─────────────────────────────────────
-        # ONLY refuse on truly non-research structural patterns: sport scores,
-        # entertainment gossip, personal advice, weather forecasts.
-        # Do NOT refuse on domain/topic terms (cryptocurrency, autonomous driving,
-        # blockchain) — if the library has no evidence, the Answer Decision Gate
-        # (below) will handle it via the refuse mode.
-        NON_RESEARCH_PATTERNS = (
-            "who won", "world cup", "fifa", "match score", "election result",
-            "weather forecast", "temperature today", "what's on tv",
-            "movie review", "celebrity gossip", "song lyrics",
-            "vacation plan", "hotel booking", "flight ticket",
-        )
-        query_lower = query.lower()
-        is_non_research = any(p in query_lower for p in NON_RESEARCH_PATTERNS)
-
-        if is_non_research and not query_matches_paper and not filter_title:
-            logger.warning(f"Non-research structural query detected: {query}")
-            return {
-                "query": query,
-                "answer": NOT_IN_LIBRARY_REFUSAL,
-                "sources": [],
-                "success": False,
-                "error": "Non-research query",
-            }
-        
-        # ── Context quality gate before LLM ───────────────────────────────────
-        # DISABLED: Context quality gate is too aggressive and blocks valid queries
-        # The quality calculation is unreliable and causes false negatives
-        # Relying on citation verification and scope verification instead
-        # try:
-        #     from context_shaper import ContextShaper
-        #     shaper = ContextShaper()
-
-        # Build structured retrieved set summary and context blocks with IDs
-        retrieved_summary_str = self._build_retrieved_set_summary(chunks)
-        
-        # Issue 3: Extractive QA - pre-extract key sentences before LLM call
-        key_sentences = self._extract_key_sentences(chunks, query)
-        
-        # Build context using pre-extracted sentences for extractive QA
-        if key_sentences:
-            # Build context from extracted sentences
-            context_blocks = []
-            for sent in key_sentences:
-                context_blocks.append(
-                    f"--- {sent['doc_id']} ({sent['title'][:60]}...) ---\n"
-                    f"{sent['sentence']}\n"
-                )
-            context_str = "\n\n".join(context_blocks)
-            logger.info(f"Extractive QA: Using {len(key_sentences)} pre-extracted sentences from {len(chunks)} chunks")
-        else:
-            # Fallback to full chunks if no sentences extracted
-            context_str = self._build_context_with_ids(chunks)
-            logger.info("Extractive QA: No sentences extracted, using full chunks")
-
-        # Fix 4: Irrelevant topic refusal - check if query is out of scope
-        if self._query_is_out_of_scope(query, chunks):
-            return {
-                "query": query,
-                "answer": (
-                    "Your library does not contain papers on this topic. "
-                    "The retrieved papers cover different subjects. "
-                    "Please ingest relevant papers first."
-                ),
-                "sources": [],
-                "success": False
-            }
-
-        # ── Step 3: Build structured prompts ──────────────────────────────────
-        scope_note = ""
-        if matched_titles and not filter_title:
-            if scope.entity_kind == "author":
-                label = f"author \"{scope.author_phrase or 'named in query'}\""
-            elif scope.entity_kind == "paper":
-                label = "the matched paper(s)"
-            else:
-                label = "the matched library papers"
-            scope_note = (
-                f"LIBRARY SCOPE: Answer ONLY using {label} "
-                f"({len(matched_titles)} paper(s) in scope). "
-                "Do NOT cite, summarize, or mention any other ingested paper or author.\n"
-            )
-        elif scope.entity_kind == "topic":
-            scope_note = (
-                f"TOPIC SCOPE: Answer ONLY using the {len(matched_titles)} paper(s) in scope "
-                "that are clearly about the topic in the question. "
-                "Do NOT describe unrelated papers (e.g. phishing, traffic, barcodes) "
-                "even if they mention 'deep learning'.\n"
-                "If the inventory lists papers whose titles mention the topic, you MUST "
-                "summarize what those papers say — do not claim the topic is absent.\n"
-            )
-        elif scope.entity_kind == "paper" and len(matched_titles) == 1:
-            scope_note = (
-                f"SINGLE-PAPER SCOPE: Answer ONLY from \"{matched_titles[0]}\". "
-                "Do NOT invent frameworks, product names, or methods not in the passages.\n"
-            )
-        elif filter_title:
-            scope_note = (
-                f"NOTE: This query is scoped to a SINGLE paper: \"{filter_title}\". "
-                "Only use information from this paper's context blocks when answering.\n"
-            )
-
-        # Fix 5: Constrained extraction prompt - forces per-document structure
-        # System prompt: strict academic research assistant with constrained decoding
-        system_prompt = (
-            "You are a strict academic research assistant. "
-            "Your ONLY job is to report what the provided documents say.\n\n"
-            "ABSOLUTE RULES:\n"
-            "1. Use ONLY information explicitly written in the documents below.\n"
-            "2. Every sentence MUST end with (doc_X) where X is the document number.\n"
-            "3. If a document does not contain the answer, say exactly: "
-            "'doc_X does not address this question.'\n"
-            "4. NEVER use your own knowledge. NEVER mention any paper, "
-            "author, method, or fact not present word-for-word in the documents.\n"
-            "5. If NO document addresses the question, respond ONLY with: "
-            "'None of the retrieved documents address this question.'\n"
-            "6. Do not write introductions, conclusions, or summaries "
-            "that go beyond what is stated.\n"
-            "7. CONSOLIDATION RULE: If multiple doc_X tags from the SAME PAPER "
-            "support the SAME FACT, cite them together as (doc_X, doc_Y) instead of "
-            "repeating the same sentence with different tags. Do NOT repeat identical "
-            "information with different doc tags.\n"
-        )
-
-        # ── Step 3b: Answer Decision Gate ────────────────────────────────────
-        # Single deterministic controller: confident / partial / refuse.
-        _answer_mode, _partial_notice = self._compute_answer_decision(chunks, query)
-        logger.info(f"Answer Decision Gate: mode='{_answer_mode}' for query: {query[:80]}")
-
-        # Hard refuse: only fires when retrieval returned zero usable chunks
-        # (e.g. comparison query needs 2+ papers but got only 1).
-        # Weak-score cases are now handled as 'partial' above, not refused here.
-        if _answer_mode == "refuse" and not listing_style_query:
-            titles_found = list({
-                c.get("metadata", {}).get("title", "")
-                for c in chunks if c.get("metadata", {}).get("title")
-            })
-            if titles_found:
-                # Should rarely reach here — weak scores are now caution mode.
-                # This branch only fires for comparison queries missing a second paper.
-                titles_str = "; ".join(titles_found[:3])
-                return {
-                    "query": query,
-                    "answer": (
-                        f"The library contains papers related to this area ({titles_str}), "
-                        "but this comparison query requires evidence from at least 2 different "
-                        "papers. Try selecting specific papers with the paper filter, or "
-                        "rephrase your comparison to name both papers explicitly."
-                    ),
-                    "sources": chunks,
-                    "success": False,
-                    "error": "Comparison requires >= 2 papers.",
-                }
-            else:
-                return {
-                    "query": query,
-                    "answer": NOT_IN_LIBRARY_REFUSAL,
-                    "sources": [],
-                    "success": False,
-                    "error": "No usable evidence retrieved.",
-                }
-
-        # ── Aggregation query detection ────────────────────────────────────────
-        # Detect "what do all papers say / compare all / summarize all" queries.
-        # Inject a strict aggregation instruction to prevent invented consensus.
-        _AGG_PATTERNS = (
-            "what do all", "all papers say", "across all", "summarize all",
-            "compare all", "conclusion of all", "what do these papers",
-            "all studies say", "combined conclusion", "combined summary",
-            "overall conclusion", "aggregate", "synthesis of all",
-        )
-        _is_aggregation_query = any(p in query.lower() for p in _AGG_PATTERNS)
-        _aggregation_notice = (
-            "AGGREGATION MODE — STRICT STRUCTURE REQUIRED:\n"
-            "You are synthesizing across papers from MULTIPLE DOMAINS. Follow this exact structure:\n\n"
-            "STEP 1 — DOMAIN SEGMENTATION (mandatory first):\n"
-            "  Group the retrieved documents by research domain (e.g., Medical Imaging, AI Safety, "
-            "Agriculture, NLP). For each domain group, summarize ONLY what those papers say. "
-            "Cite each claim with its specific doc_X. Do NOT mix domains in one paragraph.\n\n"
-            "STEP 2 — SHARED THEMES (only if real overlap exists):\n"
-            "  After per-domain summaries, list only themes explicitly mentioned by "
-            "2 or more papers from DIFFERENT domains. Name the doc_IDs. "
-            "If no cross-domain overlap exists, write: 'No significant cross-domain themes identified.'\n\n"
-            "STEP 3 — DIVERGENCES AND GAPS:\n"
-            "  State where papers disagree or cover different aspects.\n\n"
-            "FORBIDDEN: Do NOT produce a single unified conclusion across all papers. "
-            "Do NOT invent consensus. Do NOT blend claims from different domains into one sentence."
-        ) if _is_aggregation_query else ""
-
-        # Fix 5: Constrained extraction prompt - force per-document structure
-        # User prompt: forces per-document addressing
-        user_prompt = (
-            f"Documents:\n"
-            f"{'─' * 60}\n"
-            f"{context_str}\n"
-            f"{'─' * 60}\n\n"
-            f"Question: {query}\n\n"
-            "For each document that contains relevant information, "
-            "write ONE paragraph starting with 'According to doc_X:' "
-            "followed by what that document says. "
-            "Only include documents that directly answer the question. "
-            "End each sentence with (doc_X)."
-        )
-
-        # ── Step 4: Send to Ollama /api/chat ──────────────────────────────────
-        url = f"{settings.OLLAMA_BASE_URL}/api/chat"
-        # Build a multi-turn message array so the model can preserve chat memory
-        # across browser refreshes when conversation history is provided by the UI.
-        # Only pass user messages to avoid hallucination reinforcement from assistant answers.
-        messages = [{"role": "system", "content": system_prompt}]
-        if history_for_llm:
-            # Pass full turn pairs (user + assistant) to provide grounded context
-            # This prevents contamination from ungrounded user questions without answers
-            for turn in history_for_llm[-6:]:  # Reduced from 12 to 6 to limit context
-                role = (turn.get("role") or "").strip().lower()
-                content = (turn.get("content") or "").strip()
-                if content:
-                    messages.append({"role": role, "content": content})
-        messages.append({"role": "user", "content": user_prompt})
-
-        payload = {
-            "model": settings.OLLAMA_MODEL,
-            "messages": messages,
-            "stream": False,   # Wait for the complete response (not a streaming response)
-            "options": {
-                "temperature": 0.05, # Near-zero: almost fully deterministic, kills creativity/hallucination
-                "top_p": 0.8,        # Tighter nucleus sampling
-                "repeat_penalty": 1.1,  # Reduces repetitive hallucination loops
-                "num_predict": 2048,  # Allow longer responses to prevent table truncation
-                "num_ctx": 8192       # Increase context window for better retrieval
-            }
-        }
-
-        logger.info(f"Sending RAG prompt to Ollama ({settings.OLLAMA_MODEL})...")
-
-        try:
-            response = requests.post(url, json=payload, timeout=settings.OLLAMA_TIMEOUT)
-
-            if response.status_code == 200:
-                data = response.json()
-                answer = data["message"]["content"]
-                # Global guardrail against unsupported sensitive-topic stance claims.
-                if self._is_unverifiable_sensitive_claim(query, chunks):
-                    answer = (
-                        "I cannot confirm or deny that claim from the retrieved context. "
-                        "The current sources do not provide direct evidence on this topic."
-                    )
-                elif answer_has_table_truncation(answer):
-                    answer = TABLE_TRUNCATION_REFUSAL
-                else:
-                    if not self._is_refusal_answer(answer):
-                        # Issue 10: Removed dead _parse_constrained_claims path
-                        # The 8B model doesn't reliably produce structured CLAIM/SOURCE/QUOTE blocks
-                        # This code was adding latency without benefit. Keeping raw LLM answer.
-                        pass
-
-                    answer = self._strip_model_references(answer, chunks=chunks)
-
-                    # FIX 2: Hard grounding — strip any sentence not backed by a doc_X reference.
-                    # This must run BEFORE citation binding so uncited claims are removed first.
-                    if not listing_style_query and not self._is_refusal_answer(answer):
-                        try:
-                            answer = self._enforce_hard_grounding_rules(answer, chunks)
-                        except Exception as _eg:
-                            logger.warning(f"Hard grounding enforcement failed: {_eg}")
-
-                    # FIX 4: Citation binding — convert doc_X placeholders to APA inline.
-                    # Must run after grounding enforcement, before reference section is appended.
-                    # Apply to all answers including listing queries to replace doc_X with citations
-                    if not self._is_refusal_answer(answer):
-                        try:
-                            answer, _had_citations = self._bind_citations_and_verify(answer, chunks)
-                            if not _had_citations:
-                                logger.warning("No doc_X citations found in LLM answer after grounding.")
-                        except Exception as _cb:
-                            logger.warning(f"Citation binding failed: {_cb}")
-
-                    # FIX 4b: Generic-knowledge injection filter.
-                    # Strips sentences that contain no doc_X anchor and look like general knowledge.
-                    if not listing_style_query and not self._is_refusal_answer(answer):
-                        try:
-                            answer = self._strip_generic_sentences(answer, chunks)
-                        except Exception as _gs:
-                            logger.warning(f"Generic sentence filter failed: {_gs}")
-                    # Fix 7: No references on refusals - only build safe references for non-refusal answers
-                    if not self._is_refusal_answer(answer):
-                        safe_refs = self._build_safe_references(chunks, papers_metadata)
-                        if safe_refs:
-                            answer = f"{answer}\n\n{safe_refs}"
-                    if query_mode == "both" and both_listing_block:
-                        answer = (
-                            f"{both_listing_block}\n\n"
-                            f"What these papers say:\n\n{answer}"
-                        )
-                    answer, verified = apply_verification_or_refuse(
-                        answer,
-                        scope=scope,
-                        papers_metadata=papers_metadata,
-                        chunks=chunks,
-                    )
-                    if not verified:
-                        return {
-                            "query": query,
-                            "answer": answer,
-                            "sources": chunks,
-                            "success": False,
-                            "error": "Answer failed scope verification.",
-                        }
-                    
-                    # Post-generation faithfulness check
-                    # Verify that factual claims have chunk citations
-                    if not listing_style_query and not self._is_refusal_answer(answer):
-                        faithfulness_issues = self._check_answer_faithfulness(answer, chunks)
-                        if faithfulness_issues:
-                            logger.warning(f"Faithfulness check found issues: {faithfulness_issues}")
-                            # Add warning to answer if issues found
-                            if len(faithfulness_issues) > 0:
-                                answer += "\n\n⚠️ Note: Some claims in this answer could not be fully verified against source material."
-                    
-                    # Log retrieval metrics for debugging
-                    self._log_retrieval_metrics(query, chunks, _answer_mode, faithfulness_issues if not listing_style_query and not self._is_refusal_answer(answer) else [])
-                
-
-
-                # ── External knowledge detection DISABLED ───────────────────────────────
-                # Entity extraction was too aggressive and blocked legitimate technical terms
-                # Relying on system prompt + citation stripping instead
-                # try:
-                #     # Build set of all words from retrieved chunks (case-insensitive)
-                #     chunk_words = set()
-                #     for chunk in chunks:
-                #         text = chunk.get("text", "").lower()
-                #         words = re.findall(r'\b[a-z]{3,}\b', text)
-                #         chunk_words.update(words)
-                #     
-                #     # Also add author names from library inventory
-                #     for paper_meta in inventory_metadata.values():
-                #         authors = paper_meta.get("authors", "").lower()
-                #         author_words = re.findall(r'\b[a-z]{3,}\b', authors)
-                #         chunk_words.update(author_words)
-                #     
-                #     # Extract capitalized words from answer (potential entities)
-                #     answer_words = re.findall(r'\b[A-Z][a-z]{3,}\b', answer)
-                #     external_entities = []
-                #     
-                #     for word in answer_words:
-                #         if word.lower() not in chunk_words:
-                #             external_entities.append(word)
-                #     
-                #     if external_entities:
-                #         logger.warning(f"Answer contains entities not in context: {external_entities}")
-                #         return {
-                #             "query": query,
-                #             "answer": "This question is outside the scope of your ingested research knowledge base. I can only answer questions based on the papers that have been ingested. Please ask a question about the research papers in your library.",
-                #             "sources": chunks,
-                #             "success": False,
-                #             "error": f"External entities detected: {external_entities}",
-                #         }
-                # except Exception as e:
-                #     logger.warning(f"External knowledge detection failed: {e}")
-
-                logger.info("Successfully received answer from Ollama.")
-                return {
-                    "query": query,
-                    "answer": answer.strip(),
-                    "sources": chunks,
-                    "success": True
-                }
-
-            else:
-                # Non-200 response from Ollama — the model may not be pulled
-                error_msg = f"Ollama returned HTTP {response.status_code}: {response.text[:300]}"
-                logger.error(error_msg)
-                return {
-                    "query": query,
-                    "answer": "Error communicating with the local LLM server.",
-                    "sources": chunks,
-                    "success": False,
-                    "error": error_msg
-                }
-
-        except requests.exceptions.ConnectionError:
-            # Ollama went offline between the health check and the actual call
-            error_msg = (
-                f"Lost connection to Ollama at {settings.OLLAMA_BASE_URL}. "
-                "Please ensure Ollama is still running."
-            )
-            logger.error(error_msg)
-            return {
-                "query": query,
-                "answer": "Could not connect to the local Ollama LLM. Please ensure it is running.",
-                "sources": chunks,
-                "success": False,
-                "error": "ConnectionRefused"
-            }
-
-        except Exception as e:
-            error_msg = f"Unexpected error during RAG generation: {e}"
-            logger.error(error_msg)
-            return {
-                "query": query,
-                "answer": "An unexpected error occurred during RAG query execution.",
-                "sources": chunks,
-                "success": False,
-                "error": str(e)
-            }
+                    re

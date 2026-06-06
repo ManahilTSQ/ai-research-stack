@@ -247,7 +247,8 @@ def answer_keyword_discovery_query(query: str, papers_metadata: dict) -> str | N
     logger.info(f"Keyword discovery found {len(titles)} papers for query: '{query}'")
     
     if not titles:
-        return _TOPIC_NOT_FOUND_REFUSAL
+        return None
+
     lines = []
     for i, title in enumerate(titles, 1):
         m = papers_metadata[title]
