@@ -840,7 +840,7 @@ class RAGService:
     #   'refuse'     → 0 chunks with score ≥ 0.15 (no usable evidence)
     # Modes NEVER overlap; transitions are deterministic.
     # ─────────────────────────────────────────────────────────────────────────────
-        _CONFIDENT_THRESHOLD = 0.35
+    _CONFIDENT_THRESHOLD = 0.35
     _PARTIAL_THRESHOLD   = 0.08  # Lowered from 0.15 to prevent aggressive refusals
 
     def _compute_answer_decision(
@@ -2112,22 +2112,111 @@ class RAGService:
                         "error": "Very low chunk relevance"
                     }
 
-        # Safety net: ensure we never return None
-        logger.error(f"generate_answer fell through without returning for query: {query[:80]}")
-        return {
-            "query": query,
-            "answer": "I encountered an internal error processing your query. Please try again.",
-            "sources": [],
-            "success": False,
-            "error": "generate_answer returned None (unhandled code path)"
-        }
+        # ── Step 2: Build context string with doc IDs ────────────────────────
+        context_str = self._build_context_with_ids(chunks)
+        retrieved_set_summary = self._build_retrieved_set_summary(chunks)
 
-        # Safety net: ensure generate_answer never returns None
-        logger.error(f"generate_answer fell through without returning for query: {query[:80]}")
+        # ── Step 3: Determine answer mode (confident / partial / refuse) ─────
+        mode, partial_notice = self._compute_answer_decision(chunks, query)
+
+        if mode == "refuse":
+            logger.warning(f"Answer decision gate: REFUSE for query: {query[:80]}")
+            return {
+                "query": query,
+                "answer": IRRELEVANT_REFUSAL,
+                "sources": chunks,
+                "success": False,
+                "error": "Answer decision gate: refuse mode (no usable evidence).",
+            }
+
+        # ── Step 4: Build system prompt ──────────────────────────────────────
+        system_prompt = (
+            "You are a precise academic research assistant. Your sole knowledge source is the "
+            "retrieved document passages provided below. You must not use any outside knowledge.\n\n"
+            "CITATION RULES (mandatory):\n"
+            "- Every factual sentence MUST end with a citation in the form: (doc_N)\n"
+            "  where N is the Document ID number from the context block.\n"
+            "- If a sentence draws on multiple documents, list all: (doc_1, doc_3)\n"
+            "- NEVER cite a doc_N that does not appear in the Retrieved Document Set.\n"
+            "- NEVER invent author names, paper titles, venues, DOIs, or years.\n\n"
+            "SCOPE RULES (mandatory):\n"
+            f"{library_inventory_str}\n\n"
+            "- Only reference papers listed in the Library Inventory above.\n"
+            "- If the query is about a specific author, ONLY discuss that author's papers.\n"
+            "- Do NOT mention, infer, or cite papers not in the Retrieved Document Set.\n\n"
+            "ANSWER RULES:\n"
+            "- Be concise and specific. Avoid generic academic filler.\n"
+            "- Do NOT generate a References section — one will be appended automatically.\n"
+            "- If the context does not contain enough information, say so explicitly.\n"
+        )
+
+        # ── Step 5: Build user prompt ────────────────────────────────────────
+        history_block = ""
+        if history_for_llm:
+            history_lines = []
+            for turn in history_for_llm[-6:]:  # Last 6 turns max
+                role = turn.get("role", "user")
+                content = (turn.get("content") or "")[:400]
+                history_lines.append(f"{role.upper()}: {content}")
+            if history_lines:
+                history_block = "CONVERSATION HISTORY (for context only):\n" + "\n".join(history_lines) + "\n\n"
+
+        user_prompt = (
+            f"{history_block}"
+            f"Retrieved Document Set:\n{retrieved_set_summary}\n\n"
+            f"{context_str}\n\n"
+            f"{partial_notice}\n\n" if partial_notice else
+            f"{history_block}"
+            f"Retrieved Document Set:\n{retrieved_set_summary}\n\n"
+            f"{context_str}\n\n"
+        ) + f"Research Question: {query}\n\nAnswer (cite every factual sentence with doc_N):"
+
+        # ── Step 6: Call Ollama ──────────────────────────────────────────────
+        try:
+            raw_answer = self._ollama_chat(system_prompt, user_prompt)
+        except Exception as e:
+            logger.error(f"Ollama call failed: {e}")
+            return {
+                "query": query,
+                "answer": "The language model is currently unavailable. Please try again shortly.",
+                "sources": chunks,
+                "success": False,
+                "error": str(e),
+            }
+
+        # ── Step 7: Enforce hard grounding rules (strip uncited sentences) ───
+        grounded_answer = self._enforce_hard_grounding_rules(raw_answer, chunks)
+
+        if self._is_refusal_answer(grounded_answer):
+            return {
+                "query": query,
+                "answer": grounded_answer,
+                "sources": chunks,
+                "success": False,
+                "error": "Grounding enforcement produced a refusal.",
+            }
+
+        # ── Step 8: Replace doc_N placeholders with APA citations ────────────
+        final_answer, has_citations = self._bind_citations_and_verify(grounded_answer, chunks)
+
+        # ── Step 9: Strip any model-generated references + append verified ones ─
+        papers_meta_for_refs = papers_metadata if papers_metadata else None
+        final_answer = self._strip_model_references(final_answer, chunks=chunks)
+        verified_refs = self._build_safe_references(chunks, papers_metadata=papers_meta_for_refs)
+        if verified_refs:
+            final_answer = f"{final_answer}\n\n{verified_refs}"
+
+        # ── Step 10: Post-verification ────────────────────────────────────────
+        if not self._is_refusal_answer(final_answer):
+            final_answer = apply_verification_or_refuse(final_answer, chunks, papers_metadata)
+
+        # ── Step 11: Log faithfulness metrics ────────────────────────────────
+        faithfulness_issues = self._check_answer_faithfulness(final_answer, chunks)
+        self._log_retrieval_metrics(query, chunks, mode, faithfulness_issues)
+
         return {
             "query": query,
-            "answer": "I encountered an internal error processing your query. Please try again.",
-            "sources": [],
-            "success": False,
-            "error": "generate_answer returned None (unhandled code path)"
+            "answer": final_answer,
+            "sources": chunks,
+            "success": True,
         }
