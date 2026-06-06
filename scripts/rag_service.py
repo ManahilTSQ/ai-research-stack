@@ -553,7 +553,7 @@ class RAGService:
         }
         if chunks:
             for c in chunks:
-                t = (c.get("metadata", {}).get("title") or "").lower()
+                t = ((c.get("metadata") or {}).get("title") or "").lower()
                 for w in re.findall(r"\b[a-z]{4,}\b", t):
                     if w not in _STOP:
                         title_words.add(w)
@@ -869,7 +869,7 @@ class RAGService:
         q_lower = query.lower()
         is_comparison = any(cue in q_lower for cue in _COMP_CUES)
         if is_comparison:
-            unique_papers = {c.get("metadata", {}).get("title", "") for c in chunks if c.get("metadata", {}).get("title")}
+            unique_papers = {(c.get("metadata") or {}).get("title", "") for c in chunks if (c.get("metadata") or {}).get("title")}
             if len(unique_papers) < 2:
                 # Instead of hard refusal, allow the LLM to try to answer from what it has
                 logger.warning(
@@ -1046,7 +1046,7 @@ class RAGService:
             return False
         chunk = chunks[doc_num - 1]
         chunk_text = (chunk.get("text") or "").lower()
-        chunk_title = (chunk.get("metadata", {}).get("title") or "").lower()
+        chunk_title = ((chunk.get("metadata") or {}).get("title") or "").lower()
         chunk_full = chunk_text + " " + chunk_title
 
         # ── Rule 1: Architecture-name gate ──────────────────────────────────
@@ -1294,7 +1294,7 @@ class RAGService:
         
         for idx, chunk in enumerate(chunks, 1):
             text = chunk.get("text", "")
-            meta = chunk.get("metadata", {})
+            meta = chunk.get("metadata") or {}
             title = meta.get("title", "Untitled")
             
             # Split into sentences
@@ -1450,7 +1450,7 @@ class RAGService:
         # Build full text of all chunks
         all_chunk_text = " ".join(
             c.get("text", "").lower() + " " + 
-            c.get("metadata", {}).get("title", "").lower()
+            (c.get("metadata") or {}).get("title", "").lower()
             for c in chunks
         )
         
@@ -2090,7 +2090,7 @@ class RAGService:
                 relevant_chunks = 0
                 for chunk in chunks:
                     chunk_text = chunk.get("text", "").lower()
-                    chunk_title = chunk.get("metadata", {}).get("title", "").lower()
+                    chunk_title = (chunk.get("metadata") or {}).get("title", "").lower()
                     search_text = chunk_text + " " + chunk_title
                     token_hits = sum(1 for token in query_tokens if token in search_text)
                     if token_hits >= 1:  # lowered from 2 — any single meaningful token match counts
