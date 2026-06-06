@@ -242,6 +242,8 @@ class VectorStoreService:
                 "year": str(year) if year else "N/A",
                 "venue": venue or "N/A",
                 "domain": domain or "unknown",
+                # Step 3: Add section field for section-boosting logic
+                "section": chunk_meta.get("section", ""),
                 # Convert the list of page numbers to a comma-separated string
                 "pages": ",".join(map(str, chunk_meta.get("pages", []))),
                 "char_start": int(chunk_meta.get("char_start", 0)),

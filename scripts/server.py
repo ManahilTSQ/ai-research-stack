@@ -1152,6 +1152,43 @@ def query_rag(request: RAGQueryRequest):
         if catalog_answer:
             return {"answer": catalog_answer, "sources": []}
 
+        # Step 4b: Metadata interceptor for 'which papers use/mention X' queries
+        # Handle queries like "which papers use SHAP" or "which papers mention federated learning"
+        # by searching chunk text instead of going through LLM
+        q = request.query.lower().strip()
+        use_match = re.search(
+            r'\b(?:which|what)\s+papers?\s+'
+            r'(?:use|mention|discuss|implement|apply|contain|employ)\s+'
+            r'(.+?)[\?\.]?$', q
+        )
+        if use_match:
+            term = use_match.group(1).strip()
+            matched = []
+            for title, meta in papers_metadata.items():
+                chunks = vector_store.get_chunks_for_paper(title)
+                for chunk in chunks:
+                    if term in chunk.get('text', '').lower():
+                        matched.append(
+                            f"{meta.get('authors','Unknown')} "
+                            f"({meta.get('year','N/A')}). {title}"
+                        )
+                        break
+            if matched:
+                return {
+                    "answer": (
+                        f"Papers mentioning '{term}':\n\n" +
+                        "\n\n".join(matched)
+                    ),
+                    "sources": []
+                }
+            return {
+                "answer": (
+                    f"No papers in your library explicitly "
+                    f"mention '{term}' in their text."
+                ),
+                "sources": []
+            }
+
         if not check_ollama_health():
             raise HTTPException(
                 status_code=503,
