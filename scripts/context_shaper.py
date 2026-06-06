@@ -102,7 +102,8 @@ class ContextShaper:
             paper_chunks = paper_chunks[:max_chunks_per_paper]
             
             # Get paper metadata
-            meta = paper_chunks[0].get("metadata") or {}
+            first_chunk = paper_chunks[0] if paper_chunks else None
+            meta = (first_chunk.get("metadata") or {}) if first_chunk else {}
             authors = meta.get("authors", "Unknown Authors")
             year = meta.get("year", "N/A")
             
@@ -174,7 +175,8 @@ class ContextShaper:
         
         for paper_title, paper_chunks in papers.items():
             # Get paper metadata
-            meta = paper_chunks[0].get("metadata") or {}
+            first_chunk = paper_chunks[0] if paper_chunks else None
+            meta = (first_chunk.get("metadata") or {}) if first_chunk else {}
             paper_id = meta.get("paper_id", "")
             
             # Group by section
@@ -237,7 +239,8 @@ class ContextShaper:
         context_parts = []
         
         for paper_title, paper_chunks in papers.items():
-            meta = paper_chunks[0].get("metadata") or {}
+            first_chunk = paper_chunks[0] if paper_chunks else None
+            meta = (first_chunk.get("metadata") or {}) if first_chunk else {}
             authors = meta.get("authors", "Unknown Authors")
             year = meta.get("year", "N/A")
             
