@@ -35,7 +35,7 @@ class ContextShaper:
         grouped = defaultdict(list)
         
         for chunk in chunks:
-            title = chunk.get("metadata", {}).get("title", "Unknown Paper")
+            title = (chunk.get("metadata") or {}).get("title", "Unknown Paper")
             grouped[title].append(chunk)
         
         logger.debug(f"Grouped {len(chunks)} chunks into {len(grouped)} papers")
@@ -54,7 +54,7 @@ class ContextShaper:
         grouped = defaultdict(list)
         
         for chunk in chunks:
-            section = chunk.get("metadata", {}).get("section", "Unknown Section")
+            section = (chunk.get("metadata") or {}).get("section", "Unknown Section")
             grouped[section].append(chunk)
         
         return dict(grouped)
@@ -102,7 +102,7 @@ class ContextShaper:
             paper_chunks = paper_chunks[:max_chunks_per_paper]
             
             # Get paper metadata
-            meta = paper_chunks[0].get("metadata", {})
+            meta = paper_chunks[0].get("metadata") or {}
             authors = meta.get("authors", "Unknown Authors")
             year = meta.get("year", "N/A")
             
@@ -117,8 +117,8 @@ class ContextShaper:
                 section_content = []
                 for chunk in section_chunks:
                     text = chunk.get("text", "").strip()
-                    pages = chunk.get("metadata", {}).get("pages", "N/A")
-                    chunk_id = chunk.get("metadata", {}).get("chunk_id", "")
+                    pages = (chunk.get("metadata") or {}).get("pages", "N/A")
+                    chunk_id = (chunk.get("metadata") or {}).get("chunk_id", "")
                     
                     # Format with chunk_id for provenance tracking (annotation)
                     if pages and pages != "N/A":
@@ -174,7 +174,7 @@ class ContextShaper:
         
         for paper_title, paper_chunks in papers.items():
             # Get paper metadata
-            meta = paper_chunks[0].get("metadata", {})
+            meta = paper_chunks[0].get("metadata") or {}
             paper_id = meta.get("paper_id", "")
             
             # Group by section
@@ -195,7 +195,7 @@ class ContextShaper:
                 }
                 
                 for chunk in section_chunks:
-                    chunk_meta = chunk.get("metadata", {})
+                    chunk_meta = chunk.get("metadata") or {}
                     chunk_block = {
                         "chunk_id": chunk_meta.get("chunk_id", ""),
                         "text": chunk.get("text", ""),
@@ -237,14 +237,14 @@ class ContextShaper:
         context_parts = []
         
         for paper_title, paper_chunks in papers.items():
-            meta = paper_chunks[0].get("metadata", {})
+            meta = paper_chunks[0].get("metadata") or {}
             authors = meta.get("authors", "Unknown Authors")
             year = meta.get("year", "N/A")
             
             paper_text = []
             for chunk in paper_chunks:
                 text = chunk.get("text", "").strip()
-                pages = chunk.get("metadata", {}).get("pages", "N/A")
+                pages = (chunk.get("metadata") or {}).get("pages", "N/A")
                 if pages and pages != "N/A":
                     paper_text.append(f"[{pages}] {text}")
                 else:
@@ -396,7 +396,7 @@ class ContextShaper:
         # Count unique sections
         sections = set()
         for chunk in chunks:
-            section = chunk.get("metadata", {}).get("section", "Unknown")
+            section = (chunk.get("metadata") or {}).get("section", "Unknown")
             sections.add(section)
         section_diversity = len(sections)
         
