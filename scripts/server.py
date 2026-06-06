@@ -573,7 +573,8 @@ def download_paper(request: DownloadRequest, background_tasks: BackgroundTasks):
                     pages, has_full_text = pdf_service.extract_text_by_page(pdf_path)
                     if not has_full_text:
                         logger.warning(f"Extracted minimal text from '{title}' - likely abstract-only or scanned PDF")
-                    chunks = pdf_service.chunk_text(pages, chunk_size=1800, chunk_overlap=350)
+                    # Step 6b: Standardize chunk sizes to 2000/400 everywhere
+                    chunks = pdf_service.chunk_text(pages, chunk_size=2000, chunk_overlap=400)
                 except Exception as e:
                     logger.error(f"Text extraction failed for '{title}': {e}")
 
@@ -931,7 +932,8 @@ async def upload_pdfs(
                         pages, has_full_text = pdf_service.extract_text_by_page(pdf_path)
                         if not has_full_text:
                             logger.warning(f"Extracted minimal text from '{rel}' - likely abstract-only or scanned PDF")
-                        chunks = pdf_service.chunk_text(pages, chunk_size=1800, chunk_overlap=350)
+                        # Step 6b: Standardize chunk sizes to 2000/400 everywhere
+                        chunks = pdf_service.chunk_text(pages, chunk_size=2000, chunk_overlap=400)
 
                     # Fallback to abstract-only chunking if PDF couldn't be obtained/parsed but abstract exists
                     if not chunks and abstract:
@@ -1022,7 +1024,8 @@ def ingest_pending(background_tasks: BackgroundTasks):
                     if not has_full_text:
                         logger.warning(f"Extracted minimal text from '{filename}' - likely abstract-only or scanned PDF")
                     logger.info(f"Chunking text from: {filename} ({len(pages)} pages)")
-                    chunks = pdf_service.chunk_text(pages, chunk_size=1800, chunk_overlap=350)
+                    # Step 6b: Standardize chunk sizes to 2000/400 everywhere
+                    chunks = pdf_service.chunk_text(pages, chunk_size=2000, chunk_overlap=400)
 
                     if not chunks:
                         logger.warning(f"No chunks generated for {filename}, marking as failed")

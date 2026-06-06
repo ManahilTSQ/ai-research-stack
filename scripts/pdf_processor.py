@@ -29,7 +29,8 @@ class PDFProcessorService:
     Typical usage:
         service = PDFProcessorService()
         pages  = service.extract_text_by_page(Path("paper.pdf"))
-        chunks = service.chunk_text(pages, chunk_size=1000, chunk_overlap=200)
+        # Step 6b: Standardize default chunk sizes to 2000/400
+        chunks = service.chunk_text(pages, chunk_size=2000, chunk_overlap=400)
     """
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -271,8 +272,8 @@ class PDFProcessorService:
     def chunk_text(
         self,
         pages: list[dict],
-        chunk_size: int = 1000,
-        chunk_overlap: int = 200,
+        chunk_size: int = 2000,
+        chunk_overlap: int = 400,
         use_structure_aware: bool = True
     ) -> list[dict]:
         """
@@ -589,7 +590,7 @@ class PDFProcessorService:
         text_len = len(full_text)
         
         if chunk_size <= 0:
-            chunk_size = 1000
+            chunk_size = 2000  # Step 6b: Updated default from 1000 to 2000
         
         if chunk_overlap >= chunk_size or chunk_overlap < 0:
             chunk_overlap = int(chunk_size * 0.2)
