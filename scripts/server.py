@@ -607,6 +607,12 @@ def download_paper(request: DownloadRequest, background_tasks: BackgroundTasks):
                 paper_title=title, doi=identifier, chunks=chunks,
                 authors=authors_str, year=year, venue=request.venue
             )
+            # Clear stats cache after successful ingestion
+            if success:
+                if hasattr(vector_store, '_stats_cache'):
+                    del vector_store._stats_cache
+                if hasattr(vector_store, '_stats_cache_time'):
+                    del vector_store._stats_cache_time
             filename = sanitize_filename(title)
             manifest_service.mark_as_ingested(
                 filename, title, doi,
@@ -962,6 +968,12 @@ async def upload_pdfs(
                             paper_title=title, doi=doi if doi != "N/A" else None, chunks=chunks,
                             authors=authors, year=year, venue=resolved.get("venue")
                         )
+                        # Clear stats cache after successful ingestion
+                        if success:
+                            if hasattr(vector_store, '_stats_cache'):
+                                del vector_store._stats_cache
+                            if hasattr(vector_store, '_stats_cache_time'):
+                                del vector_store._stats_cache_time
                         manifest_service.mark_as_ingested(
                             rel, title, doi=doi if doi != "N/A" else None,
                             status="success" if success else "failed",
@@ -1052,6 +1064,12 @@ def ingest_pending(background_tasks: BackgroundTasks):
                         paper_title=title, doi=doi if doi != "N/A" else None, chunks=chunks,
                         authors=authors, year=year, venue=resolved.get("venue")
                     )
+                    # Clear stats cache after successful ingestion
+                    if success:
+                        if hasattr(vector_store, '_stats_cache'):
+                            del vector_store._stats_cache
+                        if hasattr(vector_store, '_stats_cache_time'):
+                            del vector_store._stats_cache_time
 
                     manifest_service.mark_as_ingested(
                         filename, title, doi if doi != "N/A" else None,
