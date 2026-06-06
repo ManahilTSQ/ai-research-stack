@@ -16,6 +16,17 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
+# Short technical acronyms that should be allowed as single-token matches
+# These are specific technical terms that are meaningful even if short
+SHORT_TECH_TERMS = frozenset({
+    "sdn", "iot", "ai", "ml", "dl", "nlp", "cv", "vr", "ar", "xr",
+    "gpu", "cpu", "ssl", "tls", "vpn", "dns", "cdn", "api", "sdk",
+    "gui", "cli", "sql", "pdf", "http", "ssh", "tcp", "udp", "ip",
+    "mac", "wifi", "5g", "4g", "3g", "2g", "gsm", "lte", "ids",
+    "ips", "ddos", "dos", "xss", "csrf", "rce", "lfi", "rfi",
+    "svm", "knn", "rnn", "lstm", "gru", "gan", "vae", "gpt", "bert",
+})
+
 # Cross-encoder reranker for improved retrieval quality
 _reranker = None
 
@@ -525,17 +536,6 @@ def _significant_query_tokens(query: str) -> list[str]:
         "ids", "ips", "ddos", "dos", "xss", "csrf", "rce", "lfi", "rfi",
         "svm", "knn", "rnn", "lstm", "gru", "gan", "vae", "gpt", "bert",
         "resnet", "vgg", "yolo", "rcnn", "fcn", "unet", "mrcnn", "ssd",
-    })
-    
-    # Additional short acronyms that should be allowed as single-token matches
-    # These are specific technical terms that are meaningful even if short
-    SHORT_TECH_TERMS = frozenset({
-        "sdn", "iot", "ai", "ml", "dl", "nlp", "cv", "vr", "ar", "xr",
-        "gpu", "cpu", "ssl", "tls", "vpn", "dns", "cdn", "api", "sdk",
-        "gui", "cli", "sql", "pdf", "http", "ssh", "tcp", "udp", "ip",
-        "mac", "wifi", "5g", "4g", "3g", "2g", "gsm", "lte", "ids",
-        "ips", "ddos", "dos", "xss", "csrf", "rce", "lfi", "rfi",
-        "svm", "knn", "rnn", "lstm", "gru", "gan", "vae", "gpt", "bert",
     })
     
     tokens = []
