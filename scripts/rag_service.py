@@ -604,14 +604,31 @@ class RAGService:
         """
         if not answer:
             return ""
-        # Step 1: strip everything after a "References:" heading
+        # Split on any References heading variant
         stripped = re.split(
-            r"\n\s*(?:#+\s*|\*+\s*|_+)?references\b[:\s]*",
-            answer, maxsplit=1, flags=re.IGNORECASE
+            r'\n\s*(?:#+\s*|\*+\s*|_+)?[Rr]eferences\b[:\s]*',
+            answer, maxsplit=1
         )[0]
-        # Step 2: strip orphaned reference fragments using title-word matching
-        stripped = self._strip_body_reference_fragments(stripped, chunks=chunks)
-        return stripped.strip()
+        # Strip lines that are ONLY a bare URL or DOI — these are orphaned ref lines
+        lines = stripped.split('\n')
+        clean_lines = []
+        for line in lines:
+            stripped_line = line.strip()
+            if re.match(r'^https?://\S+$', stripped_line):
+                continue
+            if re.match(r'^doi:\s*\S+$', stripped_line, re.I):
+                continue
+            # Strip bullet lines that look exactly like: "- Author (Year). Title"
+            # but only if title matches a known paper (to avoid stripping real sentences)
+            if re.match(r'^[-•]\s+\S.+\(\d{4}\)\.\s+\S', stripped_line) and chunks:
+                known_titles = {(c.get("metadata") or {}).get("title", "").lower()
+                               for c in (chunks or [])}
+                # If 3+ words of this line appear in any known title, it's a ref fragment
+                words = re.findall(r'\b[a-z]{4,}\b', stripped_line.lower())
+                if any(sum(1 for w in words if w in t) >= 3 for t in known_titles):
+                    continue
+            clean_lines.append(line)
+        return '\n'.join(clean_lines).strip()
 
     def _is_refusal_answer(self, answer: str) -> bool:
         """
@@ -1541,9 +1558,9 @@ class RAGService:
             doc_num = match.group(1)
             cit = get_clean_citation(doc_num)
             if cit:
-                # Deduplication: if this exact citation has appeared > 2 times, suppress
+                # Deduplication: if this exact citation has appeared > 9 times, suppress
                 count = paper_citation_counts.get(cit, 0)
-                if count >= 3:
+                if count >= 10:  # Only suppress truly pathological repetition
                     logger.debug(f"Suppressing duplicate citation: {cit} (count={count})")
                     return ""  # remove the duplicate
                 paper_citation_counts[cit] = count + 1
@@ -2166,23 +2183,34 @@ class RAGService:
 
         # ── Step 4: Build system prompt ──────────────────────────────────────
         system_prompt = (
-            "You are a precise academic research assistant. Your sole knowledge source is the "
-            "retrieved document passages provided below. You must not use any outside knowledge.\n\n"
-            "CITATION RULES (mandatory):\n"
-            "- Every factual sentence MUST end with a citation in the form: (doc_N)\n"
+            "You are a precise academic research assistant. "
+            "Your ONLY knowledge source is the retrieved document passages below. "
+            "You must not use any outside knowledge or general training data.\n\n"
+
+            "CITATION RULES (mandatory — no exceptions):\n"
+            "- Every factual sentence MUST end with a citation: (doc_N)\n"
             "  where N is the Document ID number from the context block.\n"
-            "- If a sentence draws on multiple documents, list all: (doc_1, doc_3)\n"
+            "- Multiple sources for one sentence: (doc_1, doc_3)\n"
             "- NEVER cite a doc_N that does not appear in the Retrieved Document Set.\n"
-            "- NEVER invent author names, paper titles, venues, DOIs, or years.\n\n"
+            "- NEVER invent author names, paper titles, DOIs, venues, or years.\n\n"
+
+            "WHEN THE CONTEXT IS INSUFFICIENT:\n"
+            "- If the retrieved passages do not contain enough information to answer "
+            "the question, state this explicitly WITHOUT a citation:\n"
+            "  'The ingested papers do not contain sufficient information about [topic].'\n"
+            "- Do NOT attempt to answer from general knowledge.\n"
+            "- Do NOT apologize or add filler. Just state what is and is not present.\n\n"
+
             "SCOPE RULES (mandatory):\n"
             f"{library_inventory_str}\n\n"
             "- Only reference papers listed in the Library Inventory above.\n"
             "- If the query is about a specific author, ONLY discuss that author's papers.\n"
-            "- Do NOT mention, infer, or cite papers not in the Retrieved Document Set.\n\n"
-            "ANSWER RULES:\n"
-            "- Be concise and specific. Avoid generic academic filler.\n"
+            "- Do NOT mention papers not listed in the Retrieved Document Set.\n\n"
+
+            "FORMAT RULES:\n"
+            "- Be concise. No generic academic filler sentences.\n"
             "- Do NOT generate a References section — one will be appended automatically.\n"
-            "- If the context does not contain enough information, say so explicitly.\n"
+            "- Write in plain prose. Do not use markdown headers inside your answer.\n"
         )
 
         # ── Step 5: Build user prompt ────────────────────────────────────────
@@ -2198,13 +2226,11 @@ class RAGService:
 
         user_prompt = (
             f"{history_block}"
-            f"Retrieved Document Set:\n{retrieved_set_summary}\n\n"
             f"{context_str}\n\n"
-            f"{partial_notice}\n\n" if partial_notice else
-            f"{history_block}"
-            f"Retrieved Document Set:\n{retrieved_set_summary}\n\n"
-            f"{context_str}\n\n"
-        ) + f"Research Question: {query}\n\nAnswer (cite every factual sentence with doc_N):"
+            f"{partial_notice + chr(10) + chr(10) if partial_notice else ''}"
+            f"Research Question: {query}\n\n"
+            f"Answer (cite every factual sentence with doc_N):"
+        )
 
         # ── Step 6: Call Ollama ──────────────────────────────────────────────
         try:

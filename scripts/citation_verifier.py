@@ -25,6 +25,8 @@ class CitationVerifier:
     def split_into_claims(self, text: str) -> list[str]:
         """
         Split text into individual claims (sentences).
+        
+        Protects known abbreviations from being split incorrectly.
 
         Args:
             text: Input text.
@@ -32,9 +34,30 @@ class CitationVerifier:
         Returns:
             List of claim sentences.
         """
-        # Split on sentence boundaries
-        sentences = re.split(r'(?<=[.!?])\s+', text.strip())
-        return [s.strip() for s in sentences if s.strip()]
+        # Don't split on known abbreviations
+        # Replace them with placeholders, split, then restore
+        abbrevs = [
+            "et al.", "e.g.", "i.e.", "vs.", "Fig.", "fig.", "Eq.", "eq.",
+            "approx.", "Prof.", "Dr.", "No.", "pp.", "vol.", "ed.", "eds.",
+            "cf.", "ibid.", "op.", "cit.", "dept.", "univ.", "assoc.",
+        ]
+        protected = text
+        placeholders = {}
+        for i, ab in enumerate(abbrevs):
+            key = f"__ABBREV_{i}__"
+            placeholders[key] = ab
+            protected = protected.replace(ab, key)
+
+        sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z0-9\(])', protected.strip())
+        
+        restored = []
+        for s in sentences:
+            s = s.strip()
+            for key, ab in placeholders.items():
+                s = s.replace(key, ab)
+            if s:
+                restored.append(s)
+        return restored
 
     def extract_claim_entities(self, claim: str) -> set[str]:
         """
