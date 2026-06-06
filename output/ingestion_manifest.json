@@ -1,0 +1,201 @@
+{
+    "21091121.pdf": {
+        "title": "21091121",
+        "doi": "N/A",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T16:17:06.270017",
+        "authors": "Unknown Authors",
+        "year": "N/A"
+    },
+    "38.1.pdf": {
+        "title": "38.1",
+        "doi": "10.1177/10598405241253565",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T17:53:22.954062",
+        "authors": "M. Willgerodt, Andrea Tanner, Ellen M. McCabe, Beth E. Jameson, D. Brock",
+        "year": "2024"
+    },
+    "cryptography-09-00017.pdf": {
+        "title": "Cryptography-09-00017",
+        "doi": "10.1109/ACCESS.2024.3489452",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T18:47:12.769915",
+        "authors": "Divya Sharma, C. Prabha, Md Mehedi Hassan, S. Abdulla, Anupam Kumar Bairagi, S. Alshathri, W. El-shafai",
+        "year": "2024"
+    },
+    "European Cybersecurity and AI Framework.pdf": {
+        "title": "European Cybersecurity And Ai Framework",
+        "doi": "10.60097/acig/213864",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T18:47:16.822849",
+        "authors": "Muhammad Sajid Khan",
+        "year": "2025"
+    },
+    "Gen+AI+in+Financial+Cybersecurity+A+Comprehensive+Review+of+Architectures,+Algorithms,+and+Regulatory+Challenges (1).pdf": {
+        "title": "Gen+Ai+In+Financial+Cybersecurity+A+Comprehensive+Review+Of+Architectures,+Algorithms,+And+Regulatory+Challenges (1)",
+        "doi": "10.69968/ijisem.2025v4i373-88",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T16:17:29.354672",
+        "authors": "Satyadhar Joshi",
+        "year": "2025"
+    },
+    "GJCS_01_01_001.pdf": {
+        "title": "Gjcs 01 01 001",
+        "doi": "N/A",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T18:47:20.681860",
+        "authors": "Unknown Authors",
+        "year": "N/A"
+    },
+    "WJARR-2024-2428 Harnessing the power of artificial intelligence to enhance next-generation cybersecurity.pdf": {
+        "title": "Wjarr-2024-2428 Harnessing The Power Of Artificial Intelligence To Enhance Next-Generation Cybersecurity",
+        "doi": "N/A",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T16:17:43.327550",
+        "authors": "Unknown Authors",
+        "year": "N/A"
+    },
+    "pytorch_an_imperative_style_high-performance_deep_learning_l.pdf": {
+        "title": "PyTorch: An Imperative Style, High-Performance Deep Learning Library",
+        "doi": "arXiv:1912.01703",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T17:38:37.412407",
+        "authors": "Adam Paszke, Sam Gross, Francisco Massa, Adam Lerer, James Bradbury, Gregory Chanan, Trevor Killeen, Zeming Lin, N. Gimelshein, L. Antiga, Alban Desmaison, Andreas Köpf, E. Yang, Zachary DeVito, Martin Raison, Alykhan Tejani, Sasank Chilamkurthy, Benoit Steiner, Lu Fang, Junjie Bai, Soumith Chintala",
+        "year": "2019"
+    },
+    "nnu-net_a_self-configuring_method_for_deep_learning-based_bi.pdf": {
+        "title": "nnU-Net: a self-configuring method for deep learning-based biomedical image segmentation",
+        "doi": "10.1038/s41592-020-01008-z",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T17:39:07.003418",
+        "authors": "Fabian Isensee, P. Jaeger, Simon A. A. Kohl, Jens Petersen, Klaus Hermann Maier-Hein",
+        "year": "2020"
+    },
+    "review_of_deep_learning_concepts_cnn_architectures_challenge.pdf": {
+        "title": "Review of deep learning: concepts, CNN architectures, challenges, applications, future directions",
+        "doi": "10.1186/s40537-021-00444-8",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T17:39:19.642812",
+        "authors": "Laith Alzubaidi, Jinglan Zhang, A. Humaidi, Ayad Al-dujaili, Y. Duan, O. Al-Shamma, José I. Santamaría, M. Fadhel, Muthana Al-Amidie, Laith Farhan",
+        "year": "2021"
+    },
+    "a_survey_on_deep_learning_in_medical_image_analysis.pdf": {
+        "title": "A survey on deep learning in medical image analysis",
+        "doi": "10.1016/j.media.2017.07.005",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-25T22:59:23.802236",
+        "authors": "G. Litjens, Thijs Kooi, B. Bejnordi, A. Setio, F. Ciompi, Mohsen Ghafoorian, J. Laak, B. Ginneken, C. I. Sánchez",
+        "year": "2017"
+    },
+    "reproducible_interactive_scalable_and_extensible_microbiome_.pdf": {
+        "title": "Reproducible, interactive, scalable and extensible microbiome data science using QIIME 2",
+        "doi": "10.1038/s41587-019-0209-9",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T19:23:26.206165",
+        "authors": "Evan Bolyen, J. Rideout, Matthew R. Dillon, N. Bokulich, C. Abnet, Gabriel A. Al-Ghalith, Harriet Alexander, E. Alm, Manimozhiyan Arumugam, F. Asnicar, Yang Bai, J. Bisanz, K. Bittinger, A. Brejnrod, Colin J. Brislawn, C. T. Brown, B. Callahan, A. Caraballo-Rodríguez, John Chase, Emily K. Cope, R. D. da Silva, C. Diener, P. Dorrestein, G. Douglas, D. Durall, C. Duvallet, C. Edwardson, Madeleine Ernst, M. Estaki, Jennifer T. Fouquier, J. Gauglitz, S. Gibbons, D. Gibson, Antonio Gonzalez, Kestrel Gorlick, Jiarong Guo, Benjamin M Hillmann, S. Holmes, H. Holste, C. Huttenhower, G. Huttley, Stefan Janssen, A. Jarmusch, Lingjing Jiang, Benjamin D. Kaehler, K. Kang, Christopher R. Keefe, P. Keim, S. Kelley, D. Knights, I. Koester, T. Kosciólek, Jorden Kreps, M. Langille, Joslynn S. Lee, R. Ley, Yong-xin Liu, E. Loftfield, C. Lozupone, Massoud Maher, C. Marotz, Bryan D. Martin, Daniel McDonald, L. McIver, A. Melnik, J. Metcalf, S. C. Morgan, James T. Morton, Ahmad Turan Naimey, Jose A Navas-Molina, Louis-Félix Nothias, Stephanie B. Orchanian, Talima R. Pearson, Samuel L. Peoples, D. Petráš, M. Preuss, Elmar Pruesse, Lasse Buur Rasmussen, A. Rivers, M. Robeson, P. Rosenthal, N. Segata, Michael Shaffer, A. Shiffer, R. Sinha, S. Song, J. Spear, Austin D. Swafford, Luke R. Thompson, P. Torres, Pauline Trinh, A. Tripathi, P. Turnbaugh, Sabah Ul-Hasan, J. V. D. van der Hooft, Fernando Vargas, Y. Vázquez-Baeza, E. Vogtmann, Max von Hippel, William Walters, Yunhu Wan, Mingxun Wang, Jonathan Warren, Kyle C. Weber, C. H. Williamson, A. Willis, Z. Xu, Jesse R. Zaneveld, Yilong Zhang, Qiyun Zhu, R. Knight, J. Caporaso",
+        "year": "2019"
+    },
+    "deep_residual_learning_for_image_recognition.pdf": {
+        "title": "Deep Residual Learning for Image Recognition",
+        "doi": "10.1109/cvpr.2016.90",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-24T19:28:29.230673",
+        "authors": "Kaiming He, X. Zhang, Shaoqing Ren, Jian Sun",
+        "year": "2015"
+    },
+    "native_point_defects_and_their_implications_for_the_dirac_po.pdf": {
+        "title": "Native point defects and their implications for the Dirac point gap at MnBi2Te4(0001)",
+        "doi": "10.1038/s41535-021-00414-6",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-25T14:05:53.350576",
+        "authors": "M. Garnica, M. Otrokov, P. Aguilar, I. Klimovskikh, D. Estyunin, Z. Aliev, I. Amiraslanov, N. A. Abdullayev, V. Zverev, M. Babanly, N. Mamedov, A. Shikin, A. Arnau, A. L. V. de Parga, E. Chulkov, R. Miranda",
+        "year": "2021"
+    },
+    "the_concept_of_psychological_and_pedagogical_support_of_digi.pdf": {
+        "title": "The concept of psychological and pedagogical support of digital transformation of educational process of higher education institution (anthropocentric approach)",
+        "doi": "10.18384/2949-5105-2024-3-133-149",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-25T14:43:10.849713",
+        "authors": "O. Vannovskaya",
+        "year": "2024"
+    },
+    "digital_humanities_challenges_of_the_transformation_of_tools.pdf": {
+        "title": "Digital Humanities: Challenges of the Transformation of Tools and Objects of Knowledge in Contemporary Humanities",
+        "doi": "10.55630/dipp.2013.3.11",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-25T14:44:28.534913",
+        "authors": "Alexandre Camus, D. Paneva-Marinova, Detelin Luchev",
+        "year": "2013"
+    },
+    "deeplabcut_markerless_pose_estimation_of_user-defined_body_p.pdf": {
+        "title": "DeepLabCut: markerless pose estimation of user-defined body parts with deep learning",
+        "doi": "10.1038/s41593-018-0209-y",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-25T22:59:59.609486",
+        "authors": "Alexander Mathis, P. Mamidanna, Kevin M. Cury, Taiga Abe, V. Murthy, Mackenzie W. Mathis, M. Bethge",
+        "year": "2018"
+    },
+    "machine_learning_algorithms_real-world_applications_and_rese.pdf": {
+        "title": "Machine Learning: Algorithms, Real-World Applications and Research Directions",
+        "doi": "10.1007/s42979-021-00592-x",
+        "status": "success",
+        "error": "",
+        "ingested_at": "2026-05-26T15:20:16.004483",
+        "authors": "Iqbal H. Sarker",
+        "year": "2021"
+    },
+    "a_survey_on_image_data_augmentation_for_deep_learning.pdf": {
+        "title": "A Survey On Image Data Augmentation For Deep Learning",
+        "doi": "N/A",
+        "status": "success",
+        "error": "",
+        "authors": "Unknown Authors",
+        "year": "N/A",
+        "abstract": "",
+        "paper_id": "",
+        "ingested_at": "2026-05-31T01:19:47.921608"
+    },
+    "what_uncertainties_do_we_need_in_bayesian_deep_learning_for_.pdf": {
+        "title": "What Uncertainties Do We Need in Bayesian Deep Learning for Computer Vision?",
+        "doi": "N/A",
+        "status": "success",
+        "error": "",
+        "authors": "Alex Kendall, Y. Gal",
+        "year": "2017",
+        "venue": "N/A",
+        "abstract": "There are two major types of uncertainty one can model. Aleatoric uncertainty captures noise inherent in the observations. On the other hand, epistemic uncertainty accounts for uncertainty in the model - uncertainty which can be explained away given enough data. Traditionally it has been difficult to model epistemic uncertainty in computer vision, but with new Bayesian deep learning tools this is now possible. We study the benefits of modeling epistemic vs. aleatoric uncertainty in Bayesian deep learning models for vision tasks. For this we present a Bayesian deep learning framework combining input-dependent aleatoric uncertainty together with epistemic uncertainty. We study models under the framework with per-pixel semantic segmentation and depth regression tasks. Further, our explicit uncertainty formulation leads to new loss functions for these tasks, which can be interpreted as learned attenuation. This makes the loss more robust to noisy data, also giving new state-of-the-art results on segmentation and depth regression benchmarks.",
+        "paper_id": "",
+        "ingested_at": "2026-06-03T16:05:44.076425",
+        "has_full_text": true
+    },
+    "Richet 2024 Online-Collective-Assessment-Complexity.pdf": {
+        "title": "Complexity in online collective assessments: Implications for the wisdom of the crowd",
+        "doi": "10.1016/j.techfore.2023.123068",
+        "status": "success",
+        "error": "",
+        "authors": "J. Richet, Rosa Currás-Móstoles, José María Martín Martín",
+        "year": "2024",
+        "venue": "N/A",
+        "abstract": "Technological Forecasting & Social Change 200 (2024) 123068 Available online 20 December 2023 0040-1625/© 2023 Elsevier Inc. All rights reserved. Complexity in online collective assessments: Implications for the wisdom of the crowd Jean-Loup Richet a,*, Rosa Curr´as-M´ostoles b, Jos´e María Martín Martín c a IAE Paris-Sorbonne, Universit´e Paris 1 Panth´eon-Sorbonne, 12 Rue Jean Antoine de Baïf, 7...",
+        "paper_id": "",
+        "ingested_at": "2026-06-03T16:05:39.745740",
+        "has_full_text": true
+    }
+}
