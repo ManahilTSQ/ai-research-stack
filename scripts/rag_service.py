@@ -1650,6 +1650,9 @@ class RAGService:
                     "success": False,
                     "error": "Paper not found in library.",
                 }
+            else:
+                # Found the paper — set filter_title so retrieval is scoped to that paper only
+                filter_title = matched_papers[0]
         
         if compare_query_needs_paper_pickers(query, papers_metadata) and not filter_title:
             return {

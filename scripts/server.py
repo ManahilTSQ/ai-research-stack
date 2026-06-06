@@ -1018,6 +1018,8 @@ def ingest_pending(background_tasks: BackgroundTasks):
             for filename, meta in manifest.items():
                 if meta.get("status") == "success":
                     continue
+                if meta.get('doi_status') == 'unresolvable':
+                    continue  # Never retry permanently failed DOIs
 
                 pdf_path = pdf_dir / filename
                 if not pdf_path.exists():
@@ -1074,7 +1076,7 @@ def ingest_pending(background_tasks: BackgroundTasks):
                         filename, title, doi if doi != "N/A" else None,
                         status="success" if success else "failed",
                         authors=authors, year=year, venue=resolved.get("venue"),
-                        abstract=abstract, has_full_text=has_full_text
+                        abstract=abstract, has_full_text=len(full_text) > 8000
                     )
                     processed += 1
                     if success:
