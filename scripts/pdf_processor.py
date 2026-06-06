@@ -277,14 +277,15 @@ class PDFProcessorService:
         use_structure_aware: bool = False
     ) -> list[dict]:
         """
-        Chunk the full document text into overlapping segments with accurate page tracking.
+        Chunk the full document text into overlapping segments with strict character-to-page alignment.
 
         Character-based sliding window mode (default):
           - Extracts ALL text from ALL pages into a single unified string
           - Implements strict character-based sliding window chunking
           - Target: 1500 characters per chunk with 300 character overlap
           - Validates and drops empty/near-empty chunks (< 100 characters)
-          - Accurately tracks char_to_page mapping for pagination metadata
+          - STRICT character-to-page alignment: every character maps to its page number
+          - Page metadata stored as comma-separated string (e.g., "1,2,3")
 
         Structure-aware mode (use_structure_aware=True):
           - Detects section headings (Abstract, Introduction, Methodology, etc.)
@@ -302,12 +303,12 @@ class PDFProcessorService:
             List of chunk dicts, each containing:
               - "chunk_index" (int): Sequential chunk number.
               - "text" (str): The chunk text content.
-              - "metadata" (dict): Pages spanned, section name, character offsets, and length.
+              - "metadata" (dict): Pages spanned (comma-separated string), section name, character offsets, and length.
         """
         if not pages:
             return []
 
-        # ── Step 1: Build the full concatenated text with ACCURATE character→page map ──
+        # ── Step 1: Build the full concatenated text with STRICT character→page alignment ──
         full_text = ""
         char_to_page = []
 
@@ -321,11 +322,11 @@ class PDFProcessorService:
             if full_text:
                 spacer = "\n\n"
                 full_text += spacer
-                # CRITICAL: Track spacer characters with the PREVIOUS page number
+                # STRICT: Track spacer characters with the PREVIOUS page number
                 char_to_page.extend([page_num] * len(spacer))
 
             full_text += page_text
-            # CRITICAL: Track page text characters with the CURRENT page number
+            # STRICT: Track page text characters with the CURRENT page number
             char_to_page.extend([page_num] * len(page_text))
 
         text_len = len(full_text)
@@ -333,7 +334,7 @@ class PDFProcessorService:
             logger.warning("No text content found in any page — nothing to chunk.")
             return []
 
-        # Verify char_to_page length matches full_text length
+        # STRICT: Verify char_to_page length matches full_text length exactly
         if len(char_to_page) != text_len:
             logger.error(f"CRITICAL: char_to_page length ({len(char_to_page)}) != full_text length ({text_len})")
             return []
@@ -437,6 +438,7 @@ class PDFProcessorService:
     ) -> list[dict]:
         """
         Chunk a single section by paragraphs with semantic overlap.
+        Page metadata stored as comma-separated string.
         """
         paragraphs = self._split_into_paragraphs(section_text)
         if not paragraphs:
@@ -465,15 +467,16 @@ class PDFProcessorService:
                 chunk_text = "\n\n".join(current_chunk)
                 chunk_end = section_start + para_start
                 
-                # Get pages for this chunk
-                chunk_pages = sorted(set(char_to_page[max(0, chunk_end - current_length):chunk_end]))
+                # Get pages for this chunk and convert to comma-separated string
+                chunk_pages_list = sorted(set(char_to_page[max(0, chunk_end - current_length):chunk_end]))
+                chunk_pages_str = ",".join(str(p) for p in chunk_pages_list)
                 
                 chunks.append({
                     "chunk_index": chunk_idx,
                     "text": chunk_text.strip(),
                     "metadata": {
                         "section": section_name,
-                        "pages": chunk_pages,
+                        "pages": chunk_pages_str,
                         "char_start": chunk_end - current_length,
                         "char_end": chunk_end,
                         "length": current_length
@@ -502,14 +505,15 @@ class PDFProcessorService:
         if current_chunk:
             chunk_text = "\n\n".join(current_chunk)
             chunk_end = section_start + para_start
-            chunk_pages = sorted(set(char_to_page[max(0, chunk_end - current_length):chunk_end]))
+            chunk_pages_list = sorted(set(char_to_page[max(0, chunk_end - current_length):chunk_end]))
+            chunk_pages_str = ",".join(str(p) for p in chunk_pages_list)
             
             chunks.append({
                 "chunk_index": chunk_idx,
                 "text": chunk_text.strip(),
                 "metadata": {
                     "section": section_name,
-                    "pages": chunk_pages,
+                    "pages": chunk_pages_str,
                     "char_start": chunk_end - current_length,
                     "char_end": chunk_end,
                     "length": current_length
@@ -526,6 +530,7 @@ class PDFProcessorService:
     ) -> list[dict]:
         """
         Fallback paragraph-based chunking when no clear sections are detected.
+        Page metadata stored as comma-separated string.
         """
         paragraphs = self._split_into_paragraphs(full_text)
         if not paragraphs:
@@ -543,14 +548,15 @@ class PDFProcessorService:
             if current_length + para_len > target_size and current_chunk:
                 chunk_text = "\n\n".join(current_chunk)
                 chunk_end = para_start
-                chunk_pages = sorted(set(char_to_page[max(0, chunk_end - current_length):chunk_end]))
+                chunk_pages_list = sorted(set(char_to_page[max(0, chunk_end - current_length):chunk_end]))
+                chunk_pages_str = ",".join(str(p) for p in chunk_pages_list)
                 
                 chunks.append({
                     "chunk_index": chunk_idx,
                     "text": chunk_text.strip(),
                     "metadata": {
                         "section": "Unknown",
-                        "pages": chunk_pages,
+                        "pages": chunk_pages_str,
                         "char_start": chunk_end - current_length,
                         "char_end": chunk_end,
                         "length": current_length
@@ -571,14 +577,15 @@ class PDFProcessorService:
         if current_chunk:
             chunk_text = "\n\n".join(current_chunk)
             chunk_end = para_start
-            chunk_pages = sorted(set(char_to_page[max(0, chunk_end - current_length):chunk_end]))
+            chunk_pages_list = sorted(set(char_to_page[max(0, chunk_end - current_length):chunk_end]))
+            chunk_pages_str = ",".join(str(p) for p in chunk_pages_list)
             
             chunks.append({
                 "chunk_index": chunk_idx,
                 "text": chunk_text.strip(),
                 "metadata": {
                     "section": "Unknown",
-                    "pages": chunk_pages,
+                    "pages": chunk_pages_str,
                     "char_start": chunk_end - current_length,
                     "char_end": chunk_end,
                     "length": current_length
@@ -596,14 +603,15 @@ class PDFProcessorService:
         chunk_overlap: int
     ) -> list[dict]:
         """
-        Character-based sliding window chunking with accurate page tracking.
+        Character-based sliding window chunking with strict page tracking.
 
         Implements strict character-based sliding window:
           - Extracts ALL text from ALL pages into a single unified string
           - Slides a window of chunk_size characters with chunk_overlap overlap
           - Processes the ENTIRE document string down to the last character
           - Validates and drops empty/near-empty chunks (< 100 characters)
-          - Accurately slices pagination metadata from char_to_page
+          - STRICT: Accurately slices pagination metadata from char_to_page
+          - STRICT: Converts page numbers to comma-separated string format (e.g., "1,2,3")
           - Logs the number of valid chunks generated
 
         Args:
@@ -613,7 +621,7 @@ class PDFProcessorService:
             chunk_overlap: Overlap in characters (default: 300).
 
         Returns:
-            List of validated chunk dicts with accurate page metadata.
+            List of validated chunk dicts with page metadata as comma-separated string.
         """
         text_len = len(full_text)
 
@@ -626,7 +634,7 @@ class PDFProcessorService:
             chunk_overlap = int(chunk_size * 0.2)
             logger.warning(f"Invalid chunk_overlap — reset to 20% of chunk_size: {chunk_overlap}")
 
-        # Validate char_to_page mapping
+        # STRICT: Validate char_to_page mapping
         if len(char_to_page) != text_len:
             logger.error(f"CRITICAL: char_to_page length ({len(char_to_page)}) != full_text length ({text_len})")
             return []
@@ -635,22 +643,20 @@ class PDFProcessorService:
         start = 0
         chunk_idx = 0
 
-        # Sliding window iteration through ENTIRE document
+        # Sliding window iteration through ENTIRE document - NO EARLY BREAKS
         while start < text_len:
             end = min(start + chunk_size, text_len)
 
-            # Get the exact slice of char_to_page for this chunk
+            # STRICT: Get the exact slice of char_to_page for this chunk
             chunk_pages_slice = char_to_page[start:end]
-            chunk_pages = sorted(set(chunk_pages_slice))
+            chunk_pages_list = sorted(set(chunk_pages_slice))
+            
+            # STRICT: Convert page numbers to comma-separated string format
+            chunk_pages_str = ",".join(str(p) for p in chunk_pages_list)
 
             # Extract chunk text
             chunk_text_content = full_text[start:end].strip()
             chunk_length = len(chunk_text_content)
-
-            # Skip tiny final chunks (but only if we already have chunks)
-            if len(chunks) > 0 and chunk_length < 100:
-                logger.debug(f"Skipping tiny final chunk ({chunk_length} chars at position {start})")
-                break
 
             # Validation: drop empty or near-empty chunks
             if chunk_length < 100:
@@ -658,13 +664,13 @@ class PDFProcessorService:
                 start += (chunk_size - chunk_overlap)
                 continue
 
-            # Create chunk with accurate page metadata
+            # Create chunk with page metadata as comma-separated string
             chunks.append({
                 "chunk_index": chunk_idx,
                 "text": chunk_text_content,
                 "metadata": {
                     "section": "Unknown",
-                    "pages": chunk_pages,
+                    "pages": chunk_pages_str,
                     "char_start": start,
                     "char_end": end,
                     "length": chunk_length
