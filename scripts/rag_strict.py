@@ -771,15 +771,16 @@ def is_catalog_metadata_query(query: str) -> bool:
         return False  # Let topic filtering handle this
     
     # General listing queries without topic filtering
-    if re.search(r"\blist\b.{0,40}\b(all\s+)?(ingested\s+)?(papers?|articles?)\b", q):
+    # Must NOT match topic-filtered listings like "List SDN papers" or "List papers on IoT"
+    if re.search(r"^\s*(?:list|show|what are)\s+(?:all\s+)?(?:the\s+)?(?:ingested\s+)?(?:papers?|articles?|studies)\s*[\?\.]?$", q):
         return True
-    if re.search(r"\bwhat\b.{0,20}\b(papers?|articles?)\b.{0,20}\b(library|ingested|knowledge base)\b", q):
-        return True
+    
     if _YEAR_RANGE_RE.search(q) and re.search(r"\b(papers?|articles?|publications?)\b", q):
         return True
     if _YEAR_SINGLE_RE.search(q) and re.search(r"\b(papers?|articles?|publications?)\b", q):
         return True
     return False
+
 
 
 
