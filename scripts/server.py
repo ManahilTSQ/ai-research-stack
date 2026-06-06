@@ -340,11 +340,11 @@ def _execute_template_rag(request: RAGQueryRequest) -> dict:
             f"{context_str}"
         )
 
-    titles = {c["metadata"].get("title", "") for c in chunks}
+    titles = {(c.get("metadata") or {}).get("title", "") for c in chunks}
     title_str = " | ".join(sorted(t for t in titles if t)) or "None"
-    authors_list = [c["metadata"].get("authors", "Unknown Authors") for c in chunks]
+    authors_list = [(c.get("metadata") or {}).get("authors", "Unknown Authors") for c in chunks]
     authors_str = " | ".join(sorted(set(authors_list))) if authors_list else "None"
-    years_list = [str(c["metadata"].get("year", "N/A")) for c in chunks]
+    years_list = [str((c.get("metadata") or {}).get("year", "N/A")) for c in chunks]
     years_str = " | ".join(sorted(set(years_list))) if years_list else "None"
 
     variables = {
