@@ -478,8 +478,6 @@ class VectorStoreService:
         Fetches all metadata entries to identify distinct paper titles.
         Used by the health check endpoint and the web UI's stats badges.
 
-        Step 2a: Added 30-second cache to avoid loading ALL metadata on every query.
-
         Returns:
             Dict with:
               - "total_chunks" (int): Total number of vectors stored.
@@ -487,11 +485,6 @@ class VectorStoreService:
               - "papers_list" (list[str]): Sorted list of unique paper titles.
               - "papers_metadata" (dict): Mapping from paper title (str) to dict containing 'authors', 'year', and 'doi'.
         """
-        import time
-        now = time.time()
-        if hasattr(self, '_stats_cache') and (now - self._stats_cache_time) < 30:
-            return self._stats_cache
-
         try:
             total_chunks = self.collection.count()
             unique_papers = set()
@@ -518,8 +511,6 @@ class VectorStoreService:
                 "papers_list": sorted(list(unique_papers)),
                 "papers_metadata": papers_metadata
             }
-            self._stats_cache = result
-            self._stats_cache_time = now
             return result
 
         except Exception as e:
