@@ -1920,6 +1920,7 @@ def retrieve_relevant_chunks(
     over_retrieve_multiplier: float = 6.0,
     use_domain_filtering: bool = True,
     use_query_routing: bool = True,
+    metadata_filters: dict | None = None,
 ) -> list[dict[str, Any]]:
     """
     Retrieve context chunks for RAG with author/paper-aware isolation and optional reranking.
@@ -1932,6 +1933,7 @@ def retrieve_relevant_chunks(
       4. Unscoped path: standard semantic search → distance filter → token filter.
       5. (Optional) Over-retrieve more chunks and apply reranking for better accuracy.
       6. (Optional) Apply domain filtering to prevent cross-topic contamination.
+      7. (NEW) Apply structured metadata filters (year, DOI, author) for precise queries.
 
     Args:
         vector_store: ChromaDB vector store instance.
@@ -1943,6 +1945,7 @@ def retrieve_relevant_chunks(
         over_retrieve_multiplier: Multiplier for initial retrieval (default 6.0 = retrieve 6x limit).
         use_domain_filtering: If True, detect query domain and filter by domain metadata.
         use_query_routing: If True, use query understanding to control pipeline routing.
+        metadata_filters: Optional dict of ChromaDB-compatible where-clause filters (e.g., {"year": {"$lt": "2022"}}).
 
     Returns:
         List of retrieved and optionally reranked chunks.
@@ -1971,6 +1974,20 @@ def retrieve_relevant_chunks(
             logger.warning("Query understanding not available, skipping pipeline routing")
         except Exception as e:
             logger.warning(f"Pipeline routing failed: {e}")
+
+    # ── NEW: Parse structured metadata filters from query ─────────────────────
+    # Extract year, DOI, author, venue filters for native ChromaDB filtering
+    if metadata_filters is None:
+        try:
+            from query_router import QueryRouter
+            router = QueryRouter()
+            metadata_filters = router.parse_metadata_filters(query)
+            if metadata_filters:
+                logger.info(f"Parsed structured metadata filters from query: {metadata_filters}")
+        except ImportError:
+            logger.debug("Query router not available, skipping metadata filter parsing")
+        except Exception as e:
+            logger.warning(f"Metadata filter parsing failed: {e}")
 
     inventory_titles = list(scope_titles) if scope_titles else resolve_matching_paper_titles(
         query, papers_metadata
@@ -2143,7 +2160,8 @@ def retrieve_relevant_chunks(
     seen_ids = set()
     for sq in search_queries:
         results = vector_store.query_similar_chunks(
-            sq, limit=search_limit, filter_title=filter_title, filter_domain=effective_filter_domain
+            sq, limit=search_limit, filter_title=filter_title, filter_domain=effective_filter_domain,
+            metadata_filters=metadata_filters
         )
         for r in results:
             rid = r.get("id")

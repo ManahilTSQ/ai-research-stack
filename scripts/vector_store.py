@@ -345,7 +345,8 @@ class VectorStoreService:
         query: str,
         limit: int = 4,
         filter_title: str | None = None,
-        filter_domain: str | None = None
+        filter_domain: str | None = None,
+        metadata_filters: dict | None = None
     ) -> list[dict]:
         """
         Perform a cosine-similarity vector search across all ingested paper chunks.
@@ -360,6 +361,7 @@ class VectorStoreService:
             limit: Maximum number of similar chunks to return (default: 4).
             filter_title: If set, restricts search to chunks from this paper title only.
             filter_domain: If set, restricts search to chunks from this research domain only.
+            metadata_filters: Dict of ChromaDB-compatible where-clause filters (e.g., {"year": {"$lt": "2022"}}).
 
         Returns:
             List of result dicts, each containing:
@@ -370,7 +372,8 @@ class VectorStoreService:
         """
         logger.info(
             f"Querying ChromaDB: '{query}' (top {limit} chunks, "
-            f"filter_title={filter_title!r}, filter_domain={filter_domain!r})"
+            f"filter_title={filter_title!r}, filter_domain={filter_domain!r}, "
+            f"metadata_filters={metadata_filters!r})"
         )
 
         try:
@@ -380,6 +383,10 @@ class VectorStoreService:
                 where_conditions["title"] = filter_title
             if filter_domain:
                 where_conditions["domain"] = filter_domain
+            
+            # Merge in additional metadata filters (e.g., year, DOI, author)
+            if metadata_filters:
+                where_conditions.update(metadata_filters)
 
             where_clause = where_conditions if where_conditions else None
 

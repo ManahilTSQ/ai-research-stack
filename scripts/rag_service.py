@@ -18,6 +18,7 @@ import re
 import requests
 from config import settings            # Flat import — scripts/ is on sys.path
 from vector_store import VectorStoreService  # Local ChromaDB interface
+from query_router import QueryRouter, route_query  # Query routing and metadata filtering
 from rag_context import (
     build_library_inventory,
     chunks_to_context_string,
@@ -695,24 +696,28 @@ class RAGService:
         This fires BEFORE any ChromaDB or LLM call — it is an absolute gate.
         """
         q = query.lower().strip()
-        # Hard off-topic keyword families — grouped for clarity
+        # Hard off-topic keyword families — only unambiguous non-academic terms
         off_topic_patterns = [
-            # Food & cooking
-            "recipe", "cook", "bake", "ingredient", "meal", "food",
-            "breakfast", "lunch", "dinner", "cuisine", "chef",
-            # Weather & trivial queries
-            "weather", "temperature", "forecast", "rain", "sunny",
-            # Sports
-            "football", "cricket", "soccer", "basketball", "tennis",
-            "match", "score", "tournament",
-            # Entertainment
-            "movie", "film", "song", "music", "celebrity", "actor", "actress",
+            # Food & cooking (full phrases only to avoid false positives)
+            "recipe for", "how to cook", "bake a", "cooking instructions",
+            "breakfast recipe", "lunch recipe", "dinner recipe",
+            # Sports scores (not academic)
+            "football score", "cricket score", "soccer score",
+            "sports tournament", "nba score", "nfl score",
+            # Entertainment (specific)
+            "movie review", "film review", "song lyrics", "music video",
+            "celebrity gossip",
             # Finance / non-research
-            "stock", "bitcoin", "cryptocurrency", "investment tips",
-            # Travel
-            "hotel", "flight", "booking", "vacation", "tourist",
+            "bitcoin price", "stock price", "cryptocurrency price",
+            "investment tips",
+            # Travel bookings
+            "hotel booking", "flight booking", "book a vacation",
         ]
-        return any(pat in q for pat in off_topic_patterns)
+        if any(pat in q for pat in off_topic_patterns):
+            return True
+        # Also block if query is very short AND matches no library paper title
+        # (handled downstream, so return False here for borderline cases)
+        return False
 
     def _is_academic_drafting_request(self, query: str) -> bool:
         """
@@ -1186,8 +1191,18 @@ class RAGService:
 
         new_body = " ".join(kept_sentences).strip()
 
-        # Safety net: if ALL sentences were stripped, return a refusal instead of unverified answer
+        # Safety net: if ALL sentences were stripped, check if this is an abstract-only library
+        # (chunks are very short — typically <500 chars each). In that case, return the raw
+        # answer since strict citation enforcement cannot work without full paper text.
         if not new_body:
+            avg_chunk_len = sum(len(c.get("text","")) for c in chunks) / max(len(chunks),1)
+            if avg_chunk_len < 600:
+                logger.warning(
+                    "_enforce_hard_grounding_rules stripped every sentence but chunks are "
+                    f"abstract-only (avg {avg_chunk_len:.0f} chars). Returning raw answer."
+                )
+                # Return the original answer body without strict citation enforcement
+                return answer_body
             logger.warning(
                 "_enforce_hard_grounding_rules stripped every sentence — "
                 "returning refusal message instead of unverified answer."
@@ -1877,6 +1892,13 @@ class RAGService:
         if matched_titles and not filter_title and scope.entity_kind != "topic":
             chunks = filter_chunks_to_titles(chunks, matched_titles)
 
+        # ── Cap chunks before deduplication to prevent CUDA OOM on reranker ──
+        # Broad author queries can return 39+ chunks which overflows GPU memory.
+        # Limit to 20 chunks — enough for a good answer without OOM.
+        if len(chunks) > 20:
+            logger.info(f"Capping chunks from {len(chunks)} to 20 to prevent CUDA OOM")
+            chunks = chunks[:20]
+
         # ── Text deduplication to prevent robotic stuttering ─────────────────
         # Remove chunks with >80% text overlap to avoid redundant information
         chunks = self._deduplicate_chunks(chunks)
@@ -2208,7 +2230,13 @@ class RAGService:
 
         # ── Step 10: Post-verification ────────────────────────────────────────
         if not self._is_refusal_answer(final_answer):
-            final_answer = apply_verification_or_refuse(final_answer, chunks, papers_metadata)
+            verified, _ = apply_verification_or_refuse(
+                final_answer,
+                scope=scope,
+                papers_metadata=papers_metadata,
+                chunks=chunks,
+            )
+            final_answer = verified
 
         # ── Step 11: Log faithfulness metrics ────────────────────────────────
         faithfulness_issues = self._check_answer_faithfulness(final_answer, chunks)

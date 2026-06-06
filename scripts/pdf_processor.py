@@ -244,7 +244,12 @@ class PDFProcessorService:
     def chunk_text(self, full_text: str, char_to_page: list[int], chunk_size: int = 1500, chunk_overlap: int = 300) -> list[dict]:
         """
         Slices the fully synchronized text string into overlapping chunks.
+        
+        FIX: Strip references section before chunking to prevent citation bleed.
         """
+        # FIX: Strip references/bibliography section to prevent citation chunk bleed
+        full_text = self._strip_references_section(full_text)
+        
         text_len = len(full_text)
         map_len = len(char_to_page)
         chunks = []

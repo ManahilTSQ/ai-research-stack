@@ -290,6 +290,8 @@ class ManifestManagerService:
                     doi_match = re.search(r"\b(10\.\d{4,9}/[^\s]+)\b", first_page_text, re.IGNORECASE)
                     if doi_match:
                         extracted_doi = doi_match.group(1).rstrip(".,;()[]{}")
+                        # FIX: Sanitize Unicode hyphens to standard hyphens to prevent 404 errors
+                        extracted_doi = extracted_doi.replace('\u2011', '-').replace('\u2012', '-').replace('\u2013', '-').replace('\u2014', '-').replace('—', '-')
                         logger.info(f"Extracted DOI '{extracted_doi}' from PDF text for '{pdf_path.name}'")
             except Exception as pdf_err:
                 logger.warning(f"Failed to extract text from PDF '{pdf_path.name}' for DOI lookup: {pdf_err}")
