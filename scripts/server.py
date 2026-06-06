@@ -1240,8 +1240,16 @@ def query_rag(request: RAGQueryRequest):
             conversation_history=request.conversation_history or [],
         )
 
+        # Guard against None return
+        if result is None:
+            result = {
+                "answer": "An internal error occurred. Please try again.",
+                "sources": [],
+                "success": False
+            }
+
         # Fix 3: Stop error messages reaching UI - hide error field, only log it
-        if not result.get("success") and not result.get("answer"):
+        if not result or (not result.get("success") and not result.get("answer")):
             display_answer = (
                 "I could not find relevant information in your "
                 "library for this query. Please try rephrasing or "
@@ -1251,13 +1259,13 @@ def query_rag(request: RAGQueryRequest):
             display_answer = result.get("answer", "")
 
         # Log the error separately, never send to frontend
-        if result.get("error"):
+        if result and result.get("error"):
             logger.warning(f"Query error: {result['error']}")
 
         return {
             "answer": display_answer,
-            "sources": result.get("sources", []),
-            "success": result.get("success", False)
+            "sources": result.get("sources", []) if result else [],
+            "success": result.get("success", False) if result else False
         }
 
     except OllamaUnavailableError as e:

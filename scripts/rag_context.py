@@ -1957,7 +1957,7 @@ def retrieve_relevant_chunks(
             from query_understanding import QueryUnderstanding
             query_understanding = QueryUnderstanding()
             analysis = query_understanding.understand_query(query)
-            routing_config = query_understanding.get_pipeline_routing(analysis)
+            routing_config = query_understanding.get_pipeline_routing(analysis) or {}
             
             # Apply routing configuration
             if routing_config.get("retrieval_limit_multiplier"):
@@ -2026,7 +2026,7 @@ def retrieve_relevant_chunks(
     try:
         from metadata_filter import MetadataFilter
         metadata_filter = MetadataFilter()
-        if metadata_filter.should_apply_metadata_filtering(query) or routing_config.get("strict_metadata_filter"):
+        if metadata_filter.should_apply_metadata_filtering(query) or (routing_config or {}).get("strict_metadata_filter"):
             filtered_titles = metadata_filter.filter_papers_by_metadata(
                 papers_metadata, query
             )

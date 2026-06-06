@@ -1581,7 +1581,7 @@ class RAGService:
 
         # ── Fix 2: Metadata query interceptor — fires before retrieval ─────────────
         # Fetch stats ONCE at the top - never fetch again inside this function
-        stats = self.vector_store.get_collection_stats()
+        stats = self.vector_store.get_collection_stats() or {}
         papers_metadata = stats.get("papers_metadata", {}) or {}
         
         if not papers_metadata:
@@ -2101,4 +2101,30 @@ class RAGService:
                     logger.warning(
                         f"Very low chunk relevance: {relevant_chunks}/{len(chunks)} for query: {query}"
                     )
-                    re
+                    return {
+                        "query": query,
+                        "answer": IRRELEVANT_REFUSAL,
+                        "sources": [],
+                        "success": False,
+                        "error": "Very low chunk relevance"
+                    }
+
+        # Safety net: ensure we never return None
+        logger.error(f"generate_answer fell through without returning for query: {query[:80]}")
+        return {
+            "query": query,
+            "answer": "I encountered an internal error processing your query. Please try again.",
+            "sources": [],
+            "success": False,
+            "error": "generate_answer returned None (unhandled code path)"
+        }
+
+        # Safety net: ensure generate_answer never returns None
+        logger.error(f"generate_answer fell through without returning for query: {query[:80]}")
+        return {
+            "query": query,
+            "answer": "I encountered an internal error processing your query. Please try again.",
+            "sources": [],
+            "success": False,
+            "error": "generate_answer returned None (unhandled code path)"
+        }
