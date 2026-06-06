@@ -980,6 +980,21 @@ def is_simple_inventory_listing(query: str) -> bool:
         if re.search(pattern, q_lower):
             return True
     
+    # Year-constrained listing patterns - these can be handled by metadata filtering
+    # Examples: "List papers published before 2022", "Show papers from 2020"
+    year_listing_patterns = [
+        r"^list\s+(?:all\s+)?papers?\s+published\s+(?:before|after|in|during|since)\s+\d{4}",
+        r"^show\s+(?:all\s+)?papers?\s+published\s+(?:before|after|in|during|since)\s+\d{4}",
+        r"^list\s+(?:all\s+)?papers?\s+from\s+\d{4}",
+        r"^show\s+(?:all\s+)?papers?\s+from\s+\d{4}",
+        r"^list\s+(?:all\s+)?papers?\s+(?:before|after|since)\s+\d{4}",
+        r"^show\s+(?:all\s+)?papers?\s+(?:before|after|since)\s+\d{4}",
+    ]
+    
+    for pattern in year_listing_patterns:
+        if re.search(pattern, q_lower):
+            return True
+    
     # Topic-based listing patterns - these can be handled by metadata filtering
     # Examples: "List SDN papers", "List only malware detection papers", "Show papers on IoT"
     topic_listing_patterns = [
@@ -2089,12 +2104,18 @@ def retrieve_relevant_chunks(
         # If query contains topic terms beyond the author name, narrow scope further
         # to prevent loading every paper an author ever wrote when only one is relevant
         topic_terms = _topic_specific_tokens(query)
-        if topic_terms and len(inventory_titles) > 3:
+        # Check if this is a pure author query (no topic terms beyond author name)
+        author_phrase = extract_author_search_phrase(query)
+        is_pure_author_query = bool(author_phrase and len(topic_terms) == 1 and topic_terms[0] in author_phrase.lower())
+        
+        if topic_terms and len(inventory_titles) > 3 and not is_pure_author_query:
             topic_filtered = []
             for t in inventory_titles:
                 title_lower = t.lower()
                 meta = papers_metadata.get(t, {})
-                haystack = title_lower + " " + (meta.get("authors","")).lower()
+                # For topic-narrowing, only search in titles, not authors
+                # This prevents author-only queries from matching all their papers
+                haystack = title_lower
                 if any(tok in haystack for tok in topic_terms):
                     topic_filtered.append(t)
             # Only apply filter if it finds matches AND doesn't empty the set completely
