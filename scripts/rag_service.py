@@ -192,7 +192,7 @@ class RAGService:
         user_prompt: str,
         *,
         temperature: float = 0.05,
-        num_predict: int = 2048,
+        num_predict: int = 4096,
     ) -> str:
         url = f"{settings.OLLAMA_BASE_URL}/api/chat"
         payload = {
@@ -1714,13 +1714,16 @@ class RAGService:
         # ── CODE-BASED LISTING FOR SIMPLE INVENTORY QUERIES ─────────────────
         # Fix 1: Topic-filtered listing - extract topic and filter inventory_metadata
         if query_mode == "listing" and is_simple_inventory_listing(query) and inventory_metadata:
-            # Extract what topic they want
+            # Extract what topic they want - support "list only X papers" pattern
             topic_match = re.search(
-                r'\blist\s+papers?\s+(?:about|on|related to|regarding|covering)\s+(.+?)[\?\.]?$',
+                r'\blist\s+(?:only\s+)?papers?\s+(?:about|on|related to|regarding|covering|for|in)?\s*(.+?)[\?\.]?$',
                 query, re.I
             )
             if topic_match:
                 topic = topic_match.group(1).strip().lower()
+                # Remove common trailing words
+                topic = re.sub(r'\b(papers?|articles?|studies?)\s*$', '', topic).strip()
+                
                 # Search chunk texts and titles for the topic
                 matched_titles = set()
                 for title, meta in inventory_metadata.items():
@@ -1766,6 +1769,16 @@ class RAGService:
             # Cap to 20 chunks max. More chunks dilute relevance and cause citation drift.
             # Use 2 chunks per matched paper (enough coverage without flooding context).
             effective_limit = min(max(limit, len(matched_titles) * 2), 20)
+
+        # Fix 4: Increase chunk retrieval for deep methodology/dataset/limitation questions
+        # These questions require more context to find specific information deep in papers
+        deep_content_patterns = [
+            r'\b(?:what|which)\s+(?:dataset|data|methodology|method|approach|technique|algorithm|framework|architecture|performance metric|evaluation metric|limitation|weakness|drawback|challenge)\b',
+            r'\b(?:how|describe|explain)\s+(?:the\s+)?(?:method|approach|technique|algorithm|framework|architecture)\b',
+            r'\b(?:what\s+are\s+the\s+)?(?:limitations|weaknesses|drawbacks|challenges)\b',
+        ]
+        if any(re.search(pat, query, re.I) for pat in deep_content_patterns):
+            effective_limit = max(effective_limit, 10)  # Increase to at least 10 chunks for deep questions
 
         # Extraction/listing tables must not inherit unrelated prior chat turns.
         # Drafting / creative requests (draft, write, generate, suggest) also get a
@@ -2206,6 +2219,10 @@ class RAGService:
             "'None of the retrieved documents address this question.'\n"
             "6. Do not write introductions, conclusions, or summaries "
             "that go beyond what is stated.\n"
+            "7. CONSOLIDATION RULE: If multiple doc_X tags from the SAME PAPER "
+            "support the SAME FACT, cite them together as (doc_X, doc_Y) instead of "
+            "repeating the same sentence with different tags. Do NOT repeat identical "
+            "information with different doc tags.\n"
         )
 
         # ── Step 3b: Answer Decision Gate ────────────────────────────────────

@@ -844,27 +844,31 @@ def answer_individual_paper_metadata_query(query: str, papers_metadata: dict) ->
     # 2. Match papers
     matched_papers = fuzzy_match_paper_titles(query, papers_metadata)
     if not matched_papers:
-        # Extract title keywords
+        # Extract title keywords with stricter matching
         words = [w.strip(".,:;?()[]\"'") for w in q.split()]
         stop_words = {
             "who", "wrote", "authored", "are", "the", "authors", "author", "of", "paper", "papers",
             "article", "articles", "publication", "publications", "on", "in", "what", "year", "when",
             "was", "published", "which", "journal", "venue", "where", "by", "doi", "the", "a", "an",
             "detection", "using", "based", "system", "approach", "model", "analysis", "for", "methods",
-            "techniques", "algorithms", "studies", "study"
+            "techniques", "algorithms", "studies", "study", "list", "show", "give", "name", "names"
         }
-        keywords = [w for w in words if len(w) >= 4 and w not in stop_words]
+        keywords = [w for w in words if len(w) >= 3 and w not in stop_words]
         if keywords:
             scored = []
             for title in papers_metadata:
                 title_lower = title.lower()
+                # Require ALL keywords to be present for a match (stricter)
                 hits = sum(1 for kw in keywords if kw in title_lower)
-                if hits > 0:
+                # Only consider matches with high keyword coverage (>= 70% of keywords)
+                if hits >= len(keywords) * 0.7:
                     scored.append((hits, title))
             if scored:
                 scored.sort(reverse=True)
                 best_hits = scored[0][0]
-                matched_papers = [t for h, t in scored if h == best_hits]
+                # Only return papers with the best score, and require at least 2 keyword matches
+                if best_hits >= 2:
+                    matched_papers = [t for h, t in scored if h == best_hits]
                 
     # Allow up to 5 matches for DOI queries to increase recall
     max_matches = 5 if target_field == "doi" else 3
