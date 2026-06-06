@@ -2208,7 +2208,13 @@ class RAGService:
 
         # ── Step 10: Post-verification ────────────────────────────────────────
         if not self._is_refusal_answer(final_answer):
-            final_answer = apply_verification_or_refuse(final_answer, chunks, papers_metadata)
+            verified, _ = apply_verification_or_refuse(
+                final_answer,
+                scope=scope,
+                papers_metadata=papers_metadata,
+                chunks=chunks,
+            )
+            final_answer = verified
 
         # ── Step 11: Log faithfulness metrics ────────────────────────────────
         faithfulness_issues = self._check_answer_faithfulness(final_answer, chunks)
