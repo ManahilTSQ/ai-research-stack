@@ -68,7 +68,9 @@ _KEYWORD_DISCOVERY_RE = re.compile(
     r"\brelated\s+to\b|"
     r"\bcitation-?worthy\b|"
     r"\bfor\s+(?:a\s+)?survey\s+on\b|"
-    r"\bbibliograph(?:y|ies)\b",
+    r"\bbibliograph(?:y|ies)\b|"
+    # Listing queries that should be handled by metadata filtering, not LLM
+    r"\blist\s+(?:only\s+)?(?:papers?|articles?|studies?)\b",
     re.I,
 )
 

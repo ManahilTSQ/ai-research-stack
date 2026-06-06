@@ -935,8 +935,9 @@ def is_content_extraction_query(query: str) -> bool:
 def is_simple_inventory_listing(query: str) -> bool:
     """Metadata-only list/table (title, year, venue) — safe to generate without LLM.
     
-    Returns True ONLY for very generic listing queries like "List all papers", "Show papers".
-    Returns False for any query with topic-specific keywords that require filtering.
+    Returns True for generic listing queries like "List all papers" AND for topic-based
+    listing queries like "List SDN papers" or "List only malware detection papers".
+    These can be handled by metadata filtering without going to the LLM.
     """
     # Allow contextual questions about chat history to pass through to RAG handler
     if "above questions" in query.lower() or "this chat" in query.lower():
@@ -953,6 +954,19 @@ def is_simple_inventory_listing(query: str) -> bool:
     ]
     
     for pattern in generic_patterns:
+        if re.search(pattern, q_lower):
+            return True
+    
+    # Topic-based listing patterns - these can be handled by metadata filtering
+    # Examples: "List SDN papers", "List only malware detection papers", "Show papers on IoT"
+    topic_listing_patterns = [
+        r"^list\s+(?:only\s+)?papers?\s*(?:about|on|related to|regarding|covering|for|in)?\s*.+",
+        r"^show\s+(?:only\s+)?papers?\s*(?:about|on|related to|regarding|covering|for|in)?\s*.+",
+        r"^list\s+(?:only\s+)?articles?\s*(?:about|on|related to|regarding|covering|for|in)?\s*.+",
+        r"^list\s+(?:only\s+)?studies?\s*(?:about|on|related to|regarding|covering|for|in)?\s*.+",
+    ]
+    
+    for pattern in topic_listing_patterns:
         if re.search(pattern, q_lower):
             return True
     

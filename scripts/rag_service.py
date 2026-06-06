@@ -1760,11 +1760,26 @@ class RAGService:
         # ── CODE-BASED LISTING FOR SIMPLE INVENTORY QUERIES ─────────────────
         # Fix 1: Topic-filtered listing - extract topic and filter inventory_metadata
         if query_mode == "listing" and is_simple_inventory_listing(query) and inventory_metadata:
-            # Extract what topic they want - support "list only X papers" pattern
+            # Extract what topic they want - support both patterns:
+            # - "List papers on SDN" (topic after papers)
+            # - "List SDN papers" (topic before papers)
             topic_match = re.search(
                 r'\blist\s+(?:only\s+)?papers?\s+(?:about|on|related to|regarding|covering|for|in)?\s*(.+?)[\?\.]?$',
                 query, re.I
             )
+            if not topic_match:
+                # Try pattern where topic comes before "papers": "List SDN papers"
+                topic_match = re.search(
+                    r'\blist\s+(?:only\s+)?(.+)\s+papers?[\?\.]?$',
+                    query, re.I
+                )
+            if not topic_match:
+                # Try pattern with "articles" or "studies": "List SDN articles"
+                topic_match = re.search(
+                    r'\blist\s+(?:only\s+)?(.+)\s+(?:articles?|studies?)[\?\.]?$',
+                    query, re.I
+                )
+            
             if topic_match:
                 topic = topic_match.group(1).strip().lower()
                 # Remove common trailing words
