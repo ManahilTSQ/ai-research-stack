@@ -570,11 +570,11 @@ def download_paper(request: DownloadRequest, background_tasks: BackgroundTasks):
 
             if pdf_path and pdf_path.exists():
                 try:
-                    pages, has_full_text = pdf_service.extract_text_by_page(pdf_path)
-                    if not has_full_text:
+                    full_text, char_to_page = pdf_service.extract_text_by_page(pdf_path)
+                    if len(full_text) < 8000:
                         logger.warning(f"Extracted minimal text from '{title}' - likely abstract-only or scanned PDF")
                     # Step 6b: Standardize chunk sizes to 2000/400 everywhere
-                    chunks = pdf_service.chunk_text(pages, chunk_size=2000, chunk_overlap=400)
+                    chunks = pdf_service.chunk_text(full_text, char_to_page, chunk_size=2000, chunk_overlap=400)
                 except Exception as e:
                     logger.error(f"Text extraction failed for '{title}': {e}")
 
@@ -942,13 +942,12 @@ async def upload_pdfs(
                                 has_valid_pdf = True
 
                     chunks = []
-                    has_full_text = False
                     if has_valid_pdf and pdf_path.exists():
-                        pages, has_full_text = pdf_service.extract_text_by_page(pdf_path)
-                        if not has_full_text:
+                        full_text, char_to_page = pdf_service.extract_text_by_page(pdf_path)
+                        if len(full_text) < 8000:
                             logger.warning(f"Extracted minimal text from '{rel}' - likely abstract-only or scanned PDF")
                         # Step 6b: Standardize chunk sizes to 2000/400 everywhere
-                        chunks = pdf_service.chunk_text(pages, chunk_size=2000, chunk_overlap=400)
+                        chunks = pdf_service.chunk_text(full_text, char_to_page, chunk_size=2000, chunk_overlap=400)
 
                     # Fallback to abstract-only chunking if PDF couldn't be obtained/parsed but abstract exists
                     if not chunks and abstract:
@@ -1041,12 +1040,12 @@ def ingest_pending(background_tasks: BackgroundTasks):
                     year = int(year_str) if year_str.isdigit() else None
 
                     logger.info(f"Extracting text from: {filename}")
-                    pages, has_full_text = pdf_service.extract_text_by_page(pdf_path)
-                    if not has_full_text:
+                    full_text, char_to_page = pdf_service.extract_text_by_page(pdf_path)
+                    if len(full_text) < 8000:
                         logger.warning(f"Extracted minimal text from '{filename}' - likely abstract-only or scanned PDF")
-                    logger.info(f"Chunking text from: {filename} ({len(pages)} pages)")
+                    logger.info(f"Chunking text from: {filename} ({len(full_text)} chars)")
                     # Step 6b: Standardize chunk sizes to 2000/400 everywhere
-                    chunks = pdf_service.chunk_text(pages, chunk_size=2000, chunk_overlap=400)
+                    chunks = pdf_service.chunk_text(full_text, char_to_page, chunk_size=2000, chunk_overlap=400)
 
                     if not chunks:
                         logger.warning(f"No chunks generated for {filename}, marking as failed")

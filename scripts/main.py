@@ -182,11 +182,11 @@ def process_paper_pipeline(
 
         print("[4/5] Extracting text with PyMuPDF...")
         try:
-            pages, has_full_text = pdf_service.extract_text_by_page(downloaded_path)
-            total_pages = len(pages)
-            total_chars = sum(len(p["text"]) for p in pages)
+            full_text, char_to_page = pdf_service.extract_text_by_page(downloaded_path)
+            total_chars = len(full_text)
+            total_pages = max(char_to_page) + 1 if char_to_page else 0
             print(f"[+] Extracted text from {total_pages} pages ({total_chars:,} chars)")
-            if not has_full_text:
+            if len(full_text) < 8000:
                 print(f"[!] Warning: Extracted minimal text - likely abstract-only or scanned PDF")
         except Exception as e:
             logger.error(f"Text extraction failed: {e}")
@@ -194,7 +194,7 @@ def process_paper_pipeline(
 
         print(f"[5/5] Chunking text (chunk_size={chunk_size}, overlap={chunk_overlap})...")
         try:
-            chunks = pdf_service.chunk_text(pages, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+            chunks = pdf_service.chunk_text(full_text, char_to_page, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
             print(f"[+] Generated {len(chunks)} chunks.")
             print("[6/6] Ingesting into ChromaDB vector database...")
             success = vector_store.add_paper_chunks(paper_title=title, doi=doi, chunks=chunks, venue=None)
@@ -387,10 +387,10 @@ def run_batch_ingestion(
         print(f"\nProcessing: {pdf_path.name}")
         try:
             # Extract text and create chunks from this PDF
-            pages, has_full_text = pdf_service.extract_text_by_page(pdf_path)
-            if not has_full_text:
+            full_text, char_to_page = pdf_service.extract_text_by_page(pdf_path)
+            if len(full_text) < 8000:
                 print(f"[!] Warning: Extracted minimal text - likely abstract-only or scanned PDF")
-            chunks = pdf_service.chunk_text(pages, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+            chunks = pdf_service.chunk_text(full_text, char_to_page, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
             # Derive a human-readable title from the filename
             # e.g. "attention_is_all_you_need.pdf" → "Attention Is All You Need"

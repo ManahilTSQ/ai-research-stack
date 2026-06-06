@@ -28,9 +28,9 @@ class PDFProcessorService:
 
     Typical usage:
         service = PDFProcessorService()
-        pages  = service.extract_text_by_page(Path("paper.pdf"))
+        full_text, char_to_page = service.extract_text_by_page(Path("paper.pdf"))
         # Step 6b: Standardize default chunk sizes to 2000/400
-        chunks = service.chunk_text(pages, chunk_size=2000, chunk_overlap=400)
+        chunks = service.chunk_text(full_text, char_to_page, chunk_size=2000, chunk_overlap=400)
     """
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -91,80 +91,45 @@ class PDFProcessorService:
     # PUBLIC: Page-Level Text Extraction
     # ──────────────────────────────────────────────────────────────────────────
 
-    def extract_text_by_page(self, pdf_path: Path | str) -> tuple[list[dict], bool]:
+    def extract_text_by_page(self, pdf_path: Path | str) -> tuple[str, list[int]]:
         """
-        Open a PDF file and extract cleaned text from every page with synced char-to-page tracking.
-
-        SYNCED STEP-BY-STEP PAGE EXTRACTION:
-          - Loop through pages via PyMuPDF (fitz)
-          - For each page, extract raw text, clean it IMMEDIATELY via _clean_text
-          - Only after cleaning, append to full_text with single newline
-          - At that exact moment, extend char_to_page with page_idx * length of appended substring
-          - This guarantees 1:1 character alignment
-
-        Args:
-            pdf_path: Absolute or relative path to the PDF file.
-
-        Returns:
-            Tuple of (pages, has_full_text):
-              - pages: List of dicts, one per page, each containing:
-                - "page_number" (int): 1-indexed page number.
-                - "text" (str): Cleaned text content of that page.
-              - has_full_text: bool, True if sufficient text was extracted (likely full PDF),
-                False if text is minimal (likely abstract-only or scan).
-
-        Raises:
-            FileNotFoundError: If the PDF does not exist at the given path.
-            Exception: Any error from PyMuPDF during open/read is re-raised.
+        Extracts text page-by-page and ensures perfect character-to-page alignment
+        by cleaning page content before calculating indexing boundaries.
         """
-        pdf_path = Path(pdf_path)  # Ensure we have a Path object, not a string
-
-        # Guard: file must exist before we attempt to open it
+        pdf_path = Path(pdf_path)
+        
         if not pdf_path.exists():
             logger.error(f"PDF file not found: {pdf_path}")
             raise FileNotFoundError(f"PDF file not found: {pdf_path}")
 
-        logger.info(f"Opening PDF for text extraction: {pdf_path.name}")
-        pages = []
-        total_chars = 0
+        full_text = ""
+        char_to_page = []
 
         try:
-            # fitz.open() returns a Document context manager
-            # Using 'with' ensures the file handle is closed even on error
-            with fitz.open(pdf_path) as doc:
-                total_pages = len(doc)
-                logger.info(f"Opened '{pdf_path.name}' — {total_pages} pages total")
-
-                # Iterate EVERY page (0-indexed internally, exposed as 1-indexed)
-                for page_idx in range(total_pages):
-                    page = doc[page_idx]
-                    # "text" layout mode extracts text in reading order
-                    raw_text = page.get_text("text")
-                    # Apply cleaning pipeline to remove PDF extraction noise IMMEDIATELY
-                    cleaned_text = self._clean_text(raw_text)
-                    total_chars += len(cleaned_text)
-
-                    pages.append({
-                        "page_number": page_idx + 1,  # Convert to 1-indexed for humans
-                        "text": cleaned_text
-                    })
-
-            # Determine if this is likely full text or abstract-only
-            # Abstract-only papers typically have < 8000 characters
-            # Full papers typically have > 8000 characters
-            has_full_text = total_chars >= 8000
-            if not has_full_text:
-                logger.warning(
-                    f"Extracted minimal text ({total_chars} chars) from '{pdf_path.name}' "
-                    "- likely abstract-only or scanned PDF. Marking as has_full_text=False."
-                )
-
-            logger.info(f"Extracted text from {len(pages)} pages of '{pdf_path.name}' (has_full_text={has_full_text}, total_chars={total_chars})")
-            return pages, has_full_text
-
+            doc = fitz.open(pdf_path)
+            for page_idx in range(len(doc)):
+                page = doc[page_idx]
+                raw_text = page.get_text("text") or ""
+                
+                # Clean the text immediately BEFORE measuring its string length
+                page_text = self._clean_text(raw_text)
+                if not page_text:
+                    continue
+                
+                text_to_append = page_text + "\n"
+                append_len = len(text_to_append)
+                
+                # Accumulate master text string
+                full_text += text_to_append
+                
+                # Add exactly one page integer value per character added to full_text
+                char_to_page.extend([page_idx] * append_len)
+                
+            doc.close()
         except Exception as e:
-            logger.error(f"Error extracting text from '{pdf_path.name}': {e}")
-            raise  # Re-raise so the caller can handle or log the failure
+            logger.error(f"Failed text extraction from PDF {pdf_path}: {e}")
+            
+        return full_text, char_to_page
 
     # ──────────────────────────────────────────────────────────────────────────
     # PUBLIC: Text Chunking
@@ -276,96 +241,65 @@ class PDFProcessorService:
                 cleaned.append(para)
         return cleaned
 
-    def chunk_text(
-        self,
-        pages: list[dict],
-        chunk_size: int = 1500,
-        chunk_overlap: int = 300,
-        use_structure_aware: bool = False
-    ) -> list[dict]:
+    def chunk_text(self, full_text: str, char_to_page: list[int], chunk_size: int = 1500, chunk_overlap: int = 300) -> list[dict]:
         """
-        Chunk the full document text into overlapping segments with synced char-to-page tracking.
-
-        SYNCED STEP-BY-STEP PAGE EXTRACTION:
-          - Extract all text from all pages into a single unified string
-          - For each page, append cleaned text with single newline
-          - At that exact moment, extend char_to_page with page_idx * length of appended substring
-          - This guarantees 1:1 character alignment
-
-        FIX SLIDING WINDOW DEPLETION:
-          - Sliding loop runs completely (while start < text_len)
-          - Chunk size: 1500 characters
-          - Chunk overlap: 300 characters
-
-        DUAL RANGE DEBRIS DEFENSE & CLEAN METADATA STRING:
-          - Safely wrap page index slice to avoid index errors or empty entries
-          - Convert to 1-indexed for reader clarity
-          - Filter None values
-
-        Args:
-            pages: List of page dicts as returned by extract_text_by_page().
-            chunk_size: Target chunk size in characters (default: 1500).
-            chunk_overlap: Overlap in characters (default: 300).
-            use_structure_aware: If True, use semantic section-aware chunking (default: False).
-
-        Returns:
-            List of chunk dicts, each containing:
-              - "chunk_index" (int): Sequential chunk number.
-              - "text" (str): The chunk text content.
-              - "metadata" (dict): Pages spanned (comma-separated string), section name, character offsets, and length.
+        Slices the fully synchronized text string into overlapping chunks.
         """
-        if not pages:
-            return []
-
-        # ── Step 1: Build the full concatenated text with SYNCED character→page alignment ──
-        full_text = ""
-        char_to_page = []
-
-        for page_idx, page in enumerate(pages):
-            page_num = page["page_number"]
-            page_text = page["text"]
-
-            if not page_text:
-                continue
-
-            if full_text:
-                # Append single newline separator
-                separator = "\n"
-                full_text += separator
-                # SYNCED: Extend char_to_page with page_num for each separator character
-                char_to_page.extend([page_num] * len(separator))
-
-            # Append cleaned page text
-            full_text += page_text
-            # SYNCED: Extend char_to_page with page_num for each character in page_text
-            char_to_page.extend([page_num] * len(page_text))
-
         text_len = len(full_text)
-        if text_len == 0:
-            logger.warning("No text content found in any page — nothing to chunk.")
-            return []
+        map_len = len(char_to_page)
+        chunks = []
+        start = 0
+        chunk_idx = 0
 
-        # SYNCED: Verify char_to_page length matches full_text length exactly
-        if len(char_to_page) != text_len:
-            logger.error(f"CRITICAL: char_to_page length ({len(char_to_page)}) != full_text length ({text_len})")
-            return []
+        if text_len == 0 or map_len == 0:
+            return chunks
 
-        logger.info(f"Built full text: {text_len} characters, char_to_page mapping length: {len(char_to_page)}")
+        # Enforce baseline boundary constraints
+        if chunk_size <= 0:
+            chunk_size = 1500
+        if chunk_overlap >= chunk_size or chunk_overlap < 0:
+            chunk_overlap = int(chunk_size * 0.2)
 
-        # ── Step 2: Strip references section to prevent false LLM citations ───
-        full_text = self._strip_references_section(full_text)
-        char_to_page = char_to_page[:len(full_text)]
-        text_len = len(full_text)
+        # Slide completely to the end of the text string length without premature breaking
+        while start < text_len:
+            end = min(start + chunk_size, text_len)
+            
+            chunk_text_content = full_text[start:end]
+            
+            # Slice tracking array safely within limits
+            slice_end = min(end, map_len)
+            chunk_pages_slice = char_to_page[start:slice_end]
+            
+            if chunk_pages_slice:
+                unique_pages = sorted(list(set(chunk_pages_slice)))
+                # Format as human readable 1-indexed comma separated string
+                pages_metadata_str = ",".join(str(p + 1) for p in unique_pages if p is not None)
+            else:
+                pages_metadata_str = "1"
 
-        if text_len == 0:
-            logger.warning("Document was entirely a reference list — nothing to chunk.")
-            return []
+            if not pages_metadata_str:
+                pages_metadata_str = "1"
 
-        # ── Step 3: Choose chunking strategy ────────────────────────────────
-        if use_structure_aware:
-            return self._chunk_structure_aware(full_text, char_to_page, chunk_size)
-        else:
-            return self._chunk_character_based(full_text, char_to_page, chunk_size, chunk_overlap)
+            chunks.append({
+                "chunk_index": chunk_idx,
+                "text": chunk_text_content.strip(),
+                "metadata": {
+                    "section": "Unknown",
+                    "pages": pages_metadata_str,
+                    "char_start": start,
+                    "char_end": end,
+                    "length": len(chunk_text_content)
+                }
+            })
+            
+            chunk_idx += 1
+            if end == text_len:
+                break
+                
+            start += (chunk_size - chunk_overlap)
+
+        logger.info(f"Successfully generated {len(chunks)} synchronized document slices.")
+        return chunks
 
     def _chunk_structure_aware(
         self,

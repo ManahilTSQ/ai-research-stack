@@ -73,6 +73,31 @@ class CitationAnalyzerService:
     # PRIVATE: Passage Extraction from PDF Text
     # ──────────────────────────────────────────────────────────────────────────
 
+    def _convert_to_pages_format(self, full_text: str, char_to_page: list[int]) -> list[dict]:
+        """
+        Convert the new full_text/char_to_page format to the old pages list format
+        for compatibility with citation analysis methods.
+        """
+        if not full_text or not char_to_page:
+            return []
+        
+        pages = {}
+        for char_idx, page_idx in enumerate(char_to_page):
+            if page_idx not in pages:
+                pages[page_idx] = []
+            pages[page_idx].append(full_text[char_idx])
+        
+        # Convert dict to sorted list of page dicts
+        page_list = []
+        for page_idx in sorted(pages.keys()):
+            page_text = "".join(pages[page_idx])
+            page_list.append({
+                "page_number": page_idx + 1,  # 1-indexed
+                "text": page_text
+            })
+        
+        return page_list
+
     def _strip_references_from_pages(self, pages: list[dict]) -> list[dict]:
         """
         Identify the bibliography/references section page and truncate it and
@@ -508,7 +533,8 @@ class CitationAnalyzerService:
                         if downloaded_path and downloaded_path.exists():
                             print("  [+] Extracting text and searching for citation markers...")
                             try:
-                                pages, _ = self.pdf_service.extract_text_by_page(downloaded_path)
+                                full_text, char_to_page = self.pdf_service.extract_text_by_page(downloaded_path)
+                                pages = self._convert_to_pages_format(full_text, char_to_page)
                                 pages = self._strip_references_from_pages(pages)
                                 passages = self._extract_citation_passages_from_text(
                                     pages, author_surnames, target_title

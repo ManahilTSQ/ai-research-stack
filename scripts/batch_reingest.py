@@ -51,10 +51,10 @@ def run():
         queued += 1
 
         try:
-            pages, has_full_text = pdf_service.extract_text_by_page(pdf_path)
-            if not has_full_text:
+            full_text, char_to_page = pdf_service.extract_text_by_page(pdf_path)
+            if len(full_text) < 8000:
                 print(f"[!] Warning: Extracted minimal text - likely abstract-only or scanned PDF")
-            chunks = pdf_service.chunk_text(pages, chunk_size=2000, chunk_overlap=400)
+            chunks = pdf_service.chunk_text(full_text, char_to_page, chunk_size=2000, chunk_overlap=400)
 
             if not chunks:
                 print(f"  [!] No text extracted from '{filename}'. PDF may be image-only (scanned). Skipping.")

@@ -279,9 +279,14 @@ class ManifestManagerService:
         extracted_doi = None
         if pdf_path.exists():
             try:
-                pages, _ = pdf_service.extract_text_by_page(pdf_path)
-                if pages:
-                    first_page_text = pages[0].get("text", "")
+                full_text, char_to_page = pdf_service.extract_text_by_page(pdf_path)
+                if full_text and char_to_page:
+                    # Find the end of the first page (where page index changes from 0 to 1)
+                    try:
+                        first_page_end = char_to_page.index(1) if 1 in char_to_page else len(full_text)
+                        first_page_text = full_text[:first_page_end]
+                    except ValueError:
+                        first_page_text = full_text
                     doi_match = re.search(r"\b(10\.\d{4,9}/[^\s]+)\b", first_page_text, re.IGNORECASE)
                     if doi_match:
                         extracted_doi = doi_match.group(1).rstrip(".,;()[]{}")

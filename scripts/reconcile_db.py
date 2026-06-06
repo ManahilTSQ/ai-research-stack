@@ -203,13 +203,12 @@ def reconcile(force_reset: bool = False):
 
             # 2. Extract and Chunk PDF text if file exists and is valid
             chunks = []
-            has_full_text = False
             if has_valid_pdf and full_path.exists():
-                pages, has_full_text = pdf_service.extract_text_by_page(full_path)
-                if not has_full_text:
+                full_text, char_to_page = pdf_service.extract_text_by_page(full_path)
+                if len(full_text) < 8000:
                     logger.warning(f"  [!] Extracted minimal text from '{rel_path}' - likely abstract-only or scanned PDF")
                 # Step 6b: Standardize chunk sizes to 2000/400 everywhere
-                chunks = pdf_service.chunk_text(pages, chunk_size=2000, chunk_overlap=400)
+                chunks = pdf_service.chunk_text(full_text, char_to_page, chunk_size=2000, chunk_overlap=400)
 
             # Fallback to abstract-only chunking if PDF couldn't be obtained/parsed but abstract is present
             if not chunks and abstract:
