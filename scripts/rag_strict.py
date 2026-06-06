@@ -933,6 +933,24 @@ def answer_catalog_metadata_query(query: str, papers_metadata: dict) -> str | No
         return None
     q = (query or "").lower()
 
+    # ── Deterministic direct-match for exact keyword lookups in titles ──
+    # Handle queries like "Which papers contain 'Deep Learning' in the title?"
+    title_keyword_match = re.search(r'\b(?:which|what|list)\s+(?:papers?|articles?)\s+(?:contain|have|with)\s+[\'"](.+?)[\'"]\s+(?:in\s+)?(?:the\s+)?title\b', q)
+    if title_keyword_match:
+        keyword = title_keyword_match.group(1).strip().lower()
+        matched = []
+        for title, meta in papers_metadata.items():
+            if keyword in title.lower():
+                matched.append((title, meta))
+        if matched:
+            lines = []
+            for title, meta in matched:
+                lines.append(f"{meta.get('authors', 'Unknown')} ({meta.get('year', 'N/A')}). {title}")
+            header = f"Papers in your ingested library containing '{keyword}' in the title ({len(lines)} paper(s)):"
+            return _format_numbered_list(header, lines)
+        else:
+            return f"No papers in your ingested library contain '{keyword}' in the title."
+
     # Deterministic metadata answers for specific paper questions
     individual_ans = answer_individual_paper_metadata_query(query, papers_metadata)
     if individual_ans:

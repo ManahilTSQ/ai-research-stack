@@ -982,6 +982,50 @@ class RAGService:
         "yolo",
     })
 
+    def _deduplicate_chunks(self, chunks: list[dict]) -> list[dict]:
+        """
+        Remove chunks with >80% text overlap to prevent robotic stuttering.
+        Uses Jaccard similarity to detect near-duplicate chunks.
+        """
+        if len(chunks) <= 1:
+            return chunks
+
+        def get_text_set(chunk: dict) -> set[str]:
+            """Extract word set from chunk text for similarity comparison."""
+            text = (chunk.get("text") or "").lower()
+            # Tokenize into words (3+ chars to be meaningful)
+            words = set(re.findall(r"\b[a-z]{3,}\b", text))
+            return words
+
+        def jaccard_similarity(set1: set[str], set2: set[str]) -> float:
+            """Calculate Jaccard similarity between two sets."""
+            if not set1 or not set2:
+                return 0.0
+            intersection = len(set1 & set2)
+            union = len(set1 | set2)
+            return intersection / union if union > 0 else 0.0
+
+        deduplicated = []
+        seen_texts = []
+
+        for chunk in chunks:
+            chunk_text_set = get_text_set(chunk)
+            is_duplicate = False
+
+            for seen_set in seen_texts:
+                similarity = jaccard_similarity(chunk_text_set, seen_set)
+                if similarity > 0.8:  # 80% threshold
+                    is_duplicate = True
+                    logger.debug(f"Dedup: removed chunk with {similarity:.2f} similarity")
+                    break
+
+            if not is_duplicate:
+                deduplicated.append(chunk)
+                seen_texts.append(chunk_text_set)
+
+        logger.info(f"Deduplication: {len(chunks)} -> {len(deduplicated)} chunks")
+        return deduplicated
+
     def _verify_claim_chunk_support(self, sentence: str, doc_num: int, chunks: list[dict]) -> bool:
         """
         Span-level evidence check: verify that the chunk cited by doc_<doc_num> actually
@@ -1807,6 +1851,10 @@ class RAGService:
         if matched_titles and not filter_title and scope.entity_kind != "topic":
             chunks = filter_chunks_to_titles(chunks, matched_titles)
 
+        # ── Text deduplication to prevent robotic stuttering ─────────────────
+        # Remove chunks with >80% text overlap to avoid redundant information
+        chunks = self._deduplicate_chunks(chunks)
+
         # ── EARLY QUALITY GATE (immediately after retrieval/reranking) ───────────
         # Moved here to save compute - fail fast before any further processing
         # DISABLED: Context coherence gate is too aggressive and blocks valid queries
@@ -2369,7 +2417,8 @@ class RAGService:
 
                     # FIX 4: Citation binding — convert doc_X placeholders to APA inline.
                     # Must run after grounding enforcement, before reference section is appended.
-                    if not listing_style_query and not self._is_refusal_answer(answer):
+                    # Apply to all answers including listing queries to replace doc_X with citations
+                    if not self._is_refusal_answer(answer):
                         try:
                             answer, _had_citations = self._bind_citations_and_verify(answer, chunks)
                             if not _had_citations:
