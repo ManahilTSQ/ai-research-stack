@@ -751,6 +751,13 @@ def is_catalog_metadata_query(query: str) -> bool:
         return True
     if re.search(r"\bhow many\b.{0,30}\b(papers?|articles?)\b", q):
         return True
+    # Check for topic-filtered listing queries (e.g., "List malware detection papers")
+    # These should NOT be treated as general "list all papers" queries
+    topic_filtered_list = re.search(r"\blist\s+(?:only\s+)?(?:\w+\s+){1,}(?:papers?|articles?|studies)\b", q)
+    if topic_filtered_list:
+        return False  # Let topic filtering handle this
+    
+    # General listing queries without topic filtering
     if re.search(r"\blist\b.{0,40}\b(all\s+)?(ingested\s+)?(papers?|articles?)\b", q):
         return True
     if re.search(r"\bwhat\b.{0,20}\b(papers?|articles?)\b.{0,20}\b(library|ingested|knowledge base)\b", q):

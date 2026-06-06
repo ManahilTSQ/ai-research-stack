@@ -568,11 +568,10 @@ def _topic_specific_tokens(query: str) -> list[str]:
     
     for phrase in compound_phrases:
         if phrase in q_lower:
-            # Add all words from this compound phrase
+            # Add ALL words from this compound phrase, even if they were filtered as generic
             phrase_words = phrase.split()
             for word in phrase_words:
-                if word in tokens:
-                    tokens_to_keep.add(word)
+                tokens_to_keep.add(word)
     
     # Filter out generic tokens unless they're in a compound phrase
     # Also keep "blockchain", "explainable" as they are specific topics
@@ -1631,11 +1630,17 @@ def fuzzy_match_paper_titles(query: str, papers_metadata: dict) -> list[str]:
     if len(words) >= 3:
         for title in papers_metadata:
             title_lower = title.lower()
-            # Check for substantial overlap (at least 50% of words for 3-5 words, 60% for longer)
+            # Check for substantial overlap (at least 50% of words for 3-5 words, 40% for longer)
             title_words = set(title_lower.split())
             query_words = set(words)
             overlap = len(title_words & query_words)
-            min_overlap = 2 if len(query_words) == 3 else min(3, len(query_words) * 0.5)
+            # More lenient matching for longer queries to handle full title pastes
+            if len(query_words) >= 8:
+                min_overlap = max(3, len(query_words) * 0.4)  # 40% for very long queries
+            elif len(query_words) >= 5:
+                min_overlap = max(2, len(query_words) * 0.5)  # 50% for medium queries
+            else:
+                min_overlap = 2  # At least 2 for short queries
             if overlap >= min_overlap:
                 if title not in matches:
                     matches.append(title)
