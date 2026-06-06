@@ -13,6 +13,7 @@ Embeddings are generated using BAAI/bge-base-en-v1.5 (requires re-ingestion afte
 
 import re
 import logging
+from pathlib import Path
 import chromadb
 from chromadb.utils import embedding_functions
 from config import settings   # Flat import — scripts/ is on sys.path
