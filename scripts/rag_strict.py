@@ -223,6 +223,16 @@ def _papers_matching_topic_tokens(
 def is_keyword_discovery_query(query: str) -> bool:
     """Questions answerable from title/metadata before LLM (any topic)."""
     q = (query or "").lower()
+
+    # Year-constrained listing → answer_catalog_metadata_query handles this correctly
+    # with real numeric year comparison. Don't intercept here.
+    if re.search(r'\b(before|after|since|until|prior\s+to|later\s+than)\s+\d{4}\b', q):
+        return False
+    if re.search(r'\b\d{4}\s+(papers?|articles?|studies?)\b', q):
+        return False
+    if re.search(r'\bpapers?\s+(from|in|of)\s+\d{4}\b', q):
+        return False
+
     # Exclude meta-questions about missing full text papers
     if "full text" in q or "pdf" in q:
         if "did not" in q or "not find" in q or "would have" in q or "wanted" in q:
@@ -685,6 +695,10 @@ def verify_answer_against_scope(
 def is_catalog_metadata_query(query: str) -> bool:
     q = (query or "").lower()
 
+    # ── Newest / Oldest paper queries ──────────────────────────────────────
+    if re.search(r'\b(newest|oldest|latest|earliest|most\s+recent)\b.*\bpaper\b', q):
+        return True
+
     # ── Meta-questions about missing papers/gaps ─────────────────────────────
     # These should be handled by the missing papers logic, not catalog metadata
     if "full text" in q or "pdf" in q:
@@ -974,6 +988,30 @@ def answer_catalog_metadata_query(query: str, papers_metadata: dict) -> str | No
     if not papers_metadata or not is_catalog_metadata_query(query):
         return None
     q = (query or "").lower()
+
+    # ── Newest / Oldest paper queries ──────────────────────────────────────
+    newest_re = re.compile(r'\b(newest|latest|most\s+recent)\b.*\bpaper\b|\bpaper\b.*\b(newest|latest|most\s+recent)\b', re.I)
+    oldest_re = re.compile(r'\b(oldest|earliest|first\s+published)\b.*\bpaper\b|\bpaper\b.*\b(oldest|earliest)\b', re.I)
+
+    if newest_re.search(q):
+        valid = [(t, m) for t, m in papers_metadata.items()
+                 if str(m.get("year", "")).isdigit()]
+        if not valid:
+            return "No papers with year information found in your library."
+        title, meta = max(valid, key=lambda x: int(x[1]["year"]))
+        return (f"The newest paper in your library is:\n\n"
+                f"{meta.get('authors','Unknown')} ({meta.get('year','N/A')}). "
+                f"{title}\nVenue: {meta.get('venue','N/A')}")
+
+    if oldest_re.search(q):
+        valid = [(t, m) for t, m in papers_metadata.items()
+                 if str(m.get("year", "")).isdigit()]
+        if not valid:
+            return "No papers with year information found in your library."
+        title, meta = min(valid, key=lambda x: int(x[1]["year"]))
+        return (f"The oldest paper in your library is:\n\n"
+                f"{meta.get('authors','Unknown')} ({meta.get('year','N/A')}). "
+                f"{title}\nVenue: {meta.get('venue','N/A')}")
 
     # ── Deterministic direct-match for exact keyword lookups in titles ──
     # Handle queries like "Which papers contain 'Deep Learning' in the title?"

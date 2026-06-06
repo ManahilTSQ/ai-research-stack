@@ -1173,6 +1173,19 @@ class RAGService:
             doc_ids = re.findall(r"\bdoc_(\d+)\b", sent)
 
             if not doc_ids:
+                # PRESERVE honest "not found" admissions — these are correct, not errors
+                ADMISSION_PHRASES = [
+                    "do not contain", "does not contain", "no information about",
+                    "not found in", "cannot find", "not in the provided",
+                    "no relevant", "not mentioned", "not discussed", "not addressed",
+                    "no papers", "no chunks", "insufficient", "no evidence",
+                    "provided documents do not", "context does not",
+                ]
+                is_admission = any(p in sent.lower() for p in ADMISSION_PHRASES)
+                if is_admission:
+                    kept_sentences.append(sent)
+                    continue  # Keep it — don't strip honest admissions
+
                 # No citation at all — strip the sentence
                 logger.warning(f"Removing uncited sentence: '{sent[:80]}'")
                 continue

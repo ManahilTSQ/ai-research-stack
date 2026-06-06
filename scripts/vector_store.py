@@ -13,6 +13,7 @@ Embeddings are generated using BAAI/bge-base-en-v1.5 (requires re-ingestion afte
 
 import re
 import logging
+import time
 from pathlib import Path
 import chromadb
 from chromadb.utils import embedding_functions
@@ -37,6 +38,11 @@ class VectorStoreService:
     The collection uses cosine similarity distance (hnsw:space = "cosine"),
     which is the standard metric for comparing text embedding vectors.
     """
+
+    # Class-level cache for get_collection_stats() to eliminate redundant DB scans
+    _stats_cache: dict = {}
+    _stats_cache_time: float = 0.0
+    _STATS_TTL: float = 10.0  # seconds
 
     def __init__(self):
         """
@@ -512,6 +518,11 @@ class VectorStoreService:
               - "papers_list" (list[str]): Sorted list of unique paper titles.
               - "papers_metadata" (dict): Mapping from paper title (str) to dict containing 'authors', 'year', and 'doi'.
         """
+        # Check cache first to eliminate redundant DB scans
+        now = time.monotonic()
+        if self._stats_cache and (now - self._stats_cache_time) < self._STATS_TTL:
+            return self._stats_cache
+
         try:
             total_chunks = self.collection.count()
             unique_papers = set()
@@ -538,6 +549,10 @@ class VectorStoreService:
                 "papers_list": sorted(list(unique_papers)),
                 "papers_metadata": papers_metadata
             }
+
+            # Update cache
+            VectorStoreService._stats_cache = result
+            VectorStoreService._stats_cache_time = now
             return result
 
         except Exception as e:
@@ -549,3 +564,12 @@ class VectorStoreService:
                 "papers_list": [],
                 "papers_metadata": {}
             }
+
+    def invalidate_stats_cache(self):
+        """
+        Invalidate the stats cache after any upsert, delete, or metadata update.
+        Call this method whenever the collection state changes.
+        """
+        VectorStoreService._stats_cache = {}
+        VectorStoreService._stats_cache_time = 0.0
+        logger.debug("Stats cache invalidated")

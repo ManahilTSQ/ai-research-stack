@@ -30,14 +30,23 @@ SHORT_TECH_TERMS = frozenset({
 # Cross-encoder reranker for improved retrieval quality
 _reranker = None
 
+def _cuda_available() -> bool:
+    """Check if CUDA is available for GPU acceleration."""
+    try:
+        import torch
+        return torch.cuda.is_available()
+    except ImportError:
+        return False
+
 def _get_reranker():
-    """Lazy-load the cross-encoder reranker."""
+    """Lazy-load the cross-encoder reranker with CUDA device selection."""
     global _reranker
     if _reranker is None:
         try:
             from sentence_transformers import CrossEncoder
-            _reranker = CrossEncoder("BAAI/bge-reranker-base")
-            logger.info("Cross-encoder reranker loaded successfully: BAAI/bge-reranker-base")
+            device = "cuda:0" if _cuda_available() else "cpu"
+            _reranker = CrossEncoder("BAAI/bge-reranker-base", device=device)
+            logger.info(f"Cross-encoder reranker loaded successfully: BAAI/bge-reranker-base (device={device})")
         except ImportError as e:
             logger.error(f"sentence-transformers not installed: {e}")
             logger.error("Reranking DISABLED. Install with: pip install sentence-transformers")
@@ -1898,15 +1907,14 @@ def is_bibliography_chunk(text: str) -> bool:
 
 
 def _ensure_rerank_scores(chunks: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
-    for c in chunks:
-        if "rerank_score" not in c:
-            # Fallback calculation using distance: similarity score in [0.0, 1.0]
-            distance = float(c.get("distance", 1.0))
-            similarity = max(0.0, 1.0 - (distance / 2.0))
-            overlap_count = _chunk_query_overlap_score(c, query)
-            lexical_bonus = min(0.3, overlap_count * 0.1)
-            c["rerank_score"] = min(1.0, similarity + lexical_bonus)
+    """Ensure all chunks have a rerank_score. Never normalize to 1.0."""
+    for chunk in chunks:
+        if "rerank_score" not in chunk:
+            # Assign based on inverse distance as a proxy
+            dist = chunk.get("distance", 0.5)
+            chunk["rerank_score"] = max(0.0, 1.0 - dist)
     return chunks
+    # DO NOT normalize by max_score — this masks poor retrieval quality
 
 
 def retrieve_relevant_chunks(
@@ -1988,6 +1996,11 @@ def retrieve_relevant_chunks(
             logger.debug("Query router not available, skipping metadata filter parsing")
         except Exception as e:
             logger.warning(f"Metadata filter parsing failed: {e}")
+
+    # Clean metadata filters: remove internal keys and convert empty dict to None
+    if metadata_filters:
+        clean_filters = {k: v for k, v in metadata_filters.items() if not k.startswith('_')}
+        metadata_filters = clean_filters if clean_filters else None
 
     inventory_titles = list(scope_titles) if scope_titles else resolve_matching_paper_titles(
         query, papers_metadata
@@ -2073,6 +2086,25 @@ def retrieve_relevant_chunks(
     # Note: no [:3] cap — we fetch ALL matched papers so every one of the author's
     # works is represented in the context for exhaustive listing/tabulation queries.
     if inventory_titles:
+        # If query contains topic terms beyond the author name, narrow scope further
+        # to prevent loading every paper an author ever wrote when only one is relevant
+        topic_terms = _topic_specific_tokens(query)
+        if topic_terms and len(inventory_titles) > 3:
+            topic_filtered = []
+            for t in inventory_titles:
+                title_lower = t.lower()
+                meta = papers_metadata.get(t, {})
+                haystack = title_lower + " " + (meta.get("authors","")).lower()
+                if any(tok in haystack for tok in topic_terms):
+                    topic_filtered.append(t)
+            # Only apply filter if it finds matches AND doesn't empty the set completely
+            if topic_filtered:
+                logger.info(
+                    f"Topic-narrowed author scope: {len(inventory_titles)} → "
+                    f"{len(topic_filtered)} papers for terms {topic_terms}"
+                )
+                inventory_titles = topic_filtered
+
         author_chunks: list[dict[str, Any]] = []
         n_papers = max(1, len(inventory_titles))
         # Over-retrieve for author-scoped queries too
