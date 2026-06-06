@@ -1162,20 +1162,25 @@ def query_rag(request: RAGQueryRequest):
             conversation_history=request.conversation_history or [],
         )
 
-        if not result.get("success"):
-            error_msg = result.get("error", "RAG failed.")
-            answer_msg = (result.get("answer") or error_msg or "RAG failed.").strip()
-            if any(phrase in error_msg for phrase in _rag_failure_phrases()):
-                return {"answer": answer_msg, "sources": result.get("sources") or []}
-            raise HTTPException(status_code=500, detail=error_msg)
-
-        answer = (result.get("answer") or "").strip()
-        if not answer:
-            raise HTTPException(
-                status_code=500,
-                detail="RAG returned an empty answer. Check server logs.",
+        # Fix 3: Stop error messages reaching UI - hide error field, only log it
+        if not result.get("success") and not result.get("answer"):
+            display_answer = (
+                "I could not find relevant information in your "
+                "library for this query. Please try rephrasing or "
+                "check that relevant papers are ingested."
             )
-        return {"answer": answer, "sources": result.get("sources") or []}
+        else:
+            display_answer = result.get("answer", "")
+
+        # Log the error separately, never send to frontend
+        if result.get("error"):
+            logger.warning(f"Query error: {result['error']}")
+
+        return {
+            "answer": display_answer,
+            "sources": result.get("sources", []),
+            "success": result.get("success", False)
+        }
 
     except OllamaUnavailableError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e

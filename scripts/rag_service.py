@@ -1443,6 +1443,129 @@ class RAGService:
         
         return filtered
 
+    def _try_answer_from_metadata(self, query: str, papers_metadata: dict) -> dict | None:
+        """
+        Fix 2: Metadata query interceptor.
+        Intercept queries about paper metadata or content mentions before RAG retrieval.
+        Returns a dict with answer if query can be answered from metadata/chunks, None otherwise.
+        """
+        q = query.lower().strip()
+        
+        # Pattern: "which/what papers use/mention/discuss X"
+        use_match = re.search(
+            r'\b(?:which|what)\s+papers?\s+'
+            r'(?:use|mention|discuss|implement|apply|contain|employ)\s+'
+            r'(.+?)[\?\.]?$', q
+        )
+        if use_match:
+            term = use_match.group(1).strip()
+            matched = []
+            for title, meta in papers_metadata.items():
+                chunks = self.vector_store.get_chunks_for_paper(title)
+                for chunk in chunks:
+                    if term in chunk.get('text', '').lower():
+                        matched.append(
+                            f"{meta.get('authors','Unknown')} "
+                            f"({meta.get('year','N/A')}). {title}"
+                        )
+                        break
+            if matched:
+                return {
+                    "query": query,
+                    "answer": (
+                        f"Papers mentioning '{term}':\n\n" + 
+                        "\n\n".join(matched)
+                    ),
+                    "sources": [], "success": True
+                }
+            return {
+                "query": query,
+                "answer": (
+                    f"No papers in your library explicitly "
+                    f"mention '{term}' in their text."
+                ),
+                "sources": [], "success": True
+            }
+        
+        # Pattern: DOI/year/venue/authors lookup
+        field_match = re.search(
+            r'\b(?:what\s+is|what\'s|give me|show me|find)\s+'
+            r'(?:the\s+)?'
+            r'(doi|year|venue|journal|authors?|publisher)\s+'
+            r'(?:of|for)\s+(.+?)[\?\.]?$', q
+        )
+        if field_match:
+            field = field_match.group(1).strip()
+            paper_query = field_match.group(2).strip()
+            
+            # Fuzzy match paper title
+            best_match = None
+            best_score = 0
+            for title in papers_metadata.keys():
+                title_lower = title.lower()
+                if paper_query in title_lower or title_lower in paper_query:
+                    score = len(paper_query) / max(len(title_lower), 1)
+                    if score > best_score:
+                        best_score = score
+                        best_match = title
+            
+            if best_match and best_score > 0.3:
+                meta = papers_metadata[best_match]
+                field_map = {
+                    "doi": meta.get("doi", "N/A"),
+                    "year": meta.get("year", "N/A"),
+                    "venue": meta.get("venue", "N/A"),
+                    "journal": meta.get("venue", "N/A"),
+                    "authors": meta.get("authors", "Unknown"),
+                    "author": meta.get("authors", "Unknown"),
+                    "publisher": meta.get("venue", "N/A"),
+                }
+                value = field_map.get(field, "N/A")
+                return {
+                    "query": query,
+                    "answer": (
+                        f"The {field} of \"{best_match}\" is: {value}"
+                    ),
+                    "sources": [], "success": True
+                }
+        
+        return None  # Not a metadata query, continue to RAG
+
+    def _query_is_out_of_scope(self, query: str, chunks: list[dict]) -> bool:
+        """
+        Fix 4: Irrelevant topic refusal.
+        Returns True if the query's core topic is absent from ALL retrieved chunks.
+        Uses 30% match threshold for key terms.
+        """
+        # Extract multi-word technical phrases (2+ word sequences)
+        # These are more specific than single tokens
+        words = re.findall(r'\b[a-zA-Z]{4,}\b', query.lower())
+        stopwords = {
+            "what", "which", "when", "where", "does", "about",
+            "from", "with", "that", "this", "have", "into",
+            "paper", "papers", "using", "latest", "modern",
+            "these", "their", "used", "show", "tell", "give"
+        }
+        key_terms = [w for w in words if w not in stopwords]
+        
+        if len(key_terms) < 2:
+            return False
+        
+        # Build full text of all chunks
+        all_chunk_text = " ".join(
+            c.get("text", "").lower() + " " + 
+            c.get("metadata", {}).get("title", "").lower()
+            for c in chunks
+        )
+        
+        # Count how many key terms appear in ANY chunk
+        matches = sum(1 for t in key_terms if t in all_chunk_text)
+        match_ratio = matches / len(key_terms)
+        
+        # If fewer than 30% of key terms appear anywhere,
+        # the topic is genuinely not in the library
+        return match_ratio < 0.30
+
     def _bind_citations_and_verify(self, answer: str, chunks: list[dict]) -> tuple[str, bool]:
         # Let's map each doc_X to its clean APA citation
         def get_clean_citation(doc_num_str):
@@ -1560,6 +1683,13 @@ class RAGService:
                 "error": "Off-topic query blocked by keyword gate.",
             }
 
+        # ── Fix 2: Metadata query interceptor — fires before retrieval ─────────────
+        stats = self.vector_store.get_collection_stats()
+        papers_metadata = stats.get("papers_metadata", {}) or {}
+        metadata_answer = self._try_answer_from_metadata(query, papers_metadata)
+        if metadata_answer:
+            return metadata_answer
+
         # ── Academic drafting path (non-RAG) ─────────────────────────────────────
         # Example: "Draft an introduction for a paper on federated learning for IoT security"
         # This must not trigger keyword discovery ("papers on ...") or strict scope verification.
@@ -1675,12 +1805,23 @@ class RAGService:
                 # Check if it's a broad query when they have multiple papers
                 author_display, resolved_papers = resolve_author_from_library(query, papers_metadata)
                 if len(resolved_papers) > 3 and is_broad_author_query(query, author_phrase):
-                    logger.warning(f"Broad query on author '{author_phrase}' with {len(resolved_papers)} papers, refusing before LLM")
+                    logger.warning(f"Broad query on author '{author_phrase}' with {len(resolved_papers)} papers, showing paper listing")
+                    # Fix 6: Show their papers grouped by topic instead of refusing
+                    author_papers_meta = {
+                        t: papers_metadata[t]
+                        for t in resolved_papers
+                        if t in papers_metadata
+                    }
+                    listing = self._render_inventory_listing(query, author_papers_meta)
                     return {
                         "query": query,
-                        "answer": f"{author_display} is an author on {len(resolved_papers)} papers in your library. Please specify which paper or topic.",
+                        "answer": (
+                            f"{author_display} has {len(resolved_papers)} papers "
+                            f"in your library:\n\n{listing}\n\n"
+                            "Please ask about a specific paper or topic from the list above."
+                        ),
                         "sources": [],
-                        "success": True,
+                        "success": True
                     }
 
         if query_mode == "ambiguous":
@@ -1720,7 +1861,43 @@ class RAGService:
             )
 
         # ── CODE-BASED LISTING FOR SIMPLE INVENTORY QUERIES ─────────────────
+        # Fix 1: Topic-filtered listing - extract topic and filter inventory_metadata
         if query_mode == "listing" and is_simple_inventory_listing(query) and inventory_metadata:
+            # Extract what topic they want
+            topic_match = re.search(
+                r'\blist\s+papers?\s+(?:about|on|related to|regarding|covering)\s+(.+?)[\?\.]?$',
+                query, re.I
+            )
+            if topic_match:
+                topic = topic_match.group(1).strip().lower()
+                # Search chunk texts and titles for the topic
+                matched_titles = set()
+                for title, meta in inventory_metadata.items():
+                    title_lower = title.lower()
+                    if topic in title_lower:
+                        matched_titles.add(title)
+                        continue
+                    # Search actual chunk text
+                    chunks = self.vector_store.get_chunks_for_paper(title)
+                    for chunk in chunks:
+                        if topic in chunk.get('text', '').lower():
+                            matched_titles.add(title)
+                            break
+                
+                if matched_titles:
+                    inventory_metadata = {
+                        t: papers_metadata[t]
+                        for t in matched_titles
+                    }
+                else:
+                    return {
+                        "query": query,
+                        "answer": f"No papers in your library explicitly cover '{topic}'.",
+                        "sources": [],
+                        "success": True
+                    }
+            # else: no topic filter, show all (for "list all papers")
+
             answer = self._render_inventory_listing(query, inventory_metadata)
             return {
                 "query": query,
@@ -2115,6 +2292,19 @@ class RAGService:
             context_str = self._build_context_with_ids(chunks)
             logger.info("Extractive QA: No sentences extracted, using full chunks")
 
+        # Fix 4: Irrelevant topic refusal - check if query is out of scope
+        if self._query_is_out_of_scope(query, chunks):
+            return {
+                "query": query,
+                "answer": (
+                    "Your library does not contain papers on this topic. "
+                    "The retrieved papers cover different subjects. "
+                    "Please ingest relevant papers first."
+                ),
+                "sources": [],
+                "success": False
+            }
+
         # ── Step 3: Build structured prompts ──────────────────────────────────
         scope_note = ""
         if matched_titles and not filter_title:
@@ -2149,19 +2339,22 @@ class RAGService:
                 "Only use information from this paper's context blocks when answering.\n"
             )
 
-        # System prompt: strict research assistant with behavioral rules only
-        # Chunk content is provided in the user prompt using doc_N format
+        # Fix 5: Constrained extraction prompt - forces per-document structure
+        # System prompt: strict academic research assistant with constrained decoding
         system_prompt = (
-            "You are a strict research assistant. Answer ONLY from the source chunks provided in the user message.\n\n"
-            "RULES:\n"
-            "1. If the answer is not explicitly stated in the chunks, respond with: "
-            "'I could not find this information in the ingested papers.'\n"
-            "2. Do NOT use your own knowledge under any circumstances.\n"
-            "3. Do NOT infer, extrapolate, or fill gaps beyond what is written.\n"
-            "4. Do NOT generate any citation, author name, paper title, DOI, or year not present verbatim in the chunks.\n"
-            "5. Cite every factual claim using the doc_X ID from the chunk header (e.g. (doc_1), (doc_3)).\n"
-            "6. If chunks do not answer the question, say: 'I could not find this information in the ingested papers.'\n"
-            f"{scope_note}"
+            "You are a strict academic research assistant. "
+            "Your ONLY job is to report what the provided documents say.\n\n"
+            "ABSOLUTE RULES:\n"
+            "1. Use ONLY information explicitly written in the documents below.\n"
+            "2. Every sentence MUST end with (doc_X) where X is the document number.\n"
+            "3. If a document does not contain the answer, say exactly: "
+            "'doc_X does not address this question.'\n"
+            "4. NEVER use your own knowledge. NEVER mention any paper, "
+            "author, method, or fact not present word-for-word in the documents.\n"
+            "5. If NO document addresses the question, respond ONLY with: "
+            "'None of the retrieved documents address this question.'\n"
+            "6. Do not write introductions, conclusions, or summaries "
+            "that go beyond what is stated.\n"
         )
 
         # ── Step 3b: Answer Decision Gate ────────────────────────────────────
@@ -2229,27 +2422,19 @@ class RAGService:
             "Do NOT invent consensus. Do NOT blend claims from different domains into one sentence."
         ) if _is_aggregation_query else ""
 
-        # User prompt: library inventory + doc-ID summary + full passages
-        # Inject partial-notice from the gate when mode == 'partial'
+        # Fix 5: Constrained extraction prompt - force per-document structure
+        # User prompt: forces per-document addressing
         user_prompt = (
-            f"Ingested Paper Library Inventory:\n"
-            f"{'─' * 80}\n"
-            f"{library_inventory_str}\n"
-            f"{'─' * 80}\n\n"
-            f"Retrieved Document Set (reference these doc_X IDs in every claim):\n"
-            f"{'─' * 80}\n"
-            f"{retrieved_summary_str}\n"
-            f"{'─' * 80}\n\n"
-            f"Full Context Passages from Retrieved Documents:\n"
-            f"{'─' * 80}\n"
+            f"Documents:\n"
+            f"{'─' * 60}\n"
             f"{context_str}\n"
-            f"{'─' * 80}\n\n"
-            + (_partial_notice + "\n\n" if _partial_notice else "")
-            + (_aggregation_notice + "\n\n" if _aggregation_notice else "")
-            + f"Researcher Query: {query}\n\n"
-            "Provide your structured academic answer below. "
-            "You MUST cite every factual claim using doc_X IDs from the Retrieved Document Set above "
-            "(e.g. (doc_1), (doc_3, doc_5)). Append a References section at the end."
+            f"{'─' * 60}\n\n"
+            f"Question: {query}\n\n"
+            "For each document that contains relevant information, "
+            "write ONE paragraph starting with 'According to doc_X:' "
+            "followed by what that document says. "
+            "Only include documents that directly answer the question. "
+            "End each sentence with (doc_X)."
         )
 
         # ── Step 4: Send to Ollama /api/chat ──────────────────────────────────
@@ -2330,7 +2515,8 @@ class RAGService:
                             answer = self._strip_generic_sentences(answer, chunks)
                         except Exception as _gs:
                             logger.warning(f"Generic sentence filter failed: {_gs}")
-                    if (not listing_style_query) and (not self._is_refusal_answer(answer)):
+                    # Fix 7: No references on refusals - only build safe references for non-refusal answers
+                    if not self._is_refusal_answer(answer):
                         safe_refs = self._build_safe_references(chunks, papers_metadata)
                         if safe_refs:
                             answer = f"{answer}\n\n{safe_refs}"
