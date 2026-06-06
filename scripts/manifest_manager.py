@@ -235,14 +235,12 @@ class ManifestManagerService:
 
     def resolve_metadata(self, pdf_path: Path, title_guess: str, existing_doi: str | None = None) -> dict:
         """
-        Attempt to resolve academic metadata (title, authors, year, doi, abstract) for a PDF file.
-        Cascades:
-          1. Extract DOI/arXiv from filename or first page.
-          2. Query Crossref as primary metadata source for DOI-based papers.
-          3. If Crossref fails, try OpenAlex as fallback.
-          4. If both fail (or no DOI resolved yet), try OpenAlex title search.
-          5. Query Semantic Scholar as secondary fallback and for abstract/citation enrichment.
-          6. Fallback to fitz/internal PDF metadata and filename parsing if offline/failed.
+        Step 5: Cascading resolver for academic metadata.
+        Follows the specified cascade order:
+          Step 1: Crossref — most authoritative for DOI-based metadata
+          Step 2: Semantic Scholar — for abstract and citation data
+          Step 3: OpenAlex fallback — for books, global proceedings
+          Step 4: Unpaywall — full text PDF recovery
         """
         import re
         from paper_discovery import PaperDiscoveryService
@@ -272,7 +270,8 @@ class ManifestManagerService:
             "doi": existing_doi or "N/A",
             "venue": "N/A",
             "abstract": "",
-            "paper_id": ""
+            "paper_id": "",
+            "pdf_url": ""
         }
 
         # ── Pre-step: Always extract first-page text & DOI from PDF before lookups ──
@@ -297,41 +296,61 @@ class ManifestManagerService:
         elif extracted_doi:
             target_doi = extracted_doi
 
-        # ── Step 1: Query APIs by DOI (Crossref first, then OpenAlex) ──
+        # ── Step 1: Crossref — most authoritative for DOI-based metadata ──
         api_resolved = None
         if target_doi:
-            # Try Crossref
             crossref_res = discovery_service.fetch_crossref_metadata(target_doi)
             if crossref_res:
-                logger.info(f"Resolved metadata via Crossref for DOI '{target_doi}'")
+                logger.info(f"Step 1: Resolved metadata via Crossref for DOI '{target_doi}'")
                 api_resolved = crossref_res
-            else:
-                # Fallback to OpenAlex
+
+        # ── Step 2: Semantic Scholar — for abstract and citation data ──
+        if not api_resolved:
+            # If Crossref failed, try Semantic Scholar directly
+            s2_query = target_doi or title_guess
+            try:
+                logger.info(f"Step 2: Querying Semantic Scholar for: '{s2_query}'")
+                s2_res = discovery_service.get_paper_details(s2_query)
+                if s2_res:
+                    logger.info(f"Step 2: Resolved metadata via Semantic Scholar")
+                    # Convert S2 format to standard format
+                    api_resolved = {
+                        "title": s2_res.get("title"),
+                        "authors": s2_res.get("authors", []),
+                        "year": s2_res.get("year"),
+                        "venue": s2_res.get("venue"),
+                        "doi": (s2_res.get("externalIds") or {}).get("DOI") or target_doi or "N/A",
+                        "abstract": s2_res.get("abstract", "")
+                    }
+            except Exception as s2_err:
+                logger.warning(f"Step 2: Semantic Scholar lookup failed: {s2_err}")
+
+        # ── Step 3: OpenAlex fallback — for books, global proceedings ──
+        if not api_resolved:
+            if target_doi:
                 openalex_res = discovery_service.fetch_openalex_metadata(target_doi)
                 if openalex_res:
-                    logger.info(f"Resolved metadata via OpenAlex fallback for DOI '{target_doi}'")
+                    logger.info(f"Step 3: Resolved metadata via OpenAlex fallback for DOI '{target_doi}'")
                     api_resolved = openalex_res
+            else:
+                # Try OpenAlex title search
+                search_title = title_guess.replace("+", " ").replace("_", " ").replace("-", " ").strip(".")
+                openalex_res = discovery_service.fetch_openalex_metadata(search_title)
+                if openalex_res:
+                    # Basic similarity check
+                    c_title = openalex_res.get("title", "").lower().strip()
+                    t_clean = search_title.lower().strip()
+                    c_title_norm = re.sub(r'[^a-z0-9\s]', '', c_title)
+                    t_clean_norm = re.sub(r'[^a-z0-9\s]', '', t_clean)
+                    
+                    t_words = set(t_clean_norm.split())
+                    c_words = set(c_title_norm.split())
+                    overlap = len(t_words & c_words) / max(len(t_words), 1) if t_words else 0
+                    if overlap >= 0.7:
+                        logger.info(f"Step 3: Resolved metadata via OpenAlex title search (overlap={overlap:.0%})")
+                        api_resolved = openalex_res
 
-        # ── Step 2: Query APIs by Title search if no DOI query resolved yet ──
-        if not api_resolved:
-            # Query OpenAlex search by title
-            search_title = title_guess.replace("+", " ").replace("_", " ").replace("-", " ").strip(".")
-            openalex_res = discovery_service.fetch_openalex_metadata(search_title)
-            if openalex_res:
-                # Basic similarity check to ensure we didn't resolve a completely different paper
-                c_title = openalex_res.get("title", "").lower().strip()
-                t_clean = search_title.lower().strip()
-                c_title_norm = re.sub(r'[^a-z0-9\s]', '', c_title)
-                t_clean_norm = re.sub(r'[^a-z0-9\s]', '', t_clean)
-                
-                t_words = set(t_clean_norm.split())
-                c_words = set(c_title_norm.split())
-                overlap = len(t_words & c_words) / max(len(t_words), 1) if t_words else 0
-                if overlap >= 0.7:
-                    logger.info(f"Resolved metadata via OpenAlex title search for '{search_title}' (overlap={overlap:.0%})")
-                    api_resolved = openalex_res
-
-        # ── Step 3: Populate Resolved dictionary from API results ──
+        # ── Populate Resolved dictionary from API results ──
         if api_resolved:
             resolved["title"] = api_resolved.get("title") or resolved["title"]
             resolved["authors"] = _format_authors_helper(api_resolved.get("authors"))
@@ -340,30 +359,14 @@ class ManifestManagerService:
             resolved["venue"] = api_resolved.get("venue") or "N/A"
             resolved["abstract"] = api_resolved.get("abstract") or ""
 
-        # ── Step 4: Secondary Enrichment from Semantic Scholar (specifically for Abstract, Paper ID, and Citation reports) ──
-        s2_paper_id = target_doi or resolved["doi"]
-        if s2_paper_id == "N/A":
-            s2_paper_id = resolved["title"]
-            
-        try:
-            logger.info(f"Querying Semantic Scholar for abstract enrichment: '{s2_paper_id}'")
-            s2_res = discovery_service.get_paper_details(s2_paper_id)
-            if s2_res:
-                resolved["paper_id"] = s2_res.get("paperId") or ""
-                # Populate abstract if it was missing from Crossref/OpenAlex
-                if not resolved["abstract"] and s2_res.get("abstract"):
-                    resolved["abstract"] = s2_res["abstract"].strip()
-                # If OpenAlex/Crossref failed entirely, use S2 as final API fallback
-                if not api_resolved:
-                    resolved["title"] = s2_res.get("title") or resolved["title"]
-                    resolved["authors"] = _format_authors_helper(s2_res.get("authors"))
-                    resolved["year"] = str(s2_res.get("year") or "N/A")
-                    resolved["doi"] = (s2_res.get("externalIds") or {}).get("DOI") or resolved["doi"]
-                    resolved["venue"] = s2_res.get("venue") or "N/A"
-        except Exception as s2_err:
-            logger.warning(f"Semantic Scholar enrichment failed for '{s2_paper_id}': {s2_err}")
+        # ── Step 4: Unpaywall — full text PDF recovery ──
+        if target_doi and target_doi != "N/A":
+            pdf_url = discovery_service.fetch_open_access_pdf_url(target_doi)
+            if pdf_url:
+                logger.info(f"Step 4: Found open-access PDF via Unpaywall for DOI '{target_doi}'")
+                resolved["pdf_url"] = pdf_url
 
-        # ── Step 5: Fallbacks to fitz & filename metadata (for offline or failed lookups) ──
+        # ── Fallbacks to fitz & filename metadata (for offline or failed lookups) ──
         # Fill year and authors if still Unknown/N/A
         if pdf_path.exists() and (resolved["title"] == title_guess.title() or resolved["authors"] == "Unknown Authors" or resolved["year"] == "N/A"):
             try:
