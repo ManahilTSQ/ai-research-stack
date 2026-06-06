@@ -92,15 +92,15 @@ class Settings:
     # 0.85 → only ~57% similarity required (too loose, lets off-topic chunks through)
     # 0.72 → ~64% similarity required (tighter, blocks weak semantic matches)
     # This is the FIRST line of defense before the reranker.
-    RAG_MAX_DISTANCE: float = float(os.getenv("RAG_MAX_DISTANCE", "0.65"))
+    RAG_MAX_DISTANCE: float = float(os.getenv("RAG_MAX_DISTANCE", "0.75"))
 
     # Adaptive thresholds depending on the query type:
     # Aggregation queries ("what do all papers say") require higher precision (lower distance threshold).
-    RAG_MAX_DISTANCE_AGGREGATION: float = float(os.getenv("RAG_MAX_DISTANCE_AGGREGATION", "0.45"))
+    RAG_MAX_DISTANCE_AGGREGATION: float = float(os.getenv("RAG_MAX_DISTANCE_AGGREGATION", "0.60"))
     # Default threshold for general factual queries.
-    RAG_MAX_DISTANCE_DEFAULT: float = float(os.getenv("RAG_MAX_DISTANCE_DEFAULT", "0.50"))
+    RAG_MAX_DISTANCE_DEFAULT: float = float(os.getenv("RAG_MAX_DISTANCE_DEFAULT", "0.65"))
     # Single-paper queries can afford to look at a broader context.
-    RAG_MAX_DISTANCE_SINGLE: float = float(os.getenv("RAG_MAX_DISTANCE_SINGLE", "0.55"))
+    RAG_MAX_DISTANCE_SINGLE: float = float(os.getenv("RAG_MAX_DISTANCE_SINGLE", "0.75"))
 
     # ── RAG Query Term Guard ──────────────────────────────────────────────────
     # If True, retrieved chunks must include at least one significant query term.

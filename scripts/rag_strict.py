@@ -397,6 +397,27 @@ def resolve_query_scope(
             author_phrase=" & ".join(multi_authors),
         )
 
+    # ── Single-author co-authorship: "papers co-authored by X" ───────────────
+    # Handle queries like "Which papers were co-authored by M. Humayun?"
+    from rag_context import extract_single_author_coauthor_query
+    single_coauthor = extract_single_author_coauthor_query(query)
+    if single_coauthor:
+        author_phrase, author_titles = resolve_author_from_library(query, papers_metadata)
+        if author_titles:
+            return QueryScope(
+                scoped_titles=author_titles,
+                requires_entity=True,
+                entity_kind="author",
+                author_phrase=author_phrase or single_coauthor,
+            )
+        # Author not found in library
+        return QueryScope(
+            scoped_titles=[],
+            requires_entity=True,
+            entity_kind="author",
+            author_phrase=single_coauthor,
+        )
+
     author_phrase, author_titles = resolve_author_from_library(query, papers_metadata)
     explicit_author = query_expects_named_author(query) or bool(
         extract_author_search_phrase(query)

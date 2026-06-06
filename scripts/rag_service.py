@@ -835,13 +835,13 @@ class RAGService:
     # ANSWER DECISION GATE
     # Single controller that replaces N independent threshold checks.
     # Returns one of three exclusive modes:
-    #   'confident'  → ≥2 chunks with rerank_score ≥ 0.45
-    #   'partial'    → at least 1 chunk with score 0.20–0.45 (OR ≥2 unscored chunks)
-    #   'refuse'     → 0 chunks with score ≥ 0.20 (no usable evidence)
+    #   'confident'  → ≥2 chunks with rerank_score ≥ 0.35
+    #   'partial'    → at least 1 chunk with score 0.15–0.35 (OR ≥2 unscored chunks)
+    #   'refuse'     → 0 chunks with score ≥ 0.15 (no usable evidence)
     # Modes NEVER overlap; transitions are deterministic.
     # ─────────────────────────────────────────────────────────────────────────────
-    _CONFIDENT_THRESHOLD = 0.45
-    _PARTIAL_THRESHOLD   = 0.20
+    _CONFIDENT_THRESHOLD = 0.35
+    _PARTIAL_THRESHOLD   = 0.15
 
     def _compute_answer_decision(
         self,
@@ -901,19 +901,19 @@ class RAGService:
 
         # ── Improved caution mode using retrieval scores (not keyword counting) ──────
         # More robust thresholds based on reranker scores:
-        # - max_score < 0.20: refuse (chunks too irrelevant even for cautious answer)
-        # - 0.20 <= max_score < 0.35: partial/caution mode
-        # - max_score >= 0.35: confident or partial based on avg_top_3
-        if max_score < 0.20:
+        # - max_score < 0.15: refuse (chunks too irrelevant even for cautious answer)
+        # - 0.15 <= max_score < 0.30: partial/caution mode
+        # - max_score >= 0.30: confident or partial based on avg_top_3
+        if max_score < 0.15:
             logger.warning(
-                f"Refusing query '{query}': max_score={max_score:.3f} < 0.20. "
+                f"Refusing query '{query}': max_score={max_score:.3f} < 0.15. "
                 "Chunks are too irrelevant for even a cautious answer."
             )
             return "refuse", ""
         
-        if max_score < 0.35:
+        if max_score < 0.30:
             logger.warning(
-                f"Weak retrieval for query '{query}': max_score={max_score:.3f} < 0.35. "
+                f"Weak retrieval for query '{query}': max_score={max_score:.3f} < 0.30. "
                 "Switching to caution/partial mode."
             )
             return "partial", (
@@ -926,7 +926,7 @@ class RAGService:
             )
 
         # Routing based on normalized query-level confidence
-        if avg_top_3 >= 0.52 and max_score >= 0.58:
+        if avg_top_3 >= 0.40 and max_score >= 0.45:
             return "confident", ""
 
         # Default to partial evidence mode if scores are lower but chunks are retrieved

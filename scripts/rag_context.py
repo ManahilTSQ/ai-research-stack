@@ -513,15 +513,68 @@ def _significant_query_tokens(query: str) -> list[str]:
     """Extract lowercased meaningful tokens from user query (incl. author surnames)."""
     stop = _query_stopwords()
     raw = re.findall(r"[a-z0-9]+", (query or "").lower())
-    # Author surnames are often 4+ characters — keep them even when other tokens are short.
-    # Removed 3-character fallback to avoid false positives from generic short tokens.
-    tokens = [t for t in raw if len(t) >= 4 and t not in stop]
+    
+    # Common technical acronyms that are meaningful even though short (3 chars)
+    # These should NOT be filtered out just because they're short
+    TECH_ACRONYMS = frozenset({
+        "sdn", "iot", "ai", "ml", "dl", "nlp", "cv", "vr", "ar", "xr",
+        "gpu", "cpu", "tps", "qos", "ssl", "tls", "vpn", "dns", "cdn",
+        "api", "sdk", "gui", "cli", "sql", "nosql", "json", "xml", "yaml",
+        "pdf", "http", "https", "ftp", "ssh", "tcp", "udp", "ip", "ipv4",
+        "ipv6", "mac", "wifi", "5g", "4g", "3g", "2g", "gsm", "lte",
+        "ids", "ips", "ddos", "dos", "xss", "csrf", "rce", "lfi", "rfi",
+        "svm", "knn", "rnn", "lstm", "gru", "gan", "vae", "gpt", "bert",
+        "resnet", "vgg", "yolo", "rcnn", "fcn", "unet", "mrcnn", "ssd",
+    })
+    
+    tokens = []
+    for t in raw:
+        if t in stop:
+            continue
+        # Keep 3+ char tokens if they're known tech acronyms
+        if len(t) >= 4:
+            tokens.append(t)
+        elif len(t) == 3 and t in TECH_ACRONYMS:
+            tokens.append(t)
+        # Also keep 3-char tokens that are all uppercase (likely acronyms)
+        elif len(t) == 3 and t.isupper():
+            tokens.append(t)
+    
     return tokens
 
 
 def _topic_specific_tokens(query: str) -> list[str]:
     """Distinctive topic tokens (excludes generic words like 'detection', 'learning')."""
-    return [t for t in _significant_query_tokens(query) if t not in _GENERIC_TOPIC_TOKENS]
+    tokens = _significant_query_tokens(query)
+    
+    # Context-aware generic term filtering
+    # Keep generic terms when they appear in meaningful compound phrases
+    # e.g., "malware detection" should keep both "malware" and "detection"
+    q_lower = (query or "").lower()
+    
+    # Meaningful compound phrases that should keep their generic components
+    compound_phrases = [
+        "malware detection", "intrusion detection", "anomaly detection",
+        "fraud detection", "threat detection", "attack detection",
+        "deep learning", "machine learning", "reinforcement learning",
+        "neural network", "neural networks", "convolutional network",
+        "recurrent network", "network security", "cyber security",
+        "software defined", "software defined network", "software defined networking",
+    ]
+    
+    # Build a set of tokens to keep (including generic ones in compounds)
+    tokens_to_keep = set(tokens)
+    
+    for phrase in compound_phrases:
+        if phrase in q_lower:
+            # Add all words from this compound phrase
+            phrase_words = phrase.split()
+            for word in phrase_words:
+                if word in tokens:
+                    tokens_to_keep.add(word)
+    
+    # Filter out generic tokens unless they're in a compound phrase
+    return [t for t in tokens if t not in _GENERIC_TOPIC_TOKENS or t in tokens_to_keep]
 
 
 def query_has_library_topic_cue(query: str) -> bool:
@@ -1014,6 +1067,14 @@ _MULTI_AUTHOR_PATTERNS = [
     ),
 ]
 
+# Pattern for single-author co-authorship queries like "co-authored by M. Humayun"
+_SINGLE_AUTHOR_COAUTHOR_PATTERN = re.compile(
+    r"(?:papers?|articles?|works?)?\s*(?:were\s+)?co-?authored?\s*(?:papers?\s*)?(?:by|with)\s+"
+    r"([A-Za-z][A-Za-z\s\.\-]{1,40}?)"
+    r"(?:\s+(?:in|on|about|from|at|to)\b|[.,;?]|$)",
+    re.I,
+)
+
 
 def extract_multi_author_phrases(query: str) -> list[str] | None:
     """
@@ -1033,6 +1094,22 @@ def extract_multi_author_phrases(query: str) -> list[str] | None:
             a2 = m.group(2).strip().strip("\"',;.")
             if a1 and a2 and len(a1) >= 3 and len(a2) >= 3:
                 return [a1, a2]
+    return None
+
+
+def extract_single_author_coauthor_query(query: str) -> str | None:
+    """
+    Extract author name from single-author co-authorship queries like:
+    - "Which papers were co-authored by M. Humayun?"
+    - "papers co-authored by Jhanjhi"
+    Returns the author phrase or None.
+    """
+    q = (query or "").strip()
+    m = _SINGLE_AUTHOR_COAUTHOR_PATTERN.search(q)
+    if m:
+        author = m.group(1).strip().strip("\"',;.")
+        if author and len(author) >= 2:
+            return author
     return None
 
 
