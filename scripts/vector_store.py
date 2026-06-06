@@ -63,15 +63,22 @@ class VectorStoreService:
             )
 
             # ── Collection Setup ──────────────────────────────────────────────
-            # get_or_create_collection is idempotent — safe to call on every startup.
-            # hnsw:space = "cosine" sets cosine similarity as the distance metric.
-            # Cosine similarity is recommended for normalised text embeddings because
-            # it measures angular distance (topic similarity) rather than magnitude.
-            self.collection = self.client.get_or_create_collection(
-                name="research_papers",
-                embedding_function=self.embedding_function,
-                metadata={"hnsw:space": "cosine"}
-            )
+            # Always use get_collection (not get_or_create) to avoid stale references.
+            # If the collection was deleted externally, this will raise an error,
+            # which we catch and handle by recreating the collection.
+            try:
+                self.collection = self.client.get_collection(
+                    name="research_papers",
+                    embedding_function=self.embedding_function
+                )
+            except Exception:
+                # Collection doesn't exist or was deleted - recreate it
+                logger.info("Collection not found or was deleted, recreating...")
+                self.collection = self.client.create_collection(
+                    name="research_papers",
+                    embedding_function=self.embedding_function,
+                    metadata={"hnsw:space": "cosine"}
+                )
 
             # Step 2b: Run startup database metadata normalization migration only once
             # Use a flag file to track if normalization has been done
