@@ -70,7 +70,9 @@ _KEYWORD_DISCOVERY_RE = re.compile(
     r"\bfor\s+(?:a\s+)?survey\s+on\b|"
     r"\bbibliograph(?:y|ies)\b|"
     # Listing queries that should be handled by metadata filtering, not LLM
-    r"\blist\s+(?:only\s+)?(?:papers?|articles?|studies?)\b",
+    # Matches "List SDN papers", "List only malware detection papers", etc.
+    # Simplified pattern: just check if it starts with "list" and contains "papers"
+    r"\blist\b.*\bpapers?\b",
     re.I,
 )
 
@@ -233,9 +235,17 @@ def is_keyword_discovery_query(query: str) -> bool:
 
 def answer_keyword_discovery_query(query: str, papers_metadata: dict) -> str | None:
     """List papers whose metadata matches question keywords — no profile list needed."""
+    import logging
+    logger = logging.getLogger(__name__)
+    
     if not papers_metadata or not is_keyword_discovery_query(query):
+        logger.info(f"Keyword discovery query NOT matched: '{query}' - papers_metadata={bool(papers_metadata)}, is_keyword_discovery_query={is_keyword_discovery_query(query) if papers_metadata else 'N/A'}")
         return None
-    titles = find_papers_by_metadata_keywords(query, papers_metadata)
+    
+    logger.info(f"Keyword discovery query matched: '{query}' - searching metadata...")
+    titles = find_papers_by_metadata_keywords(query, papers_metadata, min_token_hits=1)
+    logger.info(f"Keyword discovery found {len(titles)} papers for query: '{query}'")
+    
     if not titles:
         return _TOPIC_NOT_FOUND_REFUSAL
     lines = []

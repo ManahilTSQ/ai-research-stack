@@ -527,6 +527,17 @@ def _significant_query_tokens(query: str) -> list[str]:
         "resnet", "vgg", "yolo", "rcnn", "fcn", "unet", "mrcnn", "ssd",
     })
     
+    # Additional short acronyms that should be allowed as single-token matches
+    # These are specific technical terms that are meaningful even if short
+    SHORT_TECH_TERMS = frozenset({
+        "sdn", "iot", "ai", "ml", "dl", "nlp", "cv", "vr", "ar", "xr",
+        "gpu", "cpu", "ssl", "tls", "vpn", "dns", "cdn", "api", "sdk",
+        "gui", "cli", "sql", "pdf", "http", "ssh", "tcp", "udp", "ip",
+        "mac", "wifi", "5g", "4g", "3g", "2g", "gsm", "lte", "ids",
+        "ips", "ddos", "dos", "xss", "csrf", "rce", "lfi", "rfi",
+        "svm", "knn", "rnn", "lstm", "gru", "gan", "vae", "gpt", "bert",
+    })
+    
     tokens = []
     for t in raw:
         if t in stop:
@@ -671,10 +682,12 @@ def find_papers_by_metadata_keywords(
     
     # Remove listing words from tokens for better matching
     listing_words = {"list", "show", "only", "papers", "paper", "articles", "article", "studies", "study", "all"}
-    tokens = [t for t in tokens if t not in listing_words]
+    # Preserve short tech acronyms even after removing listing words
+    tokens = [t for t in tokens if t not in listing_words or t in SHORT_TECH_TERMS]
     
     # Identify significant tokens (non-generic) for strict matching
-    significant_tokens = [t for t in tokens if t not in _GENERIC_TOPIC_TOKENS and len(t) >= 3]
+    # Include short tech terms as significant even if they're short
+    significant_tokens = [t for t in tokens if (t not in _GENERIC_TOPIC_TOKENS and len(t) >= 3) or t in SHORT_TECH_TERMS]
     
     # Hierarchical topic expansion for broader terms
     # If query contains a broad term like "cancer", also search for its subtypes
@@ -715,7 +728,8 @@ def find_papers_by_metadata_keywords(
         else:
             # Single-token query: only match if the token is specific enough.
             tok = tokens[0]
-            if len(tok) < 7 or tok in _WEAK_TOPIC_TOKENS:
+            # Allow single-token matches for known technical acronyms even if short
+            if (len(tok) < 7 or tok in _WEAK_TOPIC_TOKENS) and tok not in SHORT_TECH_TERMS:
                 need = 2  # Force no single-generic-token matches.
             else:
                 need = 1
