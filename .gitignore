@@ -39,3 +39,4 @@ Thumbs.db
 !vectordb/.gitkeep
 !output/.gitkeep
 !papers/.gitkeep
+".env" 
