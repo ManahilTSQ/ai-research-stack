@@ -518,12 +518,8 @@ def search_papers(
         external_ids = paper.get("externalIds") or {}
         doi   = external_ids.get("DOI")   or "N/A"
         arxiv = external_ids.get("ArXiv") or "N/A"
-        has_pdf = False
-        if arxiv != "N/A":
-            has_pdf = True
-        elif doi != "N/A":
-            pdf_url = discover_service.fetch_open_access_pdf_url(doi)
-            has_pdf = pdf_url is not None
+        # Simple PDF availability check without blocking Unpaywall calls
+        has_pdf = arxiv != "N/A"  # arXiv papers always have PDFs
 
         pid = paper.get("paperId", "")
         formatted.append({
