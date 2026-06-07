@@ -1909,13 +1909,21 @@ class RAGService:
             history_for_llm = None
 
         # ── Step 1: Retrieve chunks ───────────────────────────────────────────
+        # Detect aggregation queries — must NOT scope to a single paper
+        _AGGREGATION_CUES = {
+            "across", "library", "all papers", "in general", "most common",
+            "overall", "throughout", "collectively", "combined"
+        }
+        q_lower = query.lower()
+        is_aggregation_query = any(cue in q_lower for cue in _AGGREGATION_CUES)
+        
         # Enable reranking by default for better retrieval precision
         chunks = retrieve_relevant_chunks(
             self.vector_store,
             query,
             limit=effective_limit,
             filter_title=filter_title,
-            scope_titles=matched_titles if matched_titles and scope.entity_kind != "topic" else None,
+            scope_titles=None if is_aggregation_query else (matched_titles if matched_titles and scope.entity_kind != "topic" else None),
             use_reranking=True,  # Always enable reranking for better precision
             over_retrieve_multiplier=2.5,  # Reduced from 4.0 — prevents citation drift from irrelevant chunks
         )

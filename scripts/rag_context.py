@@ -737,6 +737,12 @@ def find_papers_by_metadata_keywords(
         else:
             # Single-token query: only match if the token is specific enough.
             tok = tokens[0]
+            # For short specific terms like "malware", require it in title not just body
+            if len(tok) < 8:
+                # Title-only match for short precise terms
+                matched = [t for t in papers_metadata if tok in t.lower()]
+                logger.info(f"Short token '{tok}' (<8 chars): using title-only match, found {len(matched)} papers")
+                return sorted(matched)
             # Allow single-token matches for known technical acronyms even if short
             if (len(tok) < 7 or tok in _WEAK_TOPIC_TOKENS) and tok not in SHORT_TECH_TERMS:
                 need = 2  # Force no single-generic-token matches.
