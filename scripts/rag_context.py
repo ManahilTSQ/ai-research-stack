@@ -2276,7 +2276,7 @@ def retrieve_relevant_chunks(
     for sq in search_queries:
         results = vector_store.query_similar_chunks(
             sq, limit=search_limit, filter_title=filter_title, filter_domain=effective_filter_domain,
-            metadata_filters=metadata_filters
+            metadata_filters=metadata_filters, title_boost=True
         )
         for r in results:
             rid = r.get("id")

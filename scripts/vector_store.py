@@ -401,22 +401,37 @@ class VectorStoreService:
                     stats = self.get_collection_stats()
                     papers_metadata = stats.get("papers_metadata", {})
                     query_lower = query.lower()
-                    words = re.findall(r'\b[a-z]{3,}\b', query_lower)
+                    words = re.findall(r'\b[a-z]{2,}\b', query_lower)
                     
-                    if len(words) >= 3:
-                        # Generate 3-word and 4-word phrases from the query
-                        for phrase_len in [4, 3]:
+                    # IMPROVED: Handle 2-word queries and shorter phrases
+                    if len(words) >= 2:
+                        # Generate 2-word, 3-word, and 4-word phrases from the query
+                        for phrase_len in [4, 3, 2]:
                             for i in range(len(words) - phrase_len + 1):
                                 phrase = " ".join(words[i:i+phrase_len])
-                                if len(phrase) >= 15:  # Only use meaningful phrases
+                                # Reduced threshold from 15 to 10 characters to catch more matches
+                                if len(phrase) >= 10:
                                     for title in papers_metadata.keys():
                                         title_lower = title.lower()
                                         if phrase in title_lower:
                                             boosted_titles.add(title)
                                             logger.debug(f"Title boost: '{phrase}' in '{title}'")
                     
+                    # ADDITIONAL: Boost papers that contain ALL significant query words
+                    # This catches cases where phrase matching fails but individual words match
+                    if not boosted_titles and len(words) >= 2:
+                        significant_words = [w for w in words if len(w) >= 4]
+                        if len(significant_words) >= 2:
+                            for title in papers_metadata.keys():
+                                title_lower = title.lower()
+                                # Check if title contains at least 2 significant query words
+                                word_matches = sum(1 for w in significant_words if w in title_lower)
+                                if word_matches >= 2:
+                                    boosted_titles.add(title)
+                                    logger.debug(f"Title boost (word match): {word_matches} words in '{title}'")
+                    
                     if boosted_titles:
-                        logger.info(f"Title boosting enabled for {len(boosted_titles)} papers with exact phrase matches")
+                        logger.info(f"Title boosting enabled for {len(boosted_titles)} papers with exact phrase/word matches")
                 except Exception as e:
                     logger.warning(f"Title boosting failed: {e}")
 

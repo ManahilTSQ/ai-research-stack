@@ -251,6 +251,34 @@ class ManifestManagerService:
             "10.36526/js.v7i2",  # Broken DOI causing HTTP 404 on all 5 lookup strategies
         }
 
+        # VALIDATION: Skip metadata resolution for obviously invalid titles
+        # These are typically failed PDF downloads or corrupted files
+        INVALID_TITLE_PATTERNS = [
+            r'\.com$',  # URLs like "journal-nusantara.com"
+            r'checking your browser',  # CAPTCHA pages
+            r'recaptcha',  # CAPTCHA pages
+            r'access denied',  # Error pages
+            r'404',  # Error pages
+            r'not found',  # Error pages
+            r'error',  # Generic error pages
+        ]
+        
+        title_lower = title_guess.lower()
+        for pattern in INVALID_TITLE_PATTERNS:
+            if re.search(pattern, title_lower):
+                logger.warning(f"Skipping metadata resolution for invalid title pattern: '{title_guess}' matches pattern '{pattern}'")
+                # Return minimal metadata to prevent repeated resolution attempts
+                return {
+                    "title": title_guess,
+                    "authors": "Unknown Authors",
+                    "year": "N/A",
+                    "doi": existing_doi or "N/A",
+                    "venue": "N/A",
+                    "abstract": "",
+                    "paper_id": "",
+                    "pdf_url": ""
+                }
+
         discovery_service = PaperDiscoveryService()
         pdf_service = PDFProcessorService()
 
@@ -769,6 +797,14 @@ class ManifestManagerService:
             # ── Pass 3: Clean up ghost papers from ChromaDB ────────────────────────
             # If a paper is in ChromaDB but not marked as success in the manifest,
             # it means the paper was deleted or is orphaned. Delete it from ChromaDB.
+            # CRITICAL FIX: Only delete ghost papers if there are NO pending entries that were just reset
+            # This prevents race conditions where a paper is ingested, title lookup fails during sync,
+            # it's reset to pending, then immediately deleted as a ghost paper before the next ingest.
+            pending_filenames = {
+                filename for filename, meta in manifest.items()
+                if meta.get("status") == "pending" and meta.get("error", "").startswith("Auto-reset")
+            }
+            
             manifest_success_titles = {
                 meta.get("title").lower().strip()
                 for meta in manifest.values()
@@ -785,10 +821,21 @@ class ManifestManagerService:
                         if mst in t_lower or t_lower in mst:
                             has_match = True
                             break
+                    # ADDITIONAL: Check if this title matches any pending entry that was just auto-reset
+                    # If so, skip deletion to prevent race condition
                     if not has_match:
-                        logger.info(f"Manifest Sync: Deleting ghost paper '{t}' from ChromaDB.")
-                        vector_store_service.delete_paper(title=t)
-                        updated = True
+                        should_skip = False
+                        for filename, meta in manifest.items():
+                            if filename in pending_filenames:
+                                pending_title = meta.get("title", "").lower().strip()
+                                if pending_title and (pending_title in t_lower or t_lower in pending_title):
+                                    logger.info(f"Skipping ghost paper deletion for '{t}' - matches pending auto-reset entry '{filename}'")
+                                    should_skip = True
+                                    break
+                        if not should_skip:
+                            logger.info(f"Manifest Sync: Deleting ghost paper '{t}' from ChromaDB.")
+                            vector_store_service.delete_paper(title=t)
+                            updated = True
 
             # Only write to disk if something actually changed (avoid unnecessary I/O)
             if updated:
