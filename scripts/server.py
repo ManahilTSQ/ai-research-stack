@@ -605,10 +605,7 @@ def download_paper(request: DownloadRequest, background_tasks: BackgroundTasks):
             )
             # Clear stats cache after successful ingestion
             if success:
-                if hasattr(vector_store, '_stats_cache'):
-                    del vector_store._stats_cache
-                if hasattr(vector_store, '_stats_cache_time'):
-                    del vector_store._stats_cache_time
+                vector_store.invalidate_stats_cache()
             filename = sanitize_filename(title)
             manifest_service.mark_as_ingested(
                 filename, title, doi,
@@ -742,10 +739,7 @@ def delete_all_papers():
             metadata={"hnsw:space": "cosine"}
         )
         # Clear the stats cache to reflect the deletion immediately
-        if hasattr(vector_store, '_stats_cache'):
-            del vector_store._stats_cache
-        if hasattr(vector_store, '_stats_cache_time'):
-            del vector_store._stats_cache_time
+        vector_store.invalidate_stats_cache()
         success_db = True
     except Exception as e:
         logger.error(f"Failed to clear ChromaDB collection: {e}")
@@ -965,10 +959,7 @@ async def upload_pdfs(
                         )
                         # Clear stats cache after successful ingestion
                         if success:
-                            if hasattr(vector_store, '_stats_cache'):
-                                del vector_store._stats_cache
-                            if hasattr(vector_store, '_stats_cache_time'):
-                                del vector_store._stats_cache_time
+                            vector_store.invalidate_stats_cache()
                         manifest_service.mark_as_ingested(
                             rel, title, doi=doi if doi != "N/A" else None,
                             status="success" if success else "failed",
@@ -1063,10 +1054,7 @@ def ingest_pending(background_tasks: BackgroundTasks):
                     )
                     # Clear stats cache after successful ingestion
                     if success:
-                        if hasattr(vector_store, '_stats_cache'):
-                            del vector_store._stats_cache
-                        if hasattr(vector_store, '_stats_cache_time'):
-                            del vector_store._stats_cache_time
+                        vector_store.invalidate_stats_cache()
 
                     manifest_service.mark_as_ingested(
                         filename, title, doi if doi != "N/A" else None,
