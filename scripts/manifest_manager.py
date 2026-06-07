@@ -324,12 +324,12 @@ class ManifestManagerService:
                 api_resolved = crossref_res
 
         # ── Step 2: Semantic Scholar — for abstract and citation data ──
-        if not api_resolved:
-            # If Crossref failed, try Semantic Scholar directly
-            s2_query = target_doi or title_guess
+        if not api_resolved and target_doi and target_doi != "N/A":
+            # Only query Semantic Scholar if we have a valid DOI/identifier
+            # title_guess is a truncated filename, not a valid S2 identifier
             try:
-                logger.info(f"Step 2: Querying Semantic Scholar for: '{s2_query}'")
-                s2_res = discovery_service.get_paper_details(s2_query)
+                logger.info(f"Step 2: Querying Semantic Scholar for: '{target_doi}'")
+                s2_res = discovery_service.get_paper_details(target_doi)
                 if s2_res:
                     logger.info(f"Step 2: Resolved metadata via Semantic Scholar")
                     # Convert S2 format to standard format
