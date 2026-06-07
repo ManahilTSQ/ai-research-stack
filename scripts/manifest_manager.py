@@ -246,6 +246,11 @@ class ManifestManagerService:
         from paper_discovery import PaperDiscoveryService
         from pdf_processor import PDFProcessorService
 
+        # Blacklist known broken DOIs to prevent infinite resolution loops
+        DOI_BLACKLIST = {
+            "10.36526/js.v7i2",  # Broken DOI causing HTTP 404 on all 5 lookup strategies
+        }
+
         discovery_service = PaperDiscoveryService()
         pdf_service = PDFProcessorService()
 
@@ -302,6 +307,13 @@ class ManifestManagerService:
             target_doi = existing_doi
         elif extracted_doi:
             target_doi = extracted_doi
+
+        # ── Blacklist check: skip API calls for known broken DOIs ──
+        if target_doi and target_doi.lower() in [d.lower() for d in DOI_BLACKLIST]:
+            logger.warning(f"DOI '{target_doi}' is blacklisted - skipping metadata resolution to prevent infinite loop")
+            # Return basic metadata without attempting API lookups
+            resolved["doi"] = target_doi
+            return resolved
 
         # ── Step 1: Crossref — most authoritative for DOI-based metadata ──
         api_resolved = None

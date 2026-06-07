@@ -113,23 +113,7 @@ class QueryRouter:
         
         # Parse year constraints
         # "before 2022", "after 2020", "in 2021", "from 2020 to 2022"
-        year_before = re.search(r'\b(?:before|prior to|earlier than)\s+(\d{4})\b', q_lower)
-        if year_before:
-            year = int(year_before.group(1))
-            filters['year'] = {"$lt": str(year)}
-            logger.info(f"Parsed year filter: before {year}")
-        
-        year_after = re.search(r'\b(?:after|since|later than)\s+(\d{4})\b', q_lower)
-        if year_after:
-            year = int(year_after.group(1))
-            filters['year'] = {"$gte": str(year)}
-            logger.info(f"Parsed year filter: after {year}")
-        
-        year_in = re.search(r'\b(?:in|from|of)\s+(\d{4})\b', q_lower)
-        if year_in and 'year' not in filters:
-            year = int(year_in.group(1))
-            filters['year'] = str(year)
-            logger.info(f"Parsed year filter: in {year}")
+        # IMPORTANT: Check for year ranges FIRST to avoid misinterpreting "from 2014 to 2034" as "in 2014"
         
         year_range = re.search(r'\b(?:from|between)\s+(\d{4})\s+(?:to|and|-)\s+(\d{4})\b', q_lower)
         if year_range:
@@ -137,6 +121,33 @@ class QueryRouter:
             end_year = int(year_range.group(2))
             filters['year'] = {"$gte": str(start_year), "$lte": str(end_year)}
             logger.info(f"Parsed year filter: {start_year} to {end_year}")
+        else:
+            # Only apply single year filters if not part of a range
+            year_before = re.search(r'\b(?:before|prior to|earlier than)\s+(\d{4})\b', q_lower)
+            if year_before:
+                year = int(year_before.group(1))
+                filters['year'] = {"$lt": str(year)}
+                logger.info(f"Parsed year filter: before {year}")
+            
+            year_after = re.search(r'\b(?:after|since|later than)\s+(\d{4})\b', q_lower)
+            if year_after:
+                year = int(year_after.group(1))
+                filters['year'] = {"$gte": str(year)}
+                logger.info(f"Parsed year filter: after {year}")
+            
+            # More specific pattern for "in YEAR" to avoid matching "from YEAR" in ranges
+            year_in = re.search(r'\bin\s+(\d{4})\b', q_lower)
+            if year_in and 'year' not in filters:
+                year = int(year_in.group(1))
+                filters['year'] = str(year)
+                logger.info(f"Parsed year filter: in {year}")
+            
+            # Pattern for "published in YEAR" or "published YEAR" - more specific to publication context
+            year_published = re.search(r'\bpublished\s+(?:in\s+)?(\d{4})\b', q_lower)
+            if year_published and 'year' not in filters:
+                year = int(year_published.group(1))
+                filters['year'] = str(year)
+                logger.info(f"Parsed year filter: published in {year}")
         
         # Parse DOI constraints
         doi_match = re.search(r'\bdoi[:\s]+([^\s,]+)\b', q_lower)

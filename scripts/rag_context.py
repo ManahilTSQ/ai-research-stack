@@ -39,12 +39,13 @@ def _cuda_available() -> bool:
         return False
 
 def _get_reranker():
-    """Lazy-load the cross-encoder reranker with CUDA device selection."""
+    """Lazy-load the cross-encoder reranker with CPU-only device selection to prevent CUDA OOM."""
     global _reranker
     if _reranker is None:
         try:
             from sentence_transformers import CrossEncoder
-            device = "cuda:0" if _cuda_available() else "cpu"
+            # Force CPU to prevent CUDA Out of Memory errors
+            device = "cpu"
             _reranker = CrossEncoder("BAAI/bge-reranker-base", device=device)
             logger.info(f"Cross-encoder reranker loaded successfully: BAAI/bge-reranker-base (device={device})")
         except ImportError as e:

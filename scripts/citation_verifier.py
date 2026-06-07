@@ -8,9 +8,22 @@ hallucinated or unsupported claims.
 
 import re
 import logging
+import unicodedata
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_for_match(text: str) -> str:
+    """Lowercase + Unicode normalize (fi ligatures, accents) for author/title matching."""
+    if not text:
+        return ""
+    s = unicodedata.normalize("NFKD", text)
+    s = s.replace("\ufb01", "fi").replace("\ufb02", "fl")
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    # Remove punctuation so "D. Stiawan" == "D Stiawan" in matching.
+    s = re.sub(r"[^0-9A-Za-z\s]+", " ", s)
+    return re.sub(r"\s+", " ", s).lower().strip()
 
 
 class CitationVerifier:
@@ -523,9 +536,12 @@ class CitationVerifier:
             authors = meta.get("authors", "")
             year = str(meta.get("year", ""))
             
+            # Normalize author names for accent-insensitive matching
+            authors_normalized = _normalize_for_match(authors)
+            
             # Extract author name segments and get their last names/surnames
-            for part in re.split(r"[,;&]| and ", authors.lower()):
-                words = [w for w in re.findall(r"[a-z\u00C0-\u017F]+", part) if w not in {"et", "al"}]
+            for part in re.split(r"[,;&]| and ", authors_normalized):
+                words = [w for w in re.findall(r"[a-z]+", part) if w not in {"et", "al"}]
                 if words:
                     valid_pairs.add((words[-1], year))
                     
