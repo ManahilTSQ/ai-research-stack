@@ -734,6 +734,9 @@ def delete_all_papers():
         vector_store.client.delete_collection("research_papers")
         # Refresh the collection reference to avoid stale IDs
         vector_store._refresh_collection()
+        # Also refresh the rag_service's internal vector store reference to avoid stale collection UUID
+        if rag_service is not None:
+            rag_service.vector_store._refresh_collection()
         # Clear the stats cache to reflect the deletion immediately
         vector_store.invalidate_stats_cache()
         success_db = True
