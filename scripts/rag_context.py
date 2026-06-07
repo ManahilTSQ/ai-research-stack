@@ -1825,9 +1825,37 @@ def resolve_matching_paper_titles(query: str, papers_metadata: dict) -> list[str
     
     Enhanced to better handle topic-based queries like "Colombian Coffee Cultural Landscape"
     by requiring multiple token matches for topic queries.
+    
+    CRITICAL FIX: Added exact phrase matching to prioritize papers with exact/near-exact
+    title matches before falling back to token-based matching. This prevents retrieval from
+    favoring frequently retrieved papers over papers with exact title matches.
     """
     if not papers_metadata:
         return []
+
+    # CRITICAL FIX: First, check for exact phrase matches in paper titles
+    # This prioritizes papers whose titles contain exact phrases from the query
+    query_lower = query.lower()
+    exact_matches = []
+    
+    # Extract significant phrases from query (3+ word sequences)
+    words = re.findall(r'\b[a-z]{3,}\b', query_lower)
+    if len(words) >= 3:
+        # Generate 3-word and 4-word phrases from the query
+        for phrase_len in [4, 3]:
+            for i in range(len(words) - phrase_len + 1):
+                phrase = " ".join(words[i:i+phrase_len])
+                if len(phrase) >= 15:  # Only use meaningful phrases
+                    for title in papers_metadata.keys():
+                        title_lower = title.lower()
+                        if phrase in title_lower:
+                            if title not in exact_matches:
+                                exact_matches.append(title)
+                                logger.debug(f"Exact phrase match: '{phrase}' in title '{title}'")
+    
+    if exact_matches:
+        logger.info(f"Found {len(exact_matches)} papers with exact phrase matches in titles")
+        return sorted(set(exact_matches))
 
     # Paper-title focus before author heuristics ("summarize" must not block quoted titles).
     if query_has_paper_focus(query):

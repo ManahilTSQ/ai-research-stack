@@ -360,7 +360,8 @@ class VectorStoreService:
         limit: int = 4,
         filter_title: str | None = None,
         filter_domain: str | None = None,
-        metadata_filters: dict | None = None
+        metadata_filters: dict | None = None,
+        title_boost: bool = True
     ) -> list[dict]:
         """
         Perform a cosine-similarity vector search across all ingested paper chunks.
@@ -376,6 +377,7 @@ class VectorStoreService:
             filter_title: If set, restricts search to chunks from this paper title only.
             filter_domain: If set, restricts search to chunks from this research domain only.
             metadata_filters: Dict of ChromaDB-compatible where-clause filters (e.g., {"year": {"$lt": "2022"}}).
+            title_boost: If True, boost chunks from papers with exact phrase matches in titles.
 
         Returns:
             List of result dicts, each containing:
@@ -387,14 +389,45 @@ class VectorStoreService:
         logger.info(
             f"Querying ChromaDB: '{query}' (top {limit} chunks, "
             f"filter_title={filter_title!r}, filter_domain={filter_domain!r}, "
-            f"metadata_filters={metadata_filters!r})"
+            f"metadata_filters={metadata_filters!r}, title_boost={title_boost})"
         )
 
         try:
+            # CRITICAL FIX: Title-based boosting to prioritize exact phrase matches
+            # If title_boost is enabled, first identify papers with exact phrase matches
+            boosted_titles = set()
+            if title_boost and not filter_title:
+                try:
+                    stats = self.get_collection_stats()
+                    papers_metadata = stats.get("papers_metadata", {})
+                    query_lower = query.lower()
+                    words = re.findall(r'\b[a-z]{3,}\b', query_lower)
+                    
+                    if len(words) >= 3:
+                        # Generate 3-word and 4-word phrases from the query
+                        for phrase_len in [4, 3]:
+                            for i in range(len(words) - phrase_len + 1):
+                                phrase = " ".join(words[i:i+phrase_len])
+                                if len(phrase) >= 15:  # Only use meaningful phrases
+                                    for title in papers_metadata.keys():
+                                        title_lower = title.lower()
+                                        if phrase in title_lower:
+                                            boosted_titles.add(title)
+                                            logger.debug(f"Title boost: '{phrase}' in '{title}'")
+                    
+                    if boosted_titles:
+                        logger.info(f"Title boosting enabled for {len(boosted_titles)} papers with exact phrase matches")
+                except Exception as e:
+                    logger.warning(f"Title boosting failed: {e}")
+
             # Build optional where clause to restrict to a specific paper or domain
             where_conditions = {}
             if filter_title:
                 where_conditions["title"] = filter_title
+            elif boosted_titles:
+                # If title boosting found matches, restrict to those papers first
+                # Use $in operator to match any of the boosted titles
+                where_conditions["title"] = {"$in": list(boosted_titles)}
             if filter_domain:
                 where_conditions["domain"] = filter_domain
             
