@@ -1501,6 +1501,126 @@ def delete_report_post(req: DeleteReportRequest):
         raise HTTPException(status_code=500, detail=f"Failed to delete report: {e}")
 
 
+# ── Automatic PDF Recovery Background Task ──────────────────────────────────
+# Periodically checks for abstract-only papers and tries to recover their PDFs
+_pdf_recovery_running = False
+_pdf_recovery_interval = 3600  # Check every hour
+
+def _recover_abstract_only_papers():
+    """Background task to recover PDFs for abstract-only papers."""
+    global _pdf_recovery_running
+    if _pdf_recovery_running:
+        logger.info("PDF recovery already running, skipping")
+        return
+    
+    _pdf_recovery_running = True
+    try:
+        logger.info("Starting automatic PDF recovery for abstract-only papers")
+        
+        vector_store = VectorStoreService()
+        discover_service = PaperDiscoveryService()
+        pdf_service = PDFProcessorService()
+        
+        # Get all papers and their chunk counts
+        stats = vector_store.get_collection_stats()
+        papers_metadata = stats.get("papers_metadata", {})
+        
+        # Find papers with < 5 chunks (likely abstract-only)
+        from collections import Counter
+        data = vector_store.collection.get(include=["metadatas"])
+        title_counts = Counter(m.get("title", "Unknown") for m in data["metadatas"] if m)
+        
+        abstract_only_papers = {
+            title: count for title, count in title_counts.items() if count < 5
+        }
+        
+        if not abstract_only_papers:
+            logger.info("No abstract-only papers found")
+            return
+        
+        logger.info(f"Found {len(abstract_only_papers)} abstract-only papers to recover")
+        
+        recovered_count = 0
+        for title, chunk_count in abstract_only_papers.items():
+            meta = papers_metadata.get(title, {})
+            doi = meta.get("doi", "")
+            if doi and doi.lower() != "n/a":
+                doi = doi.replace("https://doi.org/", "").strip()
+                
+                logger.info(f"Attempting PDF recovery for '{title}' (DOI: {doi})")
+                pdf_url = discover_service.fetch_open_access_pdf_url(doi)
+                
+                if pdf_url:
+                    logger.info(f"Found OA PDF for '{title}': {pdf_url}")
+                    
+                    # Download PDF
+                    safe_name = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).strip()
+                    safe_name = safe_name[:50]
+                    pdf_path = discover_service.download_pdf(pdf_url, f"{safe_name}.pdf")
+                    
+                    if pdf_path and pdf_path.exists():
+                        # Extract and chunk
+                        full_text, char_to_page = pdf_service.extract_text_by_page(pdf_path)
+                        if len(full_text) >= 8000:
+                            chunks = pdf_service.chunk_text(full_text, char_to_page, chunk_size=2000, chunk_overlap=400)
+                            
+                            # Ingest full-text FIRST (so paper is always queryable)
+                            authors = meta.get("authors", "Unknown Authors")
+                            year = meta.get("year")
+                            venue = meta.get("venue")
+                            
+                            vector_store.add_paper_chunks(
+                                paper_title=title,
+                                doi=doi,
+                                chunks=chunks,
+                                authors=authors,
+                                year=year,
+                                venue=venue,
+                            )
+                            
+                            # Then delete old abstract-only chunks
+                            vector_store.collection.delete(where={"title": title})
+                            
+                            logger.info(f"Successfully recovered and re-ingested '{title}' with {len(chunks)} chunks")
+                            recovered_count += 1
+                        else:
+                            logger.warning(f"PDF for '{title}' has minimal text, skipping")
+                    else:
+                        logger.warning(f"Failed to download PDF for '{title}'")
+                else:
+                    logger.info(f"No OA PDF found for '{title}'")
+        
+        logger.info(f"PDF recovery complete: recovered {recovered_count}/{len(abstract_only_papers)} papers")
+        
+    except Exception as e:
+        logger.error(f"PDF recovery failed: {e}")
+    finally:
+        _pdf_recovery_running = False
+
+
+def _start_pdf_recovery_scheduler():
+    """Start the background scheduler for PDF recovery."""
+    def _scheduler():
+        while True:
+            try:
+                _recover_abstract_only_papers()
+                time.sleep(_pdf_recovery_interval)
+            except Exception as e:
+                logger.error(f"PDF recovery scheduler error: {e}")
+                time.sleep(_pdf_recovery_interval)
+    
+    t = threading.Thread(target=_scheduler, daemon=True)
+    t.start()
+    logger.info("PDF recovery scheduler started (runs every hour)")
+
+
+# Start the PDF recovery scheduler when the server starts
+@app.on_event("startup")
+def startup_event():
+    _start_pdf_recovery_scheduler()
+    logger.info("Server started with automatic PDF recovery enabled")
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(

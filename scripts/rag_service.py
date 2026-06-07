@@ -1132,8 +1132,7 @@ class RAGService:
 
     def _enforce_hard_grounding_rules(self, answer: str, chunks: list[dict]) -> str:
         # Split answer into claims/sentences
-        from citation_verifier import CitationVerifier
-        verifier = CitationVerifier()
+        from services import citation_verifier as verifier
 
         # Separate references if present
         answer_body = answer
@@ -1190,6 +1189,16 @@ class RAGService:
             doc_ids = re.findall(r"\bdoc_(\d+)\b", sent)
 
             if not doc_ids:
+                # Preserve synthesis/conclusion sentences (they summarize cited content)
+                SYNTHESIS_STARTERS = [
+                    "these ", "this ", "together, ", "overall, ", "in summary",
+                    "in conclusion", "collectively", "taken together",
+                    "highlight", "demonstrate", "suggest", "indicate",
+                    "show that", "reveal", "confirm",
+                ]
+                is_synthesis = any(sent.lower().startswith(p) or p in sent.lower()[:40]
+                                   for p in SYNTHESIS_STARTERS)
+                
                 # PRESERVE honest "not found" admissions — these are correct, not errors
                 ADMISSION_PHRASES = [
                     "do not contain", "does not contain", "no information about",
@@ -1197,11 +1206,13 @@ class RAGService:
                     "no relevant", "not mentioned", "not discussed", "not addressed",
                     "no papers", "no chunks", "insufficient", "no evidence",
                     "provided documents do not", "context does not",
+                    "ingested papers do not",
                 ]
                 is_admission = any(p in sent.lower() for p in ADMISSION_PHRASES)
-                if is_admission:
+                
+                if is_synthesis or is_admission:
                     kept_sentences.append(sent)
-                    continue  # Keep it — don't strip honest admissions
+                    continue  # Keep it — don't strip synthesis or honest admissions
 
                 # No citation at all — strip the sentence
                 logger.warning(f"Removing uncited sentence: '{sent[:80]}'")
@@ -1249,8 +1260,7 @@ class RAGService:
         
         Returns a list of issues found (empty if faithful).
         """
-        from citation_verifier import CitationVerifier
-        verifier = CitationVerifier()
+        from services import citation_verifier as verifier
         
         issues = []
         sentences = verifier.split_into_claims(answer)
@@ -1777,6 +1787,21 @@ class RAGService:
                     "I can do either. Do you want (1) a list of papers, "
                     "or (2) a summary from paper content?"
                 ),
+                "sources": [],
+                "success": True,
+            }
+
+        # Handle pure "list all papers" with no topic filter
+        _SHOW_ALL_RE = re.compile(
+            r'^(?:list|show|give\s+me|what\s+are|display)\s+(?:all\s+)?(?:the\s+)?papers?\s*'
+            r'(?:in\s+(?:my\s+)?(?:the\s+)?library|in\s+chromadb|you\s+have)?\.?\s*$',
+            re.I
+        )
+        if _SHOW_ALL_RE.match(query.strip()):
+            listing = self._render_inventory_listing(query, papers_metadata)
+            return {
+                "query": query,
+                "answer": f"Your library contains {len(papers_metadata)} papers:\n\n{listing}",
                 "sources": [],
                 "success": True,
             }

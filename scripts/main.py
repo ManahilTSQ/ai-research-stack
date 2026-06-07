@@ -140,6 +140,10 @@ def process_paper_pipeline(
     """
     # Extract the fields we need from the paper metadata dict
     title = paper.get("title", "Untitled Paper")
+    authors_list = paper.get("authors", [])
+    authors_str  = format_authors(authors_list)
+    year         = paper.get("year")
+    venue        = paper.get("venue") or paper.get("publicationVenue", {}).get("name") or None
     external_ids = paper.get("externalIds") or {}
     doi      = external_ids.get("DOI")       # Used for Unpaywall lookup
     arxiv_id = external_ids.get("ArXiv")     # Used for direct arXiv PDF
@@ -197,7 +201,14 @@ def process_paper_pipeline(
             chunks = pdf_service.chunk_text(full_text, char_to_page, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
             print(f"[+] Generated {len(chunks)} chunks.")
             print("[6/6] Ingesting into ChromaDB vector database...")
-            success = vector_store.add_paper_chunks(paper_title=title, doi=doi, chunks=chunks, venue=None)
+            success = vector_store.add_paper_chunks(
+                paper_title=title,
+                doi=doi,
+                chunks=chunks,
+                authors=authors_str,
+                year=year,
+                venue=venue,
+            )
 
             if success:
                 print("[+] Vector DB ingestion complete!")
@@ -267,7 +278,12 @@ def process_paper_pipeline(
         # Use the best available identifier for the vector ID
         identifier = doi or (f"arXiv:{arxiv_id}" if arxiv_id else title)
         success = vector_store.add_paper_chunks(
-            paper_title=title, doi=identifier, chunks=abstract_chunks, venue=None
+            paper_title=title,
+            doi=identifier,
+            chunks=abstract_chunks,
+            authors=authors_str,
+            year=year,
+            venue=venue,
         )
 
         if success:
@@ -396,8 +412,18 @@ def run_batch_ingestion(
             # e.g. "attention_is_all_you_need.pdf" → "Attention Is All You Need"
             title = pdf_path.stem.replace("_", " ").title()
             doi   = None  # No DOI available for manually dropped PDFs
+            authors_str = "Unknown Authors"  # No author metadata for manually dropped PDFs
+            year = None
+            venue = None
 
-            success = vector_store.add_paper_chunks(paper_title=title, doi=doi, chunks=chunks, venue=None)
+            success = vector_store.add_paper_chunks(
+                paper_title=title,
+                doi=doi,
+                chunks=chunks,
+                authors=authors_str,
+                year=year,
+                venue=venue,
+            )
             if success:
                 success_count += 1
                 print(f"[+] Ingested: '{title}'")

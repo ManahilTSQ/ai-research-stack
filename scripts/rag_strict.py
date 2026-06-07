@@ -379,6 +379,24 @@ def resolve_query_scope(
     Decide which papers may be used to answer this query.
     When requires_entity is True and scoped_titles is empty → caller must refuse.
     """
+    # Detect cross-library aggregation queries — use full library scope
+    AGGREGATION_PATTERNS = re.compile(
+        r'\b(across\s+(the\s+)?(?:library|all\s+papers?|ingested)|'
+        r'most\s+common|all\s+papers?|every\s+paper|'
+        r'in\s+general|overall|commonly\s+used)\b',
+        re.I
+    )
+    if AGGREGATION_PATTERNS.search(query):
+        # Broad cross-library synthesis — do NOT scope to one paper/author
+        # Let semantic search retrieve the best chunks from all papers
+        logger.info(f"Aggregation query detected — using full library scope: '{query[:60]}'")
+        return QueryScope(
+            scoped_titles=[],
+            requires_entity=False,
+            entity_kind="topic",
+            topic_tokens=_significant_query_tokens(query),
+        )
+
     if filter_title:
         if filter_title in papers_metadata:
             return QueryScope(

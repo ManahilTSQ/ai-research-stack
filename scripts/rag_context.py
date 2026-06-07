@@ -995,6 +995,9 @@ def is_simple_inventory_listing(query: str) -> bool:
         r"^show\s+(?:all\s+)?papers?\s+from\s+\d{4}",
         r"^list\s+(?:all\s+)?papers?\s+(?:before|after|since)\s+\d{4}",
         r"^show\s+(?:all\s+)?papers?\s+(?:before|after|since)\s+\d{4}",
+        # More flexible patterns for year-constrained queries
+        r'\b(list|show)\b.*\bpapers?\b.*\b(before|after|since|until|published|from|in)\b.*\b\d{4}\b',
+        r'\b(list|show)\b.*\bpapers?\b.*\b\d{4}\b',
     ]
     
     for pattern in year_listing_patterns:
@@ -1986,8 +1989,7 @@ def retrieve_relevant_chunks(
     routing_config = {}
     if use_query_routing and not filter_title and not scope_titles:
         try:
-            from query_understanding import QueryUnderstanding
-            query_understanding = QueryUnderstanding()
+            from services import query_understand as query_understanding
             analysis = query_understanding.understand_query(query)
             routing_config = query_understanding.get_pipeline_routing(analysis) or {}
             
@@ -2008,8 +2010,7 @@ def retrieve_relevant_chunks(
     # Extract year, DOI, author, venue filters for native ChromaDB filtering
     if metadata_filters is None:
         try:
-            from query_router import QueryRouter
-            router = QueryRouter()
+            from services import query_router as router
             metadata_filters = router.parse_metadata_filters(query)
             if metadata_filters:
                 logger.info(f"Parsed structured metadata filters from query: {metadata_filters}")
@@ -2037,8 +2038,7 @@ def retrieve_relevant_chunks(
     filter_domain = None
     if use_domain_filtering and not locked_scope:
         try:
-            from topic_classifier import TopicClassifier
-            classifier = TopicClassifier()
+            from services import topic_classifier as classifier
             filter_domain = classifier.get_domain_filter(query)
             if filter_domain:
                 logger.info(f"Query detected as domain-specific: {filter_domain}")
@@ -2075,8 +2075,7 @@ def retrieve_relevant_chunks(
     # ── Metadata-driven pre-filtering ───────────────────────────────────────
     metadata_constraints = {}
     try:
-        from metadata_filter import MetadataFilter
-        metadata_filter = MetadataFilter()
+        from services import metadata_filter
         if metadata_filter.should_apply_metadata_filtering(query) or (routing_config or {}).get("strict_metadata_filter"):
             filtered_titles = metadata_filter.filter_papers_by_metadata(
                 papers_metadata, query
@@ -2115,27 +2114,39 @@ def retrieve_relevant_chunks(
         is_pure_author_query = bool(author_phrase and len(topic_terms) == 1 and topic_terms[0] in author_phrase.lower())
         
         if topic_terms and len(inventory_titles) > 3 and not is_pure_author_query:
-            topic_filtered = []
-            for t in inventory_titles:
-                title_lower = t.lower()
-                meta = papers_metadata.get(t, {})
-                # For topic-narrowing, only search in titles, not authors
-                # This prevents author-only queries from matching all their papers
-                haystack = title_lower
-                if any(tok in haystack for tok in topic_terms):
-                    topic_filtered.append(t)
-            # Only apply filter if it finds matches AND doesn't empty the set completely
-            if topic_filtered:
-                logger.info(
-                    f"Topic-narrowed author scope: {len(inventory_titles)} → "
-                    f"{len(topic_filtered)} papers for terms {topic_terms}"
-                )
-                inventory_titles = topic_filtered
+            # Strip author name tokens and generic meta-words from topic terms
+            # so we only narrow on actual subject matter
+            author_tokens_set = set()
+            if author_phrase:
+                author_tokens_set = set(re.findall(r'[a-z]+', author_phrase.lower()))
+            
+            META_WORDS = {'areas', 'work', 'library', 'papers', 'research', 'topics',
+                          'writes', 'written', 'published', 'ingested', 'discuss',
+                          'does', 'what', 'which', 'list', 'show', 'find'}
+            
+            pure_topic_terms = [
+                t for t in topic_terms
+                if t not in author_tokens_set and t not in META_WORDS and len(t) >= 5
+            ]
+            
+            # Only apply narrowing if we have real subject-matter terms
+            if pure_topic_terms:
+                topic_filtered = [t for t in inventory_titles
+                                  if any(tok in t.lower() for tok in pure_topic_terms)]
+                if topic_filtered:
+                    logger.info(
+                        f"Topic-narrowed author scope: {len(inventory_titles)} → "
+                        f"{len(topic_filtered)} papers for terms {pure_topic_terms}"
+                    )
+                    inventory_titles = topic_filtered
+            # If no pure topic terms found, keep all author papers (broad author query)
+            # → is_broad_author_query will handle it as a listing
 
         author_chunks: list[dict[str, Any]] = []
         n_papers = max(1, len(inventory_titles))
-        # Over-retrieve for author-scoped queries too
-        per_paper = max(3, min(12, int((limit * over_retrieve_multiplier) // n_papers)))
+        # Load all chunks per paper for author-scoped queries
+        # The reranker will select the best ones afterward
+        per_paper = 30
         for title in inventory_titles:
             paper_chunks = vector_store.get_chunks_for_paper(title, max_chunks=per_paper)
             # Filter out bibliography chunks
