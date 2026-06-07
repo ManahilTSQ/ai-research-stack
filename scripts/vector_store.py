@@ -69,22 +69,8 @@ class VectorStoreService:
             )
 
             # ── Collection Setup ──────────────────────────────────────────────
-            # Always use get_collection (not get_or_create) to avoid stale references.
-            # If the collection was deleted externally, this will raise an error,
-            # which we catch and handle by recreating the collection.
-            try:
-                self.collection = self.client.get_collection(
-                    name="research_papers",
-                    embedding_function=self.embedding_function
-                )
-            except Exception:
-                # Collection doesn't exist or was deleted - recreate it
-                logger.info("Collection not found or was deleted, recreating...")
-                self.collection = self.client.create_collection(
-                    name="research_papers",
-                    embedding_function=self.embedding_function,
-                    metadata={"hnsw:space": "cosine"}
-                )
+            # Always refresh the collection reference to avoid stale IDs
+            self._refresh_collection()
 
             # Step 2b: Run startup database metadata normalization migration only once
             # Use a flag file to track if normalization has been done
@@ -104,6 +90,28 @@ class VectorStoreService:
         except Exception as e:
             logger.error(f"Failed to initialise ChromaDB: {e}")
             raise  # Critical failure — let the caller (server.py / main.py) handle it
+
+    def _refresh_collection(self) -> None:
+        """
+        Refresh the collection reference to avoid stale collection IDs.
+        
+        This should be called after any collection deletion/recreation to ensure
+        the service uses the current collection instance.
+        """
+        try:
+            self.collection = self.client.get_collection(
+                name="research_papers",
+                embedding_function=self.embedding_function
+            )
+            logger.info("Collection reference refreshed successfully.")
+        except Exception:
+            # Collection doesn't exist - recreate it
+            logger.info("Collection not found, recreating...")
+            self.collection = self.client.create_collection(
+                name="research_papers",
+                embedding_function=self.embedding_function,
+                metadata={"hnsw:space": "cosine"}
+            )
 
     def _normalize_stored_metadata(self) -> None:
         """

@@ -732,12 +732,8 @@ def delete_all_papers():
     # 4. Clear the entire ChromaDB collection
     try:
         vector_store.client.delete_collection("research_papers")
-        # Recreate the collection using create_collection (not get_or_create) to avoid stale references
-        vector_store.collection = vector_store.client.create_collection(
-            name="research_papers",
-            embedding_function=vector_store.embedding_function,
-            metadata={"hnsw:space": "cosine"}
-        )
+        # Refresh the collection reference to avoid stale IDs
+        vector_store._refresh_collection()
         # Clear the stats cache to reflect the deletion immediately
         vector_store.invalidate_stats_cache()
         success_db = True

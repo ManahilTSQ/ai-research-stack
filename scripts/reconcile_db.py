@@ -49,8 +49,8 @@ def reconcile(force_reset: bool = False):
             # Delete the collection from ChromaDB
             vector_store.client.delete_collection("research_papers")
             logger.info("ChromaDB 'research_papers' collection deleted successfully.")
-            # Recreate the collection
-            vector_store = VectorStoreService()
+            # Refresh the collection reference to avoid stale IDs
+            vector_store._refresh_collection()
         except Exception as e:
             logger.error(f"Failed to reset ChromaDB collection: {e}")
         
