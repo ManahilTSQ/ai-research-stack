@@ -757,6 +757,8 @@ def delete_all_papers():
 @app.get("/api/pdfs")
 def list_pdfs():
     manifest = manifest_service.sync_with_vector_store(vector_store)
+    # Refresh collection reference after manifest sync to handle potential UUID changes
+    vector_store._refresh_collection()
     # Resolve a bounded batch of missing author/year labels before rendering the sidebar.
     manifest_service.refresh_metadata_sync(vector_store, max_entries=15)
     manifest = manifest_service.get_all_entries()
@@ -988,6 +990,8 @@ async def upload_pdfs(
 def ingest_pending(background_tasks: BackgroundTasks):
     # Perform directory scan & sync first to find any newly dropped PDFs
     manifest_service.sync_with_vector_store(vector_store)
+    # Refresh collection reference after manifest sync to handle potential UUID changes
+    vector_store._refresh_collection()
 
     def _bulk_ingest():
         logger.info("Starting background bulk ingestion...")
