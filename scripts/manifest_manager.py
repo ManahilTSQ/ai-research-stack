@@ -654,7 +654,11 @@ class ManifestManagerService:
                                 updated = True
                         
                         # If the DB and manifest are missing metadata or abstract, queue it for background resolution
-                        if (meta.get("authors") == "Unknown Authors" 
+                        # Skip if metadata resolution has failed too many times (prevents infinite loops)
+                        failure_count = meta.get("metadata_resolution_failures", 0)
+                        if failure_count >= 3:
+                            logger.warning(f"Skipping metadata resolution for '{title}' - failed {failure_count} times already")
+                        elif (meta.get("authors") == "Unknown Authors" 
                             or meta.get("year") in [None, "N/A", "None"]
                             or "abstract" not in meta 
                             or meta.get("abstract") in [None, ""]):
@@ -705,9 +709,17 @@ class ManifestManagerService:
                                         current_manifest[filename]["abstract"] = s2_abstract
                                         if s2_doi and s2_doi != "N/A":
                                             current_manifest[filename]["doi"] = s2_doi
+                                        # Reset failure counter on successful resolution
+                                        current_manifest[filename]["metadata_resolution_failures"] = 0
                                         self._save_manifest(current_manifest)
                             except Exception as save_err:
                                 logger.error(f"Failed to save resolved metadata for '{filename}': {save_err}")
+                                # Increment failure counter in manifest
+                                with self.manifest_lock:
+                                    current_manifest = self._load_manifest()
+                                    if filename in current_manifest:
+                                        current_manifest[filename]["metadata_resolution_failures"] = current_manifest[filename].get("metadata_resolution_failures", 0) + 1
+                                        self._save_manifest(current_manifest)
                             finally:
                                 with self.resolving_lock:
                                     self.resolving_filenames.discard(filename)
