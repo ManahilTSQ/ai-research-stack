@@ -30,6 +30,9 @@ SHORT_TECH_TERMS = frozenset({
 # Cross-encoder reranker for improved retrieval quality
 _reranker = None
 
+# Maximum chunks to feed into cross-encoder reranker (prevents CPU timeout)
+MAX_RERANK_INPUT = 50
+
 def _cuda_available() -> bool:
     """Check if CUDA is available for GPU acceleration."""
     try:
@@ -94,6 +97,20 @@ def rerank_chunks(question: str, chunks: list[dict], top_n: int = 5) -> list[dic
     
     if not chunks:
         return chunks
+    
+    # Pre-filter abstract-only chunks when we have plenty of full-text chunks
+    # Abstract-only chunks (text < 500 chars) add noise without adding value
+    full_text_chunks = [c for c in chunks if len(c.get("text", "")) > 500]
+    if len(full_text_chunks) >= 10:
+        logger.info(f"Pre-filtered {len(chunks) - len(full_text_chunks)} abstract-only chunks, keeping {len(full_text_chunks)} full-text chunks")
+        chunks = full_text_chunks
+    
+    # CRITICAL FIX: Cap chunks before reranking to prevent CPU timeout
+    # 50 chunks on CPU takes ~10-12 seconds, well within Cloudflare's 100s timeout
+    if len(chunks) > MAX_RERANK_INPUT:
+        logger.info(f"Capping reranker input from {len(chunks)} to {MAX_RERANK_INPUT} chunks to prevent timeout")
+        # Pre-filter by vector distance first, then rerank the top N
+        chunks = sorted(chunks, key=lambda c: c.get("distance", 1.0))[:MAX_RERANK_INPUT]
     
     try:
         logger.info(f"Cross-encoder reranking {len(chunks)} chunks for query: '{question[:60]}...'")
@@ -714,10 +731,9 @@ def find_papers_by_metadata_keywords(
     # Query expansion for better retrieval breadth
     if use_expansion and len(tokens) >= 1:
         try:
-            from query_expansion import QueryExpansion
-            expander = QueryExpansion()
-            # Expand key terms with synonyms
-            expanded_terms = expander.expand_with_key_terms(tokens, max_terms=15)
+            from services import query_expansion
+            # Use module-level singleton to prevent re-initialization on every query
+            expanded_terms = query_expansion.expand_with_key_terms(tokens, max_terms=15)
             # Add expanded terms that aren't already in tokens
             for term in expanded_terms:
                 if term.lower() not in [t.lower() for t in tokens]:

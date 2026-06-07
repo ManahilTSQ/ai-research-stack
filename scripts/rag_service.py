@@ -1950,17 +1950,17 @@ class RAGService:
             filter_title=filter_title,
             scope_titles=None if is_aggregation_query else (matched_titles if matched_titles and scope.entity_kind != "topic" else None),
             use_reranking=True,  # Always enable reranking for better precision
-            over_retrieve_multiplier=2.5,  # Reduced from 4.0 — prevents citation drift from irrelevant chunks
+            over_retrieve_multiplier=1.5,  # Reduced from 2.5 — prevents timeout from too many chunks
         )
         if matched_titles and not filter_title and scope.entity_kind != "topic":
             chunks = filter_chunks_to_titles(chunks, matched_titles)
 
-        # ── Cap chunks before deduplication to prevent CUDA OOM on reranker ──
-        # Broad author queries can return 39+ chunks which overflows GPU memory.
-        # Limit to 20 chunks — enough for a good answer without OOM.
-        if len(chunks) > 20:
-            logger.info(f"Capping chunks from {len(chunks)} to 20 to prevent CUDA OOM")
-            chunks = chunks[:20]
+        # ── Cap chunks before reranking to prevent CPU timeout ──
+        # Broad author queries can return 359+ chunks which causes 70+ second reranking.
+        # Limit to 50 chunks — enough for a good answer without timeout.
+        if len(chunks) > 50:
+            logger.info(f"Capping chunks from {len(chunks)} to 50 to prevent CPU timeout")
+            chunks = chunks[:50]
 
         # ── Text deduplication to prevent robotic stuttering ─────────────────
         # Remove chunks with >80% text overlap to avoid redundant information

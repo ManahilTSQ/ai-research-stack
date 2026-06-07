@@ -208,7 +208,8 @@ def route_query(query: str) -> Tuple[str, Dict[str, Any]]:
         Tuple of (query_type, filters) where query_type is 'global' or 'local',
         and filters is a dict of ChromaDB-compatible filter expressions.
     """
-    router = QueryRouter()
-    query_type = router.classify_query(query)
-    filters = router.parse_metadata_filters(query)
+    from services import query_router
+    # Use module-level singleton to prevent re-initialization on every query
+    query_type = query_router.classify_query(query)
+    filters = query_router.parse_metadata_filters(query)
     return query_type, filters
