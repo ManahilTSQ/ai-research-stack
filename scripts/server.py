@@ -160,7 +160,7 @@ async def basic_auth_middleware(request: Request, call_next):
         return await call_next(request)
 
     # Bypass public routes
-    if request.url.path in ["/", "/api/health", "/sw.js", "/service-worker.js"] or request.url.path.startswith("/static/") or request.url.path.startswith("/api/pdfs") or request.url.path.startswith("/api/query-rag") or request.url.path.startswith("/api/prompts") or request.url.path.startswith("/api/reports") or request.url.path.startswith("/api/search"):
+    if request.url.path in ["/", "/api/health", "/sw.js", "/service-worker.js", "/api/download"] or request.url.path.startswith("/static/") or request.url.path.startswith("/api/pdfs") or request.url.path.startswith("/api/query-rag") or request.url.path.startswith("/api/prompts") or request.url.path.startswith("/api/reports") or request.url.path.startswith("/api/search"):
         return await call_next(request)
 
     auth_header = request.headers.get("Authorization")
