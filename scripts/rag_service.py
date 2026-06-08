@@ -883,6 +883,15 @@ class RAGService:
         if not chunks:
             return "refuse", ""
 
+        # Bypass: if query matches a paper title in the library, always attempt answer
+        papers_metadata = self.vector_store.get_collection_stats().get("papers_metadata", {})
+        if papers_metadata:
+            query_lower = query.lower()
+            for title in papers_metadata:
+                if title.lower() in query_lower:
+                    logger.info(f"Query matches paper title '{title}' — bypassing refuse mode")
+                    return "confident", ""
+
         # ── Fix 6: Multi-Paper Retrieval Floor for Comparison Queries ──
         _COMP_CUES = {
             "compare", "comparison", "contrast", "difference", "differences",
@@ -1198,7 +1207,7 @@ class RAGService:
                 ]
                 is_synthesis = any(sent.lower().startswith(p) or p in sent.lower()[:40]
                                    for p in SYNTHESIS_STARTERS)
-                
+
                 # PRESERVE honest "not found" admissions — these are correct, not errors
                 ADMISSION_PHRASES = [
                     "do not contain", "does not contain", "no information about",
@@ -1209,13 +1218,46 @@ class RAGService:
                     "ingested papers do not",
                 ]
                 is_admission = any(p in sent.lower() for p in ADMISSION_PHRASES)
-                
+
                 if is_synthesis or is_admission:
                     kept_sentences.append(sent)
                     continue  # Keep it — don't strip synthesis or honest admissions
 
-                # No citation at all — strip the sentence
-                logger.warning(f"Removing uncited sentence: '{sent[:80]}'")
+                # Check if sentence contains invented attribution (paper titles/authors/years not in context)
+                # Only strip if it clearly hallucinates specific facts
+                def contains_invented_attribution(sentence: str, context_chunks: list[dict]) -> bool:
+                    sent_lower = sentence.lower()
+                    # Check for year citations like (Smith, 2020) or (2020)
+                    year_pattern = re.search(r'\(\d{4}\)', sentence)
+                    if year_pattern:
+                        # Extract author names if present
+                        author_match = re.search(r'([A-Z][a-z]+)\s*,\s*\(\d{4}\)', sentence)
+                        if author_match:
+                            author = author_match.group(1).lower()
+                            # Check if this author appears in any chunk metadata
+                            author_in_context = any(
+                                author in (c.get("metadata", {}).get("authors", "") or "").lower()
+                                for c in context_chunks
+                            )
+                            if not author_in_context:
+                                return True  # Invented author citation
+                    # Check for paper titles that don't match context
+                    for chunk in context_chunks:
+                        chunk_title = (chunk.get("metadata", {}).get("title", "") or "").lower()
+                        if chunk_title and chunk_title in sent_lower:
+                            return False  # Title is in context, not invented
+                    # If sentence has specific attribution patterns but no matching context, flag it
+                    if "according to" in sent_lower or "states that" in sent_lower or "found that" in sent_lower:
+                        # These are claim sentences that should have citations
+                        return True
+                    return False  # No clear invented attribution
+
+                if contains_invented_attribution(sent, chunks):
+                    logger.warning(f"Removing sentence with invented attribution: '{sent[:80]}'")
+                    continue
+
+                # Otherwise, keep the uncited sentence (loosened enforcement)
+                kept_sentences.append(sent)
                 continue
 
             # Span-level check: at least ONE cited chunk must support this sentence

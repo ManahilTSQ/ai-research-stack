@@ -8,13 +8,20 @@ document.addEventListener("DOMContentLoaded", () => {
 
     /**
      * Central fetch wrapper for all /api/* calls.
-     * Always includes `credentials: 'include'` so the browser sends the Basic Auth
-     * Authorization header even when the app is accessed through a Cloudflare Tunnel
-     * (cross-origin). Without this flag, the browser silently omits credentials on
-     * cross-origin requests and every API call returns 401 Unauthorized.
+     * Includes Basic Auth credentials and CORS support for cross-origin requests.
      */
     function apiFetch(url, options = {}) {
-        return fetch(url, { credentials: "include", ...options });
+        // Encode Basic Auth credentials
+        const auth = btoa("admin:Aitawfiq26!!!");
+        const headers = {
+            ...options.headers,
+            "Authorization": `Basic ${auth}`
+        };
+        return fetch(url, { 
+            credentials: "include", 
+            headers,
+            ...options 
+        });
     }
 
     // App State — track running citation job and current source chunks

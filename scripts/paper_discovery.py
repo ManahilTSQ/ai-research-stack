@@ -662,9 +662,30 @@ class PaperDiscoveryService:
             try:
                 logger.info(f"Downloading PDF: {pdf_url} (attempt {attempt + 1}/{len(user_agents)})")
                 # stream=True prevents loading the entire response into memory at once
+                
+                # Add Referer header for MDPI specifically (they check this header)
+                if "mdpi.com" in pdf_url.lower():
+                    headers["Referer"] = "https://www.mdpi.com/"
+                
                 response = requests.get(pdf_url, headers=headers, stream=True, timeout=30)
 
-                if response.status_code == 200:
+                if response.status_code in (200, 202, 206):
+                    # Validate Content-Type header before downloading full content
+                    content_type = response.headers.get("Content-Type", "").lower()
+                    if "application/pdf" not in content_type:
+                        # PMC often redirects to HTML - suggest Europe PMC endpoint
+                        if "pmc.ncbi.nlm.nih.gov" in pdf_url.lower():
+                            logger.warning(
+                                f"PMC returned HTML instead of PDF (Content-Type: {content_type}). "
+                                f"Try Europe PMC endpoint instead for: {pdf_url}"
+                            )
+                        else:
+                            logger.warning(
+                                f"Invalid Content-Type '{content_type}' (expected application/pdf). "
+                                f"Triggering abstract-only fallback for: {pdf_url}"
+                            )
+                        return None
+                    
                     # Download content to memory first for validation
                     content = response.content
                     

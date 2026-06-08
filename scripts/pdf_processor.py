@@ -29,8 +29,8 @@ class PDFProcessorService:
     Typical usage:
         service = PDFProcessorService()
         full_text, char_to_page = service.extract_text_by_page(Path("paper.pdf"))
-        # Step 6b: Standardize default chunk sizes to 2000/400
-        chunks = service.chunk_text(full_text, char_to_page, chunk_size=2000, chunk_overlap=400)
+        # Step 6b: Standardize default chunk sizes to 3500/700 for better RAG context
+        chunks = service.chunk_text(full_text, char_to_page, chunk_size=3500, chunk_overlap=700)
     """
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -241,7 +241,7 @@ class PDFProcessorService:
                 cleaned.append(para)
         return cleaned
 
-    def chunk_text(self, full_text: str, char_to_page: list[int], chunk_size: int = 1500, chunk_overlap: int = 300) -> list[dict]:
+    def chunk_text(self, full_text: str, char_to_page: list[int], chunk_size: int = 3500, chunk_overlap: int = 700) -> list[dict]:
         """
         Slices the fully synchronized text string into overlapping chunks.
         
