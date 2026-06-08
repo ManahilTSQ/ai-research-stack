@@ -603,7 +603,7 @@ select:focus {
 
 .rag-layout {
     display: grid;
-    grid-template-columns: 400px 1fr;
+    grid-template-columns: 550px 1fr;
     gap: 20px;
     height: calc(100vh - 220px);
     min-height: 600px;
@@ -614,8 +614,8 @@ select:focus {
     padding: 20px;
     display: flex;
     flex-direction: column;
-    gap: 15px;
-    overflow: hidden;
+    gap: 12px;
+    overflow: visible;
 }
 
 .sidebar-header {
@@ -633,7 +633,7 @@ select:focus {
 .sidebar-search-container {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 4px;
 }
 
 .sidebar-search-label {
@@ -673,7 +673,7 @@ select:focus {
     grid-template-columns: 1fr 1fr;
     gap: 10px;
     background: rgba(0, 0, 0, 0.25);
-    padding: 12px;
+    padding: 10px;
     border-radius: 10px;
     border: 1px solid var(--border-glass);
 }
@@ -704,6 +704,7 @@ select:focus {
     flex-direction: column;
     gap: 8px;
     overflow: hidden;
+    min-height: 0;
 }
 
 .files-list-container h4 {
@@ -799,7 +800,7 @@ select:focus {
 .helper-caption {
     font-size: 11px;
     color: var(--text-muted);
-    margin-top: 6px;
+    margin-top: 4px;
     line-height: 1.35;
 }
 
@@ -816,10 +817,10 @@ select:focus {
     background: rgba(0, 0, 0, 0.18);
     border: 1px dashed rgba(99, 102, 241, 0.35);
     border-radius: 10px;
-    padding: 12px 14px;
+    padding: 10px 12px;
     display: flex;
     flex-direction: column;
-    gap: 7px;
+    gap: 6px;
     transition: border-color 0.2s ease;
 }
 

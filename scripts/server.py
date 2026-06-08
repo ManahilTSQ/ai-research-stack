@@ -8,6 +8,8 @@ import threading
 import time
 import uuid
 import re
+import zipfile
+import io
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
@@ -835,6 +837,54 @@ def list_pdfs():
         })
 
     return file_list
+
+
+@app.get("/api/papers/download-zip")
+def download_papers_zip():
+    """
+    Download all papers from the papers/ directory as a zip file.
+    Preserves folder structure and includes all PDF files recursively.
+    """
+    pdf_dir = settings.PDF_DOWNLOAD_DIR
+    
+    # Check if papers directory exists and has PDFs
+    if not pdf_dir.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Papers directory not found."
+        )
+    
+    # Collect all PDF files recursively
+    pdf_files = list(pdf_dir.rglob("*.pdf"))
+    
+    if not pdf_files:
+        raise HTTPException(
+            status_code=404,
+            detail="No PDF files found in the papers directory."
+        )
+    
+    # Create in-memory zip file
+    zip_buffer = io.BytesIO()
+    
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        for pdf_path in pdf_files:
+            # Get relative path from pdf_dir to preserve folder structure
+            rel_path = pdf_path.relative_to(pdf_dir)
+            zip_file.write(pdf_path, arcname=str(rel_path))
+    
+    zip_buffer.seek(0)
+    
+    # Generate filename with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    zip_filename = f"papers_backup_{timestamp}.zip"
+    
+    return Response(
+        content=zip_buffer.getvalue(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f"attachment; filename={zip_filename}"
+        }
+    )
 
 
 @app.post("/api/upload")

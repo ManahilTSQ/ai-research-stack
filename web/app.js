@@ -45,6 +45,7 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("paper-search-form").addEventListener("submit", handlePaperSearch);
     document.getElementById("rag-query-form").addEventListener("submit", handleRAGQuery);
     document.getElementById("btn-sync-pdfs").addEventListener("click", fetchLocalPDFs);
+    document.getElementById("btn-download-zip").addEventListener("click", handleDownloadZip);
     document.getElementById("btn-scan-pending").addEventListener("click", handleScanPending);
     document.getElementById("btn-delete-all-papers").addEventListener("click", handleDeleteAllPapers);
     document.getElementById("citation-analysis-form").addEventListener("submit", handleCitationAnalysis);
@@ -689,6 +690,55 @@ document.addEventListener("DOMContentLoaded", () => {
     /* ==========================================================================
        TAB 2: RAG KNOWLEDGE BASE
        ========================================================================== */
+
+    /**
+     * Download all papers as a zip file from the server.
+     */
+    async function handleDownloadZip() {
+        const btn = document.getElementById("btn-download-zip");
+        if (!btn) return;
+
+        // Show loading state
+        btn.disabled = true;
+        btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i>`;
+
+        try {
+            const resp = await fetch(`${API_BASE}/api/papers/download-zip`);
+            
+            if (!resp.ok) {
+                const errorData = await resp.json().catch(() => ({ detail: "Unknown error" }));
+                throw new Error(errorData.detail || "Failed to download zip file");
+            }
+
+            // Get the filename from the Content-Disposition header
+            const contentDisposition = resp.headers.get("Content-Disposition");
+            let filename = "papers_backup.zip";
+            if (contentDisposition) {
+                const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+                if (filenameMatch && filenameMatch[1]) {
+                    filename = filenameMatch[1].replace(/['"]/g, "");
+                }
+            }
+
+            // Create blob and trigger download
+            const blob = await resp.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+
+        } catch (err) {
+            alert(`Download failed: ${err.message}`);
+        } finally {
+            // Restore button state
+            btn.disabled = false;
+            btn.innerHTML = `<i class="fa-solid fa-download"></i>`;
+        }
+    }
 
     /**
      * Fetch the current PDF manifest from /api/pdfs and render the file list.
