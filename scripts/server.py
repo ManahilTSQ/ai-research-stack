@@ -554,6 +554,7 @@ def download_paper(request: DownloadRequest, background_tasks: BackgroundTasks):
     year = request.year
 
     def _ingest():
+        nonlocal title, authors_str, year, doi, abstract, venue
         logger.info(f"BG Ingest started: '{title}'")
         chunks = []
 
