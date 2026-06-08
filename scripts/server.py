@@ -1651,107 +1651,223 @@ _pdf_recovery_running = False
 _pdf_recovery_interval = 3600  # Check every hour
 
 def _recover_abstract_only_papers():
-    """Background task to recover PDFs for abstract-only papers."""
+    """Background task to recover PDFs for abstract-only papers with exponential backoff."""
     global _pdf_recovery_running
     if _pdf_recovery_running:
         logger.info("PDF recovery already running, skipping")
         return
-    
+
     _pdf_recovery_running = True
     try:
         logger.info("Starting automatic PDF recovery for abstract-only papers")
-        
+
         vector_store = VectorStoreService()
         discover_service = PaperDiscoveryService()
         pdf_service = PDFProcessorService()
-        
+        manifest_service = ManifestManagerService()
+
         # Get all papers and their chunk counts
         stats = vector_store.get_collection_stats()
         papers_metadata = stats.get("papers_metadata", {})
-        
+
         # Find papers with < 5 chunks (likely abstract-only)
         from collections import Counter
         data = vector_store.collection.get(include=["metadatas"])
         title_counts = Counter(m.get("title", "Unknown") for m in data["metadatas"] if m)
-        
+
         abstract_only_papers = {
             title: count for title, count in title_counts.items() if count < 5
         }
-        
+
         if not abstract_only_papers:
             logger.info("No abstract-only papers found")
             return
-        
+
         logger.info(f"Found {len(abstract_only_papers)} abstract-only papers to recover")
-        
+
+        # Load manifest to check failure history
+        manifest = manifest_service.get_all_entries()
+
         recovered_count = 0
+        skipped_count = 0
+
         for title, chunk_count in abstract_only_papers.items():
             meta = papers_metadata.get(title, {})
             doi = meta.get("doi", "")
+
+            # Check manifest for exponential backoff
+            # Find the manifest entry for this paper (by title match)
+            manifest_entry = None
+            for filename, entry in manifest.items():
+                if entry.get("title", "").lower() == title.lower():
+                    manifest_entry = entry
+                    break
+
+            if manifest_entry:
+                failure_reason = manifest_entry.get("failure_reason", "")
+                failure_count = manifest_entry.get("failure_count", 0)
+
+                # Skip papers with "no_oa_version" after 3 failures (retry weekly)
+                if failure_reason == "no_oa_version" and failure_count >= 3:
+                    logger.info(f"Skipping '{title}' - no OA version found after {failure_count} attempts (will retry weekly)")
+                    skipped_count += 1
+                    continue
+
+                # Skip papers with "blocked_403" after 3 failures (retry daily, not hourly)
+                if failure_reason == "blocked_403" and failure_count >= 3:
+                    # Check if enough time has passed (24 hours)
+                    import time
+                    ingested_at = manifest_entry.get("ingested_at", "")
+                    if ingested_at:
+                        try:
+                            from datetime import datetime
+                            last_attempt = datetime.fromisoformat(ingested_at)
+                            hours_since = (datetime.now() - last_attempt).total_seconds() / 3600
+                            if hours_since < 24:
+                                logger.info(f"Skipping '{title}' - blocked 403, retrying in {24 - hours_since:.1f} hours")
+                                skipped_count += 1
+                                continue
+                        except Exception:
+                            pass
+
             if doi and doi.lower() != "n/a":
                 doi = doi.replace("https://doi.org/", "").strip()
-                
+
                 logger.info(f"Attempting PDF recovery for '{title}' (DOI: {doi})")
-                pdf_urls = []
-                
-                # Fetch Unpaywall URLs
-                unpaywall_urls = discover_service.fetch_all_open_access_pdf_urls(doi)
-                for url in unpaywall_urls:
-                    if url not in pdf_urls:
-                        pdf_urls.append(url)
-                
-                # Fetch OpenAlex URLs
-                openalex_urls = discover_service.fetch_all_openalex_pdf_urls(doi)
-                for url in openalex_urls:
-                    if url not in pdf_urls:
-                        pdf_urls.append(url)
+
+                # Use cascade of sources: ArXiv → Unpaywall → Core.ac.uk → MDPI API → PMC E-utilities → OpenAlex
+                pdf_url = None
+                source_used = None
+
+                # 1. Try ArXiv first (never blocked, best for CS/ML papers)
+                pdf_url = discover_service.fetch_arxiv_pdf_url(doi)
+                if pdf_url:
+                    source_used = "ArXiv"
+                    logger.info(f"Found via ArXiv: {pdf_url[:80]}...")
+
+                # 2. Try Unpaywall
+                if not pdf_url:
+                    unpaywall_urls = discover_service.fetch_all_open_access_pdf_urls(doi)
+                    if unpaywall_urls:
+                        pdf_url = unpaywall_urls[0]
+                        source_used = "Unpaywall"
+                        logger.info(f"Found via Unpaywall: {pdf_url[:80]}...")
+
+                # 3. Try Core.ac.uk (by title)
+                if not pdf_url:
+                    pdf_url = discover_service.fetch_core_ac_pdf_url(title)
+                    if pdf_url:
+                        source_used = "Core.ac.uk"
+                        logger.info(f"Found via Core.ac.uk: {pdf_url[:80]}...")
+
+                # 4. Try MDPI research API (for MDPI DOIs)
+                if not pdf_url:
+                    pdf_url = discover_service.fetch_mdpi_api_pdf_url(doi)
+                    if pdf_url:
+                        source_used = "MDPI API"
+                        logger.info(f"Found via MDPI API: {pdf_url[:80]}...")
+
+                # 5. Try PMC E-utilities (if PMCID available from OpenAlex)
+                if not pdf_url:
+                    openalex_data = discover_service.fetch_openalex_metadata(doi)
+                    if openalex_data:
+                        ids = openalex_data.get("ids", {})
+                        pmcid = ids.get("pmcid") if ids else None
+                        if pmcid:
+                            pdf_url = discover_service.fetch_pmc_eutils_pdf_url(pmcid)
+                            if pdf_url:
+                                source_used = "PMC E-utilities"
+                                logger.info(f"Found via PMC E-utilities: {pdf_url[:80]}...")
+
+                # 6. Try OpenAlex PDF URLs as final fallback
+                if not pdf_url:
+                    openalex_urls = discover_service.fetch_all_openalex_pdf_urls(doi)
+                    if openalex_urls:
+                        pdf_url = openalex_urls[0]
+                        source_used = "OpenAlex"
+                        logger.info(f"Found via OpenAlex: {pdf_url[:80]}...")
 
                 pdf_path = None
-                if pdf_urls:
+                failure_reason = None
+
+                if pdf_url:
                     # Download PDF
                     safe_name = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).strip()
                     safe_name = safe_name[:50]
-                    for url in pdf_urls:
-                        logger.info(f"Attempting download from candidate URL: {url}")
-                        pdf_path = discover_service.download_pdf(url, f"{safe_name}.pdf")
-                        if pdf_path and pdf_path.exists():
-                            logger.info(f"Successfully downloaded PDF from: {url}")
-                            break
-                    
+                    logger.info(f"Attempting download from candidate URL: {pdf_url}")
+                    pdf_path = discover_service.download_pdf(pdf_url, f"{safe_name}.pdf")
+
                     if pdf_path and pdf_path.exists():
-                        # Extract and chunk
-                        full_text, char_to_page = pdf_service.extract_text_by_page(pdf_path)
-                        if len(full_text) >= 8000:
-                            chunks = pdf_service.chunk_text(full_text, char_to_page, chunk_size=2000, chunk_overlap=400)
-                            
-                            # First delete old abstract-only chunks
-                            vector_store.collection.delete(where={"title": title})
-                            
-                            # Ingest full-text chunks (so paper is always queryable)
-                            authors = meta.get("authors", "Unknown Authors")
-                            year = meta.get("year")
-                            venue = meta.get("venue")
-                            
-                            vector_store.add_paper_chunks(
-                                paper_title=title,
-                                doi=doi,
-                                chunks=chunks,
-                                authors=authors,
-                                year=year,
-                                venue=venue,
-                            )
-                            
-                            logger.info(f"Successfully recovered and re-ingested '{title}' with {len(chunks)} chunks")
-                            recovered_count += 1
-                        else:
-                            logger.warning(f"PDF for '{title}' has minimal text, skipping")
+                        logger.info(f"Successfully downloaded PDF from: {pdf_url} (source: {source_used})")
                     else:
-                        logger.warning(f"Failed to download PDF for '{title}'")
+                        # Determine failure reason based on URL and response
+                        if "403" in str(pdf_path) or "blocked" in str(pdf_path).lower():
+                            failure_reason = "blocked_403"
+                        elif "html" in str(pdf_path).lower():
+                            failure_reason = "html_response"
+                        else:
+                            failure_reason = "download_failed"
+                        logger.warning(f"Failed to download PDF for '{title}' (reason: {failure_reason})")
                 else:
-                    logger.info(f"No OA PDF found for '{title}'")
-        
-        logger.info(f"PDF recovery complete: recovered {recovered_count}/{len(abstract_only_papers)} papers")
-        
+                    failure_reason = "no_oa_version"
+                    logger.info(f"No OA PDF found for '{title}' from any source")
+
+                if pdf_path and pdf_path.exists():
+                    # Extract and chunk
+                    full_text, char_to_page = pdf_service.extract_text_by_page(pdf_path)
+                    if len(full_text) >= 8000:
+                        chunks = pdf_service.chunk_text(full_text, char_to_page, chunk_size=2000, chunk_overlap=400)
+
+                        # First delete old abstract-only chunks
+                        vector_store.collection.delete(where={"title": title})
+
+                        # Ingest full-text chunks (so paper is always queryable)
+                        authors = meta.get("authors", "Unknown Authors")
+                        year = meta.get("year")
+                        venue = meta.get("venue")
+
+                        vector_store.add_paper_chunks(
+                            paper_title=title,
+                            doi=doi,
+                            chunks=chunks,
+                            authors=authors,
+                            year=year,
+                            venue=venue,
+                        )
+
+                        logger.info(f"Successfully recovered and re-ingested '{title}' with {len(chunks)} chunks")
+                        recovered_count += 1
+
+                        # Update manifest with success
+                        safe_filename = f"{safe_name}.pdf"
+                        manifest_service.mark_as_ingested(
+                            safe_filename,
+                            title,
+                            doi=doi,
+                            status="success",
+                            authors=authors,
+                            year=year,
+                            venue=venue,
+                            has_full_text=True,
+                            failure_reason=None
+                        )
+                    else:
+                        logger.warning(f"PDF for '{title}' has minimal text, skipping")
+                        failure_reason = "scanned_pdf"
+                else:
+                    # Update manifest with failure
+                    safe_filename = f"{safe_name}.pdf" if 'safe_name' in locals() else f"{title[:50]}.pdf"
+                    manifest_service.mark_as_ingested(
+                        safe_filename,
+                        title,
+                        doi=doi,
+                        status="failed",
+                        error=f"PDF download failed",
+                        failure_reason=failure_reason
+                    )
+
+        logger.info(f"PDF recovery complete: recovered {recovered_count}/{len(abstract_only_papers)} papers, skipped {skipped_count} (exponential backoff)")
+
     except Exception as e:
         logger.error(f"PDF recovery failed: {e}")
     finally:

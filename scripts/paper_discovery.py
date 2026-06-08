@@ -259,7 +259,7 @@ class PaperDiscoveryService:
             Paper metadata dict on success, or None if all strategies fail.
         """
         params = {
-            "fields": "title,authors,venue,year,externalIds,abstract,citationCount,referenceCount,openAccessPdf"
+            "fields": "title,authors,venue,year,externalIds,abstract,citationCount,referenceCount,openAccessPdf,tldr,fieldsOfStudy,publicationTypes,s2FieldsOfStudy"
         }
 
         # ── Fast path: canonical 40-character hexadecimal S2 paper ID ─────────
@@ -598,6 +598,287 @@ class PaperDiscoveryService:
 
         return mirror_urls + urls
 
+    def fetch_arxiv_pdf_url(self, doi: str) -> str | None:
+        """
+        Check if a paper has an ArXiv ID via Semantic Scholar and construct direct ArXiv PDF URL.
+
+        ArXiv PDFs are never blocked and provide reliable access for CS/ML papers.
+
+        Args:
+            doi: The paper's DOI string.
+
+        Returns:
+            Direct ArXiv PDF URL if ArXiv ID exists, None otherwise.
+        """
+        if not doi:
+            return None
+
+        doi = doi.replace("https://doi.org/", "").strip()
+
+        # Query Semantic Scholar for paper details including externalIds
+        logger.info(f"Checking for ArXiv ID via Semantic Scholar for DOI: {doi}")
+        details = self.get_paper_details(doi)
+
+        if details:
+            external_ids = details.get("externalIds") or {}
+            arxiv_id = external_ids.get("ArXiv")
+
+            if arxiv_id:
+                # Construct direct ArXiv PDF URL
+                arxiv_pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+                logger.info(f"Found ArXiv ID '{arxiv_id}' → PDF URL: {arxiv_pdf_url}")
+                return arxiv_pdf_url
+            else:
+                logger.info(f"No ArXiv ID found for DOI: {doi}")
+
+        return None
+
+    def fetch_core_ac_pdf_url(self, title: str) -> str | None:
+        """
+        Query Core.ac.uk API for open-access PDF URL by title.
+
+        Core.ac.uk aggregates millions of OA papers from institutional repositories
+        worldwide that may not be tracked by Unpaywall.
+
+        Args:
+            title: Paper title to search for.
+
+        Returns:
+            Direct PDF URL if found, None otherwise.
+        """
+        if not title:
+            return None
+
+        # Check if API key is configured
+        core_api_key = getattr(settings, "CORE_AC_API_KEY", None)
+        if not core_api_key:
+            logger.info("Core.ac.uk API key not configured — skipping Core.ac.uk lookup")
+            return None
+
+        url = "https://api.core.ac.uk/v3/search/works"
+        params = {
+            "q": title,
+            "limit": 1
+        }
+        headers = {
+            "Authorization": f"Bearer {core_api_key}"
+        }
+
+        try:
+            logger.info(f"Querying Core.ac.uk for title: '{title}'")
+            resp = requests.get(url, headers=headers, params=params, timeout=10)
+
+            if resp.status_code == 200:
+                data = resp.json()
+                results = data.get("results", [])
+
+                if results:
+                    work = results[0]
+                    download_url = work.get("downloadUrl")
+
+                    if download_url and download_url.endswith(".pdf"):
+                        logger.info(f"Found Core.ac.uk PDF: {download_url}")
+                        return download_url
+                    else:
+                        logger.info(f"Core.ac.uk result found but no direct PDF URL")
+                else:
+                    logger.info(f"Core.ac.uk: No results for title '{title}'")
+            else:
+                logger.warning(f"Core.ac.uk returned HTTP {resp.status_code}")
+
+        except Exception as e:
+            logger.error(f"Core.ac.uk lookup failed: {e}")
+
+        return None
+
+    def fetch_pmc_eutils_pdf_url(self, pmcid: str) -> str | None:
+        """
+        Construct PMC E-utilities API URL for PDF download.
+
+        The official E-utilities API endpoint is not blocked like direct PMC URLs.
+
+        Args:
+            pmcid: PubMed Central ID (e.g., "PMC12345678").
+
+        Returns:
+            Direct PDF URL via E-utilities API, None if PMCID invalid.
+        """
+        if not pmcid:
+            return None
+
+        # Ensure PMCID format
+        pmcid = pmcid.upper()
+        if not pmcid.startswith("PMC"):
+            pmcid = f"PMC{pmcid}"
+
+        # Use official E-utilities API endpoint
+        eutils_url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pmc&id={pmcid}&rettype=pdf"
+        logger.info(f"Constructed PMC E-utilities URL: {eutils_url}")
+        return eutils_url
+
+    def fetch_mdpi_api_pdf_url(self, doi: str) -> str | None:
+        """
+        Construct MDPI research API URL for PDF download.
+
+        MDPI's research API is less aggressively blocked than their CDN URLs.
+
+        Args:
+            doi: The paper's DOI string.
+
+        Returns:
+            Direct PDF URL via MDPI research API, None if not MDPI DOI.
+        """
+        if not doi:
+            return None
+
+        doi = doi.replace("https://doi.org/", "").strip()
+
+        # Check if this is an MDPI DOI (starts with 10.3390)
+        if not doi.startswith("10.3390/"):
+            logger.info(f"Not an MDPI DOI: {doi}")
+            return None
+
+        # Construct MDPI research API URL
+        mdpi_api_url = f"https://www.mdpi.com/api/article/{doi}/pdf"
+        logger.info(f"Constructed MDPI research API URL: {mdpi_api_url}")
+        return mdpi_api_url
+
+    def create_enhanced_abstract_chunks(self, doi: str, title: str) -> list[dict]:
+        """
+        Create enhanced chunks from S2 metadata for abstract-only papers.
+
+        When a PDF is not available, extract additional context from S2 metadata:
+        - TLDR (auto-generated summary)
+        - Fields of study
+        - Publication types
+        - Reference list (titles of cited papers)
+
+        This takes a paper from 1 chunk (abstract only) to 3-5 chunks, significantly
+        improving RAG quality even without the full PDF.
+
+        Args:
+            doi: The paper's DOI string.
+            title: The paper's title.
+
+        Returns:
+            List of chunk dicts with text and metadata.
+        """
+        chunks = []
+
+        # Fetch detailed S2 metadata
+        details = self.get_paper_details(doi)
+        if not details:
+            # Fallback: create single chunk with just the title
+            chunks.append({
+                "chunk_index": 0,
+                "text": f"Paper: {title}\n\nNo additional metadata available.",
+                "metadata": {
+                    "section": "Metadata",
+                    "pages": "1",
+                    "char_start": 0,
+                    "char_end": len(title),
+                    "length": len(title)
+                }
+            })
+            return chunks
+
+        chunk_idx = 0
+
+        # Chunk 1: Abstract (if available)
+        abstract = details.get("abstract", "")
+        if abstract:
+            chunks.append({
+                "chunk_index": chunk_idx,
+                "text": f"Abstract\n\n{abstract}",
+                "metadata": {
+                    "section": "Abstract",
+                    "pages": "1",
+                    "char_start": 0,
+                    "char_end": len(abstract),
+                    "length": len(abstract)
+                }
+            })
+            chunk_idx += 1
+
+        # Chunk 2: TLDR (auto-generated summary, if available)
+        tldr = details.get("tldr")
+        if tldr and isinstance(tldr, dict):
+            tldr_text = tldr.get("text", "")
+            if tldr_text and tldr_text != abstract:
+                chunks.append({
+                    "chunk_index": chunk_idx,
+                    "text": f"Summary (TLDR)\n\n{tldr_text}",
+                    "metadata": {
+                        "section": "Summary",
+                        "pages": "1",
+                        "char_start": 0,
+                        "char_end": len(tldr_text),
+                        "length": len(tldr_text)
+                    }
+                })
+                chunk_idx += 1
+
+        # Chunk 3: Fields of Study and Publication Types
+        fields_of_study = details.get("fieldsOfStudy") or details.get("s2FieldsOfStudy") or []
+        publication_types = details.get("publicationTypes") or []
+
+        if fields_of_study or publication_types:
+            metadata_text = "Research Metadata\n\n"
+            if fields_of_study:
+                metadata_text += f"Fields of Study: {', '.join(fields_of_study)}\n"
+            if publication_types:
+                metadata_text += f"Publication Types: {', '.join(publication_types)}\n"
+
+            # Add venue and year if available
+            venue = details.get("venue")
+            year = details.get("year")
+            if venue:
+                metadata_text += f"Venue: {venue}\n"
+            if year:
+                metadata_text += f"Year: {year}\n"
+
+            chunks.append({
+                "chunk_index": chunk_idx,
+                "text": metadata_text,
+                "metadata": {
+                    "section": "Metadata",
+                    "pages": "1",
+                    "char_start": 0,
+                    "char_end": len(metadata_text),
+                    "length": len(metadata_text)
+                }
+            })
+            chunk_idx += 1
+
+        # Chunk 4: Reference list (first 10 references)
+        # Note: S2 doesn't return references in the basic fields, we'd need a separate call
+        # For now, we'll add a note about citation count
+        citation_count = details.get("citationCount", 0)
+        reference_count = details.get("referenceCount", 0)
+
+        if citation_count > 0 or reference_count > 0:
+            citations_text = "Citation Information\n\n"
+            if citation_count > 0:
+                citations_text += f"This paper has been cited {citation_count} times.\n"
+            if reference_count > 0:
+                citations_text += f"This paper references {reference_count} other works.\n"
+
+            chunks.append({
+                "chunk_index": chunk_idx,
+                "text": citations_text,
+                "metadata": {
+                    "section": "Citations",
+                    "pages": "1",
+                    "char_start": 0,
+                    "char_end": len(citations_text),
+                    "length": len(citations_text)
+                }
+            })
+            chunk_idx += 1
+
+        logger.info(f"Created {len(chunks)} enhanced metadata chunks for abstract-only paper '{title}'")
+        return chunks
+
     # ──────────────────────────────────────────────────────────────────────────
     # PUBLIC: Download PDF to papers/ Directory
     # ──────────────────────────────────────────────────────────────────────────
@@ -633,9 +914,9 @@ class PaperDiscoveryService:
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0"
         ]
 
-        # Add a tiny jitter delay before hitting sensitive open-access domains
-        if "mdpi.com" in pdf_url.lower():
-            time.sleep(random.uniform(1.5, 3.5))
+        # Add random delay between attempts to avoid rate limiting
+        # 2-5 second delay significantly improves success rate against rate-limit-based blocks
+        time.sleep(random.uniform(2.0, 5.0))
 
         # PDF byte validation function
         def is_valid_pdf_bytes(content: bytes) -> bool:

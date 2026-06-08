@@ -196,6 +196,7 @@ class ManifestManagerService:
         abstract: str | None = None,
         paper_id: str | None = None,
         has_full_text: bool = True,
+        failure_reason: str | None = None,
     ) -> None:
         """
         Record the ingestion result for a PDF file in the manifest.
@@ -212,6 +213,8 @@ class ManifestManagerService:
             authors: Authors string.
             year: Year of publication.
             abstract: Paper abstract text.
+            failure_reason: Specific failure type for exponential backoff scheduling
+                          (e.g., "blocked_403", "no_oa_version", "html_response").
         """
         manifest = self._load_manifest()
 
@@ -238,6 +241,9 @@ class ManifestManagerService:
             "paper_id": paper_id or existing_entry.get("paper_id") or "",
             "ingested_at": datetime.now().isoformat(),
             "has_full_text": has_full_text if status == "success" else False,
+            # Failure reason for exponential backoff scheduling
+            "failure_reason": failure_reason or existing_entry.get("failure_reason", ""),
+            "failure_count": existing_entry.get("failure_count", 0) + 1 if status == "failed" else 0,
         }
 
         self._save_manifest(manifest)
