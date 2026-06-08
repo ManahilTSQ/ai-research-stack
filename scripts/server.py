@@ -563,18 +563,30 @@ def download_paper(request: DownloadRequest, background_tasks: BackgroundTasks):
         
         if clean_metadata:
             # Use clean metadata from authoritative sources
-            title = clean_metadata.get("title", title)
-            authors_str = format_authors(clean_metadata.get("authors", request.authors))
-            year = clean_metadata.get("year", year)
-            venue = clean_metadata.get("venue", request.venue)
-            doi = clean_metadata.get("doi", doi)
-            abstract = clean_metadata.get("abstract", request.abstract)
+            enriched_title = clean_metadata.get("title", title)
+            enriched_authors_str = format_authors(clean_metadata.get("authors", request.authors))
+            enriched_year = clean_metadata.get("year", year)
+            enriched_venue = clean_metadata.get("venue", request.venue)
+            enriched_doi = clean_metadata.get("doi", doi)
+            enriched_abstract = clean_metadata.get("abstract", request.abstract)
             logger.info(f"Using clean metadata from {clean_metadata.get('source', 'unknown')}")
         else:
             # Fallback to provided metadata
-            venue = request.venue
-            abstract = request.abstract
+            enriched_title = title
+            enriched_authors_str = authors_str
+            enriched_year = year
+            enriched_venue = request.venue
+            enriched_doi = doi
+            enriched_abstract = request.abstract
             logger.info("Using provided metadata (cascade failed)")
+        
+        # Use enriched metadata for the rest of the pipeline
+        title = enriched_title
+        authors_str = enriched_authors_str
+        year = enriched_year
+        venue = enriched_venue
+        doi = enriched_doi
+        abstract = enriched_abstract
 
         pdf_url = None
         
