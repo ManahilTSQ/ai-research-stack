@@ -1713,11 +1713,11 @@ def fuzzy_match_paper_titles(query: str, papers_metadata: dict) -> list[str]:
             title_words = set(title_lower.split())
             query_words = set(words)
             overlap = len(title_words & query_words)
-            # More lenient matching for longer queries to handle full title pastes
+            # Stricter matching for longer queries to prevent false matches between similar titles
             if len(query_words) >= 8:
-                min_overlap = max(3, len(query_words) * 0.4)  # 40% for very long queries
+                min_overlap = max(5, len(query_words) * 0.7)  # 70% for very long queries
             elif len(query_words) >= 5:
-                min_overlap = max(2, len(query_words) * 0.5)  # 50% for medium queries
+                min_overlap = max(3, len(query_words) * 0.6)  # 60% for medium queries
             else:
                 min_overlap = 2  # At least 2 for short queries
             if overlap >= min_overlap:
