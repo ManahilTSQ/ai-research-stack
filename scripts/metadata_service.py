@@ -12,12 +12,98 @@ This ensures clean, authoritative metadata while maximizing coverage.
 import logging
 import re
 import requests
+import time
 from urllib.parse import quote
 from typing import Dict, Optional, Any
+from pathlib import Path
 
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+# ── Cross-process rate-limit state file for Crossref ─────────────────────────────
+_CROSSREF_THROTTLE_FILE = settings.BASE_DIR / "output" / ".last_crossref_call"
+
+
+def _read_last_crossref_call_time() -> float:
+    """Read the Unix timestamp of the last Crossref API call from disk."""
+    try:
+        if _CROSSREF_THROTTLE_FILE.exists():
+            return float(_CROSSREF_THROTTLE_FILE.read_text().strip())
+    except Exception:
+        pass
+    return 0.0
+
+
+def _write_last_crossref_call_time(ts: float) -> None:
+    """Persist the Unix timestamp of the most recent Crossref API call to disk."""
+    try:
+        _CROSSREF_THROTTLE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _CROSSREF_THROTTLE_FILE.write_text(str(ts))
+    except Exception:
+        pass
+
+
+class TokenBucket:
+    """
+    Token bucket rate limiter for Crossref API.
+    
+    Crossref allows 50 requests/second for polite users with proper User-Agent.
+    This token bucket allows bursts up to the capacity while maintaining the average rate.
+    """
+    
+    def __init__(self, rate: float, capacity: int):
+        """
+        Initialize token bucket.
+        
+        Args:
+            rate: Tokens per second (e.g., 50.0 for 50 req/s)
+            capacity: Maximum burst capacity (e.g., 10 for burst of 10 requests)
+        """
+        self.rate = rate
+        self.capacity = capacity
+        self.tokens = capacity
+        self.last_update = time.time()
+    
+    def consume(self, tokens: int = 1) -> bool:
+        """
+        Consume tokens from the bucket.
+        
+        Args:
+            tokens: Number of tokens to consume (default: 1)
+            
+        Returns:
+            True if tokens were consumed, False if not enough tokens available
+        """
+        now = time.time()
+        # Add tokens based on elapsed time
+        elapsed = now - self.last_update
+        self.tokens = min(self.capacity, self.tokens + elapsed * self.rate)
+        self.last_update = now
+        
+        if self.tokens >= tokens:
+            self.tokens -= tokens
+            return True
+        return False
+    
+    def wait_for_token(self, tokens: int = 1) -> None:
+        """
+        Wait until enough tokens are available.
+        
+        Args:
+            tokens: Number of tokens needed (default: 1)
+        """
+        while not self.consume(tokens):
+            # Calculate how long to wait
+            now = time.time()
+            elapsed = now - self.last_update
+            self.tokens = min(self.capacity, self.tokens + elapsed * self.rate)
+            self.last_update = now
+            
+            if self.tokens < tokens:
+                # Wait for enough tokens to accumulate
+                wait_time = (tokens - self.tokens) / self.rate
+                time.sleep(wait_time)
 
 
 class MetadataService:
@@ -40,6 +126,11 @@ class MetadataService:
         self.headers = {
             "User-Agent": f"AIResearchStack/1.0 (mailto:{settings.UNPAYWALL_EMAIL})"
         }
+        
+        # Rate limiting state
+        self.last_crossref_call = _read_last_crossref_call_time()
+        # Token bucket for Crossref: 50 requests/second with burst capacity of 10
+        self.crossref_token_bucket = TokenBucket(rate=50.0, capacity=10)
         
         # Semantic Scholar API key if available
         if settings.SEMANTIC_SCHOLAR_API_KEY:
@@ -133,161 +224,223 @@ class MetadataService:
             return None
         
         # Match arXiv ID patterns: 1706.03762, arXiv:1706.03762, etc.
-        match = re.search(r"(?:arXiv[:\.])?(\d{4}\.\d{4,5}(?:v\d+)?)", identifier, re.IGNORECASE)
+        # Tightened regex to only match valid years (1991-2030) to prevent false positives from DOI suffixes
+        match = re.search(r"(?:arXiv[:\.])?((?:9[1-9]|0[0-9]|[1-2][0-9]|30)\d{2}\.\d{4,5}(?:v\d+?)?)", identifier, re.IGNORECASE)
         if match:
             return match.group(1)
         
         return None
 
-    def _fetch_crossref_metadata(self, doi: str) -> Optional[Dict[str, Any]]:
-        """Fetch metadata from Crossref API."""
-        try:
-            url = f"{self.crossref_base}/{quote(doi, safe='/')}"
-            resp = requests.get(url, headers=self.headers, timeout=10)
-            
-            if resp.status_code == 200:
-                data = resp.json()
-                message = data.get("message", {})
-                
-                # Title
-                titles = message.get("title", [])
-                title = titles[0].strip() if titles else "Untitled Paper"
-                
-                # Authors
-                crossref_authors = message.get("author", [])
-                authors = []
-                for a in crossref_authors:
-                    given = a.get("given", "").strip()
-                    family = a.get("family", "").strip()
-                    name = f"{given} {family}".strip()
-                    if name:
-                        authors.append({"name": name})
-                
-                # Year
-                year = "N/A"
-                for date_source in [message.get("published-print"), message.get("published-online"), message.get("created")]:
-                    if date_source:
-                        date_parts = date_source.get("date-parts", [])
-                        if date_parts and date_parts[0]:
-                            year = str(date_parts[0][0])
-                            break
-                
-                # Venue
-                container = message.get("container-title", [])
-                venue = container[0].strip() if container else "N/A"
-                
-                # External IDs
-                external_ids = {
-                    "DOI": doi,
-                    "CorpusID": message.get("corpus_id")
-                }
-                
-                return {
-                    "title": title,
-                    "authors": authors,
-                    "year": year,
-                    "venue": venue,
-                    "doi": doi,
-                    "abstract": None,  # Crossref doesn't provide abstracts
-                    "externalIds": external_ids,
-                    "citationCount": 0,
-                    "source": "crossref"
-                }
-            
-            elif resp.status_code == 404:
-                logger.info(f"Crossref: DOI '{doi}' not found")
-            else:
-                logger.warning(f"Crossref returned HTTP {resp.status_code} for DOI '{doi}'")
+    def _throttle_request(self, use_token_bucket: bool = False) -> None:
+        """
+        Enforce rate limiting for API requests.
         
-        except Exception as e:
-            logger.error(f"Crossref lookup failed for '{doi}': {e}")
+        Args:
+            use_token_bucket: If True, use token bucket for Crossref (50 req/s, burst 10).
+                            If False, use simple 1.0s throttle for OpenAlex.
+        """
+        if use_token_bucket:
+            # Use token bucket for Crossref (allows bursts up to 10, maintains 50 req/s average)
+            self.crossref_token_bucket.wait_for_token(tokens=1)
+            # Log when approaching rate limit (less than 3 tokens remaining)
+            if self.crossref_token_bucket.tokens < 3:
+                logger.info(f"Crossref rate limit approaching: {self.crossref_token_bucket.tokens:.1f} tokens remaining")
+        else:
+            # Simple throttle for OpenAlex (1.0s minimum between requests)
+            now = time.time()
+            elapsed = now - self.last_crossref_call
+            if elapsed < 1.0:
+                time.sleep(1.0 - elapsed)
+        
+        # Record and persist the current call time
+        self.last_crossref_call = time.time()
+        _write_last_crossref_call_time(self.last_crossref_call)
+
+    def _fetch_crossref_metadata(self, doi: str) -> Optional[Dict[str, Any]]:
+        """Fetch metadata from Crossref API with rate limiting and exponential backoff."""
+        for attempt in range(5):
+            # Apply throttle before request (use token bucket for Crossref)
+            self._throttle_request(use_token_bucket=True)
+            
+            try:
+                url = f"{self.crossref_base}/{quote(doi, safe='/')}"
+                resp = requests.get(url, headers=self.headers, timeout=10)
+                
+                if resp.status_code == 200:
+                    data = resp.json()
+                    message = data.get("message", {})
+                    
+                    # Title
+                    titles = message.get("title", [])
+                    title = titles[0].strip() if titles else "Untitled Paper"
+                    
+                    # Authors
+                    crossref_authors = message.get("author", [])
+                    authors = []
+                    for a in crossref_authors:
+                        given = a.get("given", "").strip()
+                        family = a.get("family", "").strip()
+                        name = f"{given} {family}".strip()
+                        if name:
+                            authors.append({"name": name})
+                    
+                    # Year
+                    year = "N/A"
+                    for date_source in [message.get("published-print"), message.get("published-online"), message.get("created")]:
+                        if date_source:
+                            date_parts = date_source.get("date-parts", [])
+                            if date_parts and date_parts[0]:
+                                year = str(date_parts[0][0])
+                                break
+                    
+                    # Venue
+                    container = message.get("container-title", [])
+                    venue = container[0].strip() if container else "N/A"
+                    
+                    # External IDs
+                    external_ids = {
+                        "DOI": doi,
+                        "CorpusID": message.get("corpus_id")
+                    }
+                    
+                    return {
+                        "title": title,
+                        "authors": authors,
+                        "year": year,
+                        "venue": venue,
+                        "doi": doi,
+                        "abstract": None,  # Crossref doesn't provide abstracts
+                        "externalIds": external_ids,
+                        "citationCount": 0,
+                        "source": "crossref"
+                    }
+                
+                elif resp.status_code == 404:
+                    logger.info(f"Crossref: DOI '{doi}' not found")
+                    break
+                
+                elif resp.status_code == 429:
+                    # Rate limited - wait with exponential backoff
+                    wait_time = 3.0 * (2 ** attempt)
+                    logger.warning(f"Crossref rate limit (429) hit. Retrying in {wait_time:.1f}s...")
+                    time.sleep(wait_time)
+                    # Reset timer after wait
+                    self.last_crossref_call = time.time()
+                    _write_last_crossref_call_time(self.last_crossref_call)
+                
+                else:
+                    logger.warning(f"Crossref returned HTTP {resp.status_code} for DOI '{doi}'")
+                    break
+            
+            except Exception as e:
+                logger.error(f"Crossref lookup failed for '{doi}': {e}")
+                if attempt < 4:
+                    time.sleep(3.0)
         
         return None
 
     def _fetch_openalex_metadata(self, doi_or_title: str) -> Optional[Dict[str, Any]]:
-        """Fetch metadata from OpenAlex API."""
-        try:
-            doi_or_title = doi_or_title.strip()
+        """Fetch metadata from OpenAlex API with rate limiting and exponential backoff."""
+        for attempt in range(5):
+            # Apply throttle before request (use simple throttle for OpenAlex)
+            self._throttle_request(use_token_bucket=False)
             
-            # Determine if it's a DOI or title query
-            is_doi = bool(re.match(r"^(10\.\d{4,9}/[-._;()/:A-Z0-9]+)$", doi_or_title, re.IGNORECASE) or "doi.org" in doi_or_title)
-            
-            if is_doi:
-                bare_doi = doi_or_title.replace("https://doi.org/", "").strip()
-                url = f"{self.openalex_base}/doi:{bare_doi}"
-                params = {}
-                logger.info(f"OpenAlex: Querying by DOI: {bare_doi}")
-            else:
-                url = self.openalex_base
-                params = {"search": doi_or_title, "per_page": 1}
-                logger.info(f"OpenAlex: Querying by title: '{doi_or_title}'")
-            
-            resp = requests.get(url, headers=self.headers, params=params, timeout=10)
-            
-            if resp.status_code == 200:
-                data = resp.json()
+            try:
+                doi_or_title = doi_or_title.strip()
                 
-                # If searching, data is a list under "results"
-                if not is_doi:
-                    results = data.get("results", [])
-                    if not results:
-                        logger.info("OpenAlex title search returned no results")
-                        return None
-                    work = results[0]
+                # Determine if it's a DOI or title query
+                is_doi = bool(re.match(r"^(10\.\d{4,9}/[-._;()/:A-Z0-9]+)$", doi_or_title, re.IGNORECASE) or "doi.org" in doi_or_title)
+                
+                if is_doi:
+                    bare_doi = doi_or_title.replace("https://doi.org/", "").strip()
+                    url = f"{self.openalex_base}/doi:{bare_doi}"
+                    params = {}
+                    logger.info(f"OpenAlex: Querying by DOI: {bare_doi}")
                 else:
-                    work = data
+                    url = self.openalex_base
+                    params = {"search": doi_or_title, "per_page": 1}
+                    logger.info(f"OpenAlex: Querying by title: '{doi_or_title}'")
                 
-                # Title
-                title = work.get("title") or "Untitled Paper"
+                resp = requests.get(url, headers=self.headers, params=params, timeout=10)
                 
-                # Authors
-                authorships = work.get("authorships", [])
-                authors = []
-                for auth in authorships:
-                    author_meta = auth.get("author", {})
-                    name = author_meta.get("display_name", "").strip()
-                    if name:
-                        authors.append({"name": name})
+                if resp.status_code == 200:
+                    data = resp.json()
+                    
+                    # If searching, data is a list under "results"
+                    if not is_doi:
+                        results = data.get("results", [])
+                        if not results:
+                            logger.info("OpenAlex title search returned no results")
+                            return None
+                        work = results[0]
+                    else:
+                        work = data
+                    
+                    # Title
+                    title = work.get("title") or "Untitled Paper"
+                    
+                    # Authors
+                    authorships = work.get("authorships", [])
+                    authors = []
+                    for auth in authorships:
+                        author_meta = auth.get("author", {})
+                        name = author_meta.get("display_name", "").strip()
+                        if name:
+                            authors.append({"name": name})
+                    
+                    # Year
+                    year = "N/A"
+                    pub_year = work.get("publication_year")
+                    if pub_year:
+                        year = str(pub_year)
+                    
+                    # Venue
+                    primary_location = work.get("primary_location", {})
+                    source = primary_location.get("source", {})
+                    venue = source.get("display_name") or "N/A"
+                    
+                    # DOI
+                    doi = work.get("doi") or "N/A"
+                    
+                    # External IDs
+                    external_ids = {
+                        "DOI": doi if doi != "N/A" else None,
+                        "CorpusID": work.get("id", "").replace("https://openalex.org/", "")
+                    }
+                    
+                    return {
+                        "title": title,
+                        "authors": authors,
+                        "year": year,
+                        "venue": venue,
+                        "doi": doi,
+                        "abstract": None,  # OpenAlex doesn't provide abstracts
+                        "externalIds": external_ids,
+                        "citationCount": work.get("cited_by_count", 0),
+                        "source": "openalex"
+                    }
                 
-                # Year
-                year = "N/A"
-                pub_year = work.get("publication_year")
-                if pub_year:
-                    year = str(pub_year)
+                elif resp.status_code == 404:
+                    logger.info(f"OpenAlex: '{doi_or_title}' not found")
+                    break
                 
-                # Venue
-                primary_location = work.get("primary_location", {})
-                source = primary_location.get("source", {})
-                venue = source.get("display_name") or "N/A"
+                elif resp.status_code == 429:
+                    # Rate limited - wait with exponential backoff
+                    wait_time = 3.0 * (2 ** attempt)
+                    logger.warning(f"OpenAlex rate limit (429) hit. Retrying in {wait_time:.1f}s...")
+                    time.sleep(wait_time)
+                    # Reset timer after wait
+                    self.last_crossref_call = time.time()
+                    _write_last_crossref_call_time(self.last_crossref_call)
                 
-                # DOI
-                doi = work.get("doi") or "N/A"
-                
-                # External IDs
-                external_ids = {
-                    "DOI": doi if doi != "N/A" else None,
-                    "CorpusID": work.get("id", "").replace("https://openalex.org/", "")
-                }
-                
-                return {
-                    "title": title,
-                    "authors": authors,
-                    "year": year,
-                    "venue": venue,
-                    "doi": doi,
-                    "abstract": None,  # OpenAlex doesn't provide abstracts
-                    "externalIds": external_ids,
-                    "citationCount": work.get("cited_by_count", 0),
-                    "source": "openalex"
-                }
+                else:
+                    logger.warning(f"OpenAlex returned HTTP {resp.status_code}")
+                    break
             
-            elif resp.status_code == 404:
-                logger.info(f"OpenAlex: '{doi_or_title}' not found")
-            else:
-                logger.warning(f"OpenAlex returned HTTP {resp.status_code}")
-        
-        except Exception as e:
-            logger.error(f"OpenAlex lookup failed: {e}")
+            except Exception as e:
+                logger.error(f"OpenAlex lookup failed: {e}")
+                if attempt < 4:
+                    time.sleep(3.0)
         
         return None
 

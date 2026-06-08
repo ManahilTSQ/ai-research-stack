@@ -18,6 +18,8 @@ Each manifest entry records:
 import json
 import logging
 import threading
+import re
+import difflib
 from pathlib import Path
 from datetime import datetime
 from config import settings   # Flat import — scripts/ is on sys.path
@@ -652,22 +654,39 @@ class ManifestManagerService:
                 title = meta.get("title", "")
                 is_verified = False
                 matched_title = None
+                best_similarity = 0.0
+                
+                # Normalize titles for fuzzy matching
+                def normalize_title(t: str) -> str:
+                    """Normalize title: lowercase, strip punctuation, remove extra whitespace."""
+                    t = t.lower().strip()
+                    t = re.sub(r'[^\w\s]', '', t)  # Remove punctuation
+                    t = re.sub(r'\s+', ' ', t)  # Remove extra whitespace
+                    return t
+                
+                normalized_manifest_title = normalize_title(title)
+                
                 for t in ingested_titles:
-                    if (t.lower().strip() in title.lower().strip() or
-                            title.lower().strip() in t.lower().strip()):
-                        is_verified = True
-                        matched_title = t
-                        break
+                    normalized_db_title = normalize_title(t)
+                    # Use fuzzy string matching with SequenceMatcher
+                    similarity = difflib.SequenceMatcher(None, normalized_manifest_title, normalized_db_title).ratio()
+                    if similarity > best_similarity:
+                        best_similarity = similarity
+                        if similarity >= 0.85:  # Threshold for considering it a match
+                            is_verified = True
+                            matched_title = t
+                            logger.info(f"Title match for '{filename}': similarity={similarity:.2f}, manifest='{title}', db='{t}'")
+                            break
 
                 if meta.get("status") == "success":
                     if not is_verified:
                         logger.warning(
                             f"Manifest integrity: '{filename}' is marked 'success' but "
-                            "its title was not found in ChromaDB. Resetting to 'pending' "
-                            "for automatic re-ingestion."
+                            f"its title was not found in ChromaDB (best similarity={best_similarity:.2f}). "
+                            "Resetting to 'pending' for automatic re-ingestion."
                         )
                         manifest[filename]["status"] = "pending"
-                        manifest[filename]["error"] = "Auto-reset: title not found in ChromaDB. Will be re-ingested."
+                        manifest[filename]["error"] = f"Auto-reset: title not found in ChromaDB (best similarity={best_similarity:.2f}). Will be re-ingested."
                         manifest[filename]["ingested_at"] = None
                         updated = True
                     elif matched_title:

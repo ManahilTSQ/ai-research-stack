@@ -264,7 +264,8 @@ class PaperDiscoveryService:
         # ── Pre-strategy: Extract and try direct arXiv lookup if identifier contains arXiv ID ──
         # e.g., 10.48550/arXiv.1706.03762, arXiv:1706.03762, or bare 1706.03762
         import re
-        arxiv_match = re.search(r"(?:arXiv[:\.])?(\d{4}\.\d{4,5}(?:v\d+)?)", paper_id, re.IGNORECASE)
+        # Tightened regex to only match valid years (1991-2030) to prevent false positives from DOI suffixes
+        arxiv_match = re.search(r"(?:arXiv[:\.])?((?:9[1-9]|0[0-9]|[1-2][0-9]|30)\d{2}\.\d{4,5}(?:v\d+?)?)", paper_id, re.IGNORECASE)
         if arxiv_match:
             arxiv_id = arxiv_match.group(1)
             url = f"{self.SEMANTIC_SCHOLAR_BASE}/paper/ArXiv:{arxiv_id}"
@@ -532,8 +533,8 @@ class PaperDiscoveryService:
         Uses streaming download with tqdm progress bar to handle large files
         without loading the entire file into memory at once.
 
-        A browser-like User-Agent header is sent to avoid bot detection by
-        some academic publisher servers (e.g. Springer, arXiv).
+        Enhanced browser-like headers with User-Agent rotation to avoid bot
+        detection by some academic publisher servers (e.g. MDPI, Springer).
 
         Args:
             pdf_url: Direct URL to the PDF file.
@@ -545,54 +546,80 @@ class PaperDiscoveryService:
         """
         save_path = settings.PDF_DOWNLOAD_DIR / save_filename
 
-        # Mimic a modern browser to avoid being blocked by publisher servers
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-            "Referer": "https://www.google.com/",
-            "Accept": "application/pdf,*/*"
-        }
+        # Rotate User-Agent strings to avoid detection
+        user_agents = [
+            # Chrome
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            # Firefox
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+            # Edge
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0"
+        ]
 
-        try:
-            logger.info(f"Downloading PDF: {pdf_url}")
-            # stream=True prevents loading the entire response into memory at once
-            response = requests.get(pdf_url, headers=headers, stream=True, timeout=30)
+        # Try with different User-Agents on 403 errors
+        for attempt, user_agent in enumerate(user_agents):
+            # Enhanced headers to mimic real browser
+            headers = {
+                "User-Agent": user_agent,
+                "Referer": "https://www.google.com/",
+                "Accept": "application/pdf,*/*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept-Encoding": "gzip, deflate, br",
+                "DNT": "1"
+            }
 
-            if response.status_code != 200:
-                logger.warning(
-                    f"PDF download failed (HTTP {response.status_code}): {pdf_url}\n"
-                    f"  → '{save_filename}' will fall back to abstract-only ingestion."
-                )
+            try:
+                logger.info(f"Downloading PDF: {pdf_url} (attempt {attempt + 1}/{len(user_agents)})")
+                # stream=True prevents loading the entire response into memory at once
+                response = requests.get(pdf_url, headers=headers, stream=True, timeout=30)
+
+                if response.status_code == 200:
+                    # Determine the total file size for the progress bar (may be 0 if unknown)
+                    total_size = int(response.headers.get("content-length", 0))
+                    block_size = 1024  # Read in 1 KiB blocks
+
+                    # Write the file in blocks, updating the progress bar after each block
+                    with open(save_path, "wb") as f:
+                        with tqdm(
+                            total=total_size,
+                            unit="iB",
+                            unit_scale=True,
+                            desc=save_filename[:20]  # Truncate long names for the progress bar
+                        ) as bar:
+                            for data in response.iter_content(block_size):
+                                bar.update(len(data))
+                                f.write(data)
+
+                    logger.info(f"PDF saved to: {save_path}")
+                    return save_path
+
+                elif response.status_code == 403:
+                    # Try next User-Agent on 403 Forbidden
+                    logger.warning(f"PDF download blocked with 403 (attempt {attempt + 1}/{len(user_agents)}): {pdf_url}")
+                    if attempt < len(user_agents) - 1:
+                        continue  # Try next User-Agent
+                    else:
+                        logger.warning(
+                            f"PDF download failed (HTTP 403) after all User-Agent attempts: {pdf_url}\n"
+                            f"  → '{save_filename}' will fall back to abstract-only ingestion."
+                        )
+                        return None
+
+                else:
+                    logger.warning(
+                        f"PDF download failed (HTTP {response.status_code}): {pdf_url}\n"
+                        f"  → '{save_filename}' will fall back to abstract-only ingestion."
+                    )
+                    return None
+
+            except Exception as e:
+                logger.error(f"Error downloading PDF from {pdf_url}: {e}")
+                # Clean up any partially written file to prevent corrupt PDFs
+                if save_path.exists():
+                    save_path.unlink()
                 return None
 
-            # Determine the total file size for the progress bar (may be 0 if unknown)
-            total_size = int(response.headers.get("content-length", 0))
-            block_size = 1024  # Read in 1 KiB blocks
-
-            # Write the file in blocks, updating the progress bar after each block
-            with open(save_path, "wb") as f:
-                with tqdm(
-                    total=total_size,
-                    unit="iB",
-                    unit_scale=True,
-                    desc=save_filename[:20]  # Truncate long names for the progress bar
-                ) as bar:
-                    for data in response.iter_content(block_size):
-                        bar.update(len(data))
-                        f.write(data)
-
-            logger.info(f"PDF saved to: {save_path}")
-            return save_path
-
-        except Exception as e:
-            logger.error(f"Error downloading PDF from {pdf_url}: {e}")
-            # Clean up any partially written file to prevent corrupt PDFs
-            if save_path.exists():
-                save_path.unlink()
-            return None
+        return None
 
     def fetch_crossref_metadata(self, doi: str) -> dict | None:
         """
