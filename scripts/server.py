@@ -160,7 +160,7 @@ async def basic_auth_middleware(request: Request, call_next):
         return await call_next(request)
 
     # Bypass public routes
-    if request.url.path in ["/", "/api/health", "/sw.js", "/service-worker.js", "/api/download"] or request.url.path.startswith("/static/") or request.url.path.startswith("/api/pdfs") or request.url.path.startswith("/api/query-rag") or request.url.path.startswith("/api/prompts") or request.url.path.startswith("/api/reports") or request.url.path.startswith("/api/search"):
+    if request.url.path in ["/", "/api/health", "/sw.js", "/service-worker.js", "/api/download"] or request.url.path.startswith("/static/") or request.url.path.startswith("/api/pdfs") or request.url.path.startswith("/api/papers") or request.url.path.startswith("/api/query-rag") or request.url.path.startswith("/api/prompts") or request.url.path.startswith("/api/reports") or request.url.path.startswith("/api/search"):
         return await call_next(request)
 
     auth_header = request.headers.get("Authorization")
@@ -981,8 +981,8 @@ def download_papers_zip():
             detail="Papers directory not found. Please download some papers first."
         )
     
-    # Collect all PDF files recursively
-    pdf_files = list(pdf_dir.rglob("*.pdf"))
+    # Collect all PDF files recursively (case-insensitive)
+    pdf_files = [p for p in pdf_dir.rglob("*") if p.is_file() and p.suffix.lower() == ".pdf"]
     
     if not pdf_files:
         raise HTTPException(
