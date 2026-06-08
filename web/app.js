@@ -530,6 +530,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const resp = await fetch(`${API_BASE}/api/download`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
+                credentials: 'include',
                 body: JSON.stringify({
                     title: paper.title,
                     authors: paper.authors,
@@ -627,6 +628,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 const resp = await fetch(`${API_BASE}/api/download`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
+                    credentials: 'include',
                     body: JSON.stringify({
                         title: paper.title,
                         authors: paper.authors,
@@ -703,7 +705,7 @@ document.addEventListener("DOMContentLoaded", () => {
         btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i>`;
 
         try {
-            const resp = await fetch(`${API_BASE}/api/papers/download-zip`);
+            const resp = await fetch(`${API_BASE}/api/papers/download-zip`, { credentials: 'include' });
             
             if (!resp.ok) {
                 const errorData = await resp.json().catch(() => ({ detail: "Unknown error" }));
@@ -744,7 +746,7 @@ document.addEventListener("DOMContentLoaded", () => {
      */
     async function fetchLocalPDFs() {
         try {
-            const resp = await fetch(`${API_BASE}/api/pdfs`);
+            const resp = await fetch(`${API_BASE}/api/pdfs`, { credentials: 'include' });
             const files = await resp.json();
 
             // Update the global ingested-papers cache used for duplicate detection in Paper Discovery
@@ -871,7 +873,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     btn.disabled = true;
                     btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i>`;
                     // Await the delete to fully complete before refreshing stats
-                    await fetch(`${API_BASE}/api/papers/${filename}`, { method: "DELETE" });
+                    await fetch(`${API_BASE}/api/papers/${filename}`, { method: "DELETE", credentials: 'include' });
                 } catch (delErr) {
                     // Continue even on network error
                 } finally {
@@ -1116,7 +1118,7 @@ document.addEventListener("DOMContentLoaded", () => {
         btn.innerHTML = `<i class="fa-solid fa-arrows-spin fa-spin"></i> Scanning folder...`;
 
         try {
-            const resp = await fetch(`${API_BASE}/api/ingest-pending`, { method: "POST" });
+            const resp = await fetch(`${API_BASE}/api/ingest-pending`, { method: "POST", credentials: 'include' });
             const result = await resp.json();
 
             btn.disabled = false;
@@ -1160,7 +1162,7 @@ document.addEventListener("DOMContentLoaded", () => {
         btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i> Deleting all papers...`;
 
         try {
-            const resp = await fetch(`${API_BASE}/api/papers`, { method: "DELETE" });
+            const resp = await fetch(`${API_BASE}/api/papers`, { method: "DELETE", credentials: 'include' });
             const result = await resp.json();
 
             btn.disabled = false;
@@ -1246,6 +1248,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
             const resp = await fetch(`${API_BASE}/api/upload`, {
                 method: "POST",
+                credentials: 'include',
                 body: formData
                 // Do NOT set Content-Type header — browser sets it with the multipart boundary
             });
@@ -1352,6 +1355,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const resp = await fetch(`${API_BASE}/api/query-rag`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
+                credentials: 'include',
                 body: JSON.stringify(payload),
             });
 
@@ -1738,6 +1742,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const resp = await fetch(`${API_BASE}/api/analyze-citations`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
+                credentials: 'include',
                 body: JSON.stringify({
                     paper_id: paperId,
                     limit: parseInt(limit)
@@ -1759,7 +1764,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
             // Poll the job status endpoint every 1.5 seconds
             citationPollInterval = setInterval(async () => {
-                const statusResp = await fetch(`${API_BASE}/api/analyze-citations/${activeCitationRunId}`);
+                const statusResp = await fetch(`${API_BASE}/api/analyze-citations/${activeCitationRunId}`, { credentials: 'include' });
                 const status = await statusResp.json();
 
                 // Update the UI progress display
@@ -1882,6 +1887,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     try {
                         const response = await fetch(`${API_BASE}/api/reports/${encodeURIComponent(filename)}`, {
                             method: "DELETE",
+                            credentials: 'include',
                         });
                         if (!response.ok) {
                             const errData = await response.json().catch(() => ({}));
@@ -2032,6 +2038,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const resp = await fetch(`${API_BASE}/api/prompts`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
+                credentials: 'include',
                 body: JSON.stringify(body),
             });
             const data = await resp.json();
@@ -2057,6 +2064,7 @@ document.addEventListener("DOMContentLoaded", () => {
         try {
             const resp = await fetch(`${API_BASE}/api/prompts/${encodeURIComponent(name)}`, {
                 method: "DELETE",
+                credentials: 'include',
             });
             const data = await resp.json();
             if (!resp.ok) throw new Error(data.detail || "Delete failed");
