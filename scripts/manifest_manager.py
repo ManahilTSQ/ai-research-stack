@@ -29,6 +29,14 @@ from config import settings   # Flat import — scripts/ is on sys.path
 logger = logging.getLogger(__name__)
 
 
+def normalize_title(t: str) -> str:
+    """Normalize title: lowercase, strip punctuation, remove extra whitespace."""
+    t = t.lower().strip()
+    t = re.sub(r'[^\w\s]', '', t)  # Remove punctuation
+    t = re.sub(r'\s+', ' ', t)  # Remove extra whitespace
+    return t
+
+
 class ManifestManagerService:
     """
     Service to track the ingestion state of PDF files.
@@ -657,13 +665,6 @@ class ManifestManagerService:
                 best_similarity = 0.0
                 
                 # Normalize titles for fuzzy matching
-                def normalize_title(t: str) -> str:
-                    """Normalize title: lowercase, strip punctuation, remove extra whitespace."""
-                    t = t.lower().strip()
-                    t = re.sub(r'[^\w\s]', '', t)  # Remove punctuation
-                    t = re.sub(r'\s+', ' ', t)  # Remove extra whitespace
-                    return t
-                
                 normalized_manifest_title = normalize_title(title)
                 
                 for t in ingested_titles:
