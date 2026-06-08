@@ -31,7 +31,8 @@ SHORT_TECH_TERMS = frozenset({
 _reranker = None
 
 # Maximum chunks to feed into cross-encoder reranker (prevents CPU timeout)
-MAX_RERANK_INPUT = 50
+# Reduced from 50 to 30 to prevent HTTP 524 timeouts on complex queries
+MAX_RERANK_INPUT = 30
 
 def _cuda_available() -> bool:
     """Check if CUDA is available for GPU acceleration."""

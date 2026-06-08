@@ -36,6 +36,7 @@ from config import settings
 from paper_discovery import PaperDiscoveryService
 from pdf_processor import PDFProcessorService
 from vector_store import VectorStoreService
+from metadata_service import metadata_service
 
 # ── Windows UTF-8 fix ─────────────────────────────────────────────────────────
 # PowerShell on Windows defaults to cp1252 encoding which cannot display
@@ -140,14 +141,51 @@ def process_paper_pipeline(
     """
     # Extract the fields we need from the paper metadata dict
     title = paper.get("title", "Untitled Paper")
-    authors_list = paper.get("authors", [])
-    authors_str  = format_authors(authors_list)
-    year         = paper.get("year")
-    venue        = paper.get("venue") or paper.get("publicationVenue", {}).get("name") or None
     external_ids = paper.get("externalIds") or {}
     doi      = external_ids.get("DOI")       # Used for Unpaywall lookup
     arxiv_id = external_ids.get("ArXiv")     # Used for direct arXiv PDF
-    abstract = (paper.get("abstract") or "").strip()  # Used as last-resort content
+    
+    # Step A: Enrich metadata via Crossref → OpenAlex → S2 cascade
+    identifier = doi or (f"arXiv:{arxiv_id}" if arxiv_id else title)
+    print(f"[METADATA] Fetching clean metadata via cascade for: {identifier}")
+    enriched = metadata_service.get_paper_metadata(identifier)
+    
+    if enriched:
+        print(f"[METADATA] Using clean metadata from {enriched.get('source', 'unknown')}")
+        title = enriched.get("title", title)
+        authors_list = enriched.get("authors", paper.get("authors", []))
+        year = enriched.get("year") or paper.get("year")
+        venue = enriched.get("venue") or paper.get("venue") or paper.get("publicationVenue", {}).get("name") or None
+        doi = (enriched.get("doi") or doi or "").replace("https://doi.org/", "").strip() or None
+        abstract = enriched.get("abstract") or (paper.get("abstract") or "").strip()
+    else:
+        print("[METADATA] Cascade failed, using provided metadata")
+        authors_list = paper.get("authors", [])
+        year = paper.get("year")
+        venue = paper.get("venue") or paper.get("publicationVenue", {}).get("name") or None
+        abstract = (paper.get("abstract") or "").strip()
+    
+    authors_str = format_authors(authors_list)
+
+    # Deduplication check — skip if already in ChromaDB with full text
+    print("[DEDUP] Checking for existing paper in database...")
+    stats = vector_store.get_collection_stats()
+    existing_titles = {t.lower().strip() for t in stats.get("papers_list", [])}
+    title_key = title.lower().strip()
+
+    already_exists = (
+        title_key in existing_titles or
+        any(title_key in t or t in title_key for t in existing_titles if len(t) > 20)
+    )
+    
+    if already_exists:
+        # Check chunk count — only skip if it already has full text
+        paper_chunks = vector_store.get_chunks_for_paper(title)
+        if len(paper_chunks) >= 5:
+            print(f"[SKIP] Already ingested with full text: '{title}' ({len(paper_chunks)} chunks)")
+            return True   # Not a failure
+        else:
+            print(f"[RE-INGEST] Found existing paper with only {len(paper_chunks)} chunks — re-ingesting")
 
     print("\n" + "=" * 80)
     print(f"STARTING INGESTION PIPELINE: {title}")
@@ -156,28 +194,51 @@ def process_paper_pipeline(
     # ── Tier 1: Unpaywall open-access PDF resolution ───────────────────────────
     pdf_url = None
     if doi:
-        print(f"[1/3] Querying Unpaywall for open-access PDF (DOI: {doi})...")
+        print(f"[1/5] Querying Unpaywall for open-access PDF (DOI: {doi})...")
         pdf_url = discover_service.fetch_open_access_pdf_url(doi)
         if pdf_url:
             print(f"[+] Found open-access PDF: {pdf_url}")
         else:
             print(f"[-] No open-access PDF found on Unpaywall for DOI: {doi}")
     else:
-        print("[1/3] No DOI available — skipping Unpaywall lookup.")
+        print("[1/5] No DOI available — skipping Unpaywall lookup.")
 
-    # ── Tier 2: arXiv direct PDF download ─────────────────────────────────────
+    # ── Tier 2: OpenAlex open access URL (NEW) ─────────────────────────────────
+    if not pdf_url and doi:
+        print(f"[2/5] Querying OpenAlex for open-access URL (DOI: {doi})...")
+        oa_meta = discover_service.fetch_openalex_metadata(doi)
+        if oa_meta:
+            oa_url = (oa_meta.get("open_access") or {}).get("oa_url")
+            if oa_url and oa_url.endswith(".pdf"):
+                pdf_url = oa_url
+                print(f"[+] Found open-access PDF via OpenAlex: {pdf_url}")
+            else:
+                print(f"[-] No PDF URL found in OpenAlex metadata")
+        else:
+            print(f"[-] OpenAlex lookup failed")
+
+    # ── Tier 3: Semantic Scholar openAccessPdf field (NEW) ───────────────────
+    if not pdf_url:
+        s2_pdf = (paper.get("openAccessPdf") or {}).get("url")
+        if s2_pdf:
+            pdf_url = s2_pdf
+            print(f"[3/5] Found PDF via Semantic Scholar openAccessPdf: {pdf_url}")
+        else:
+            print("[3/5] No openAccessPdf field in Semantic Scholar metadata")
+
+    # ── Tier 4: arXiv direct PDF download ─────────────────────────────────────
     if not pdf_url and arxiv_id:
         # arXiv provides free PDFs for all its preprints at a predictable URL
         pdf_url = f"https://arxiv.org/pdf/{arxiv_id}"
-        print(f"[2/3] Falling back to arXiv direct PDF: {pdf_url}")
+        print(f"[4/5] Falling back to arXiv direct PDF: {pdf_url}")
     elif not pdf_url:
-        print("[2/3] No arXiv ID available — skipping direct PDF fallback.")
+        print("[4/5] No arXiv ID available — skipping direct PDF fallback.")
 
     # ── Attempt PDF download if we have a URL ─────────────────────────────────
     downloaded_path = None
     if pdf_url:
         safe_filename = sanitize_filename(title)
-        print(f"[3/3] Downloading PDF → {safe_filename}...")
+        print(f"[5/5] Downloading PDF → {safe_filename}...")
         downloaded_path = discover_service.download_pdf(pdf_url, safe_filename)
 
     # ── Full-text ingestion path (PDF successfully downloaded) ─────────────────
@@ -187,6 +248,21 @@ def process_paper_pipeline(
         print("[4/5] Extracting text with PyMuPDF...")
         try:
             full_text, char_to_page = pdf_service.extract_text_by_page(downloaded_path)
+            
+            # PDF quality gate
+            SCANNED_THRESHOLD = 2000   # almost certainly scanned, not worth ingesting
+            PARTIAL_THRESHOLD = 8000   # abstract-only or truncated
+            
+            if len(full_text) < SCANNED_THRESHOLD:
+                print(f"[!] PDF appears to be image-only (scanned). Only {len(full_text)} chars extracted.")
+                print("    Falling back to abstract ingestion instead of ingesting garbage text.")
+                downloaded_path = None   # Force fall-through to abstract fallback
+                full_text = None
+            elif len(full_text) < PARTIAL_THRESHOLD:
+                print(f"[!] Partial text extracted ({len(full_text)} chars). Flagging as abstract-quality.")
+                has_full_text = False
+            else:
+                has_full_text = True
             total_chars = len(full_text)
             total_pages = max(char_to_page) + 1 if char_to_page else 0
             print(f"[+] Extracted text from {total_pages} pages ({total_chars:,} chars)")

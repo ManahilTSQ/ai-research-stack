@@ -211,7 +211,7 @@ class PaperDiscoveryService:
             "limit": limit,
             "offset": offset,
             # Request only the fields we actually use — keeps response small
-            "fields": "title,authors,venue,year,externalIds,abstract,citationCount,referenceCount"
+            "fields": "title,authors,venue,year,externalIds,abstract,citationCount,referenceCount,openAccessPdf"
         }
         logger.info(f"Searching Semantic Scholar: '{query}' (limit={limit}, offset={offset})")
         data = self._get_request(url, params=params)
@@ -247,7 +247,7 @@ class PaperDiscoveryService:
             Paper metadata dict on success, or None if all strategies fail.
         """
         params = {
-            "fields": "title,authors,venue,year,externalIds,abstract,citationCount,referenceCount"
+            "fields": "title,authors,venue,year,externalIds,abstract,citationCount,referenceCount,openAccessPdf"
         }
 
         # ── Fast path: canonical 40-character hexadecimal S2 paper ID ─────────
@@ -744,7 +744,8 @@ class PaperDiscoveryService:
                     "year": year,
                     "venue": venue,
                     "doi": resolved_doi,
-                    "abstract": abstract
+                    "abstract": abstract,
+                    "open_access": work.get("open_access") or {}
                 }
             else:
                 logger.warning(f"OpenAlex returned HTTP {resp.status_code} for query '{doi_or_title}'")

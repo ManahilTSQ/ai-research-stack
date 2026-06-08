@@ -35,6 +35,7 @@ from vector_store import VectorStoreService
 from rag_service import RAGService, check_ollama_health, OllamaUnavailableError
 from manifest_manager import ManifestManagerService
 from citation_analyzer import CitationAnalyzerService
+from metadata_service import metadata_service
 from prompt_manager import (
     PromptValidationError,
     load_prompt_metadata,
@@ -501,6 +502,7 @@ def search_papers(
     remainder, quoted_phrases = extract_quoted_phrases(raw_query)
     api_query = build_api_query_string(raw_query) or remainder or raw_query
 
+    logger.info(f"Searching Semantic Scholar for: '{api_query}' (limit={limit}, offset={offset})")
     results = discover_service.search_papers(api_query, limit=limit, offset=offset)
 
     # Post-filter: quoted phrases = exact full author name.
@@ -555,12 +557,53 @@ def download_paper(request: DownloadRequest, background_tasks: BackgroundTasks):
         logger.info(f"BG Ingest started: '{title}'")
         chunks = []
 
+        # Use metadata_service to get clean metadata from Crossref → OpenAlex → S2 cascade
+        identifier = doi or (f"arXiv:{arxiv_id}" if arxiv_id else title)
+        clean_metadata = metadata_service.get_paper_metadata(identifier)
+        
+        if clean_metadata:
+            # Use clean metadata from authoritative sources
+            title = clean_metadata.get("title", title)
+            authors_str = format_authors(clean_metadata.get("authors", request.authors))
+            year = clean_metadata.get("year", year)
+            venue = clean_metadata.get("venue", request.venue)
+            doi = clean_metadata.get("doi", doi)
+            abstract = clean_metadata.get("abstract", request.abstract)
+            logger.info(f"Using clean metadata from {clean_metadata.get('source', 'unknown')}")
+        else:
+            # Fallback to provided metadata
+            venue = request.venue
+            abstract = request.abstract
+            logger.info("Using provided metadata (cascade failed)")
+
         pdf_url = None
+        
+        # Tier 1: Unpaywall (existing)
         if doi:
             pdf_url = discover_service.fetch_open_access_pdf_url(doi)
+            if pdf_url:
+                logger.info(f"Found PDF via Unpaywall: {pdf_url}")
 
+        # Tier 2 (NEW): OpenAlex open access URL
+        if not pdf_url and doi:
+            oa_meta = discover_service.fetch_openalex_metadata(doi)
+            if oa_meta:
+                oa_url = (oa_meta.get("open_access") or {}).get("oa_url")
+                if oa_url and oa_url.endswith(".pdf"):
+                    pdf_url = oa_url
+                    logger.info(f"Found PDF via OpenAlex: {pdf_url}")
+
+        # Tier 3 (NEW): Semantic Scholar openAccessPdf field
+        if not pdf_url and request.externalIds:
+            s2_pdf = (request.externalIds.get("openAccessPdf") or {}).get("url")
+            if s2_pdf:
+                pdf_url = s2_pdf
+                logger.info(f"Found PDF via Semantic Scholar openAccessPdf: {pdf_url}")
+
+        # Tier 4: arXiv direct (existing)
         if not pdf_url and arxiv_id:
             pdf_url = f"https://arxiv.org/pdf/{arxiv_id}"
+            logger.info(f"Using arXiv direct PDF: {pdf_url}")
 
         if pdf_url:
             safe_name = sanitize_filename(title)
@@ -966,6 +1009,17 @@ async def upload_pdfs(
                     year_str = resolved["year"]
                     doi = resolved["doi"]
                     abstract = resolved.get("abstract", "")
+                    
+                    # Use metadata_service to get clean metadata from Crossref → OpenAlex → S2 cascade
+                    if doi and doi != "N/A":
+                        clean_metadata = metadata_service.get_paper_metadata(doi)
+                        if clean_metadata:
+                            title = clean_metadata.get("title", title)
+                            authors = format_authors(clean_metadata.get("authors", [{"name": a} for a in authors.split(" and ")]))
+                            year_str = clean_metadata.get("year", year_str)
+                            doi = clean_metadata.get("doi", doi)
+                            abstract = clean_metadata.get("abstract", abstract)
+                            logger.info(f"Enhanced metadata from {clean_metadata.get('source', 'unknown')} for '{title}'")
                     
                     year = int(year_str) if year_str.isdigit() else None
 
