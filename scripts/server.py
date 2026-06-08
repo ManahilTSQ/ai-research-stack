@@ -851,7 +851,7 @@ def download_papers_zip():
     if not pdf_dir.exists():
         raise HTTPException(
             status_code=404,
-            detail="Papers directory not found."
+            detail="Papers directory not found. Please download some papers first."
         )
     
     # Collect all PDF files recursively
@@ -860,7 +860,7 @@ def download_papers_zip():
     if not pdf_files:
         raise HTTPException(
             status_code=404,
-            detail="No PDF files found in the papers directory."
+            detail="No PDF files found in the papers directory. Please download some papers first before attempting to download a zip archive."
         )
     
     # Create in-memory zip file

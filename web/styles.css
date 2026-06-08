@@ -615,7 +615,8 @@ select:focus {
     display: flex;
     flex-direction: column;
     gap: 12px;
-    overflow: visible;
+    overflow: hidden;
+    height: 100%;
 }
 
 .sidebar-header {

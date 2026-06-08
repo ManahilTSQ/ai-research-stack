@@ -723,18 +723,16 @@ document.addEventListener("DOMContentLoaded", () => {
             // Create blob and trigger download
             const blob = await resp.blob();
             const url = window.URL.createObjectURL(blob);
-            const a = document.createElement("a");
+            const a = document.createElement('a');
             a.href = url;
             a.download = filename;
             document.body.appendChild(a);
             a.click();
             window.URL.revokeObjectURL(url);
             document.body.removeChild(a);
-
         } catch (err) {
-            alert(`Download failed: ${err.message}`);
+            alert(`Download failed: ${err.message || err}`);
         } finally {
-            // Restore button state
             btn.disabled = false;
             btn.innerHTML = `<i class="fa-solid fa-download"></i>`;
         }
