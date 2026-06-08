@@ -151,9 +151,12 @@ async def basic_auth_middleware(request: Request, call_next):
 
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Basic "):
+        headers = {}
+        if not request.url.path.startswith("/api/"):
+            headers["WWW-Authenticate"] = 'Basic realm="AI Research Stack"'
         return Response(
             status_code=401,
-            headers={"WWW-Authenticate": 'Basic realm="AI Research Stack"'},
+            headers=headers,
             content="Unauthorized Access"
         )
 
@@ -167,9 +170,12 @@ async def basic_auth_middleware(request: Request, call_next):
     except Exception:
         pass
 
+    headers = {}
+    if not request.url.path.startswith("/api/"):
+        headers["WWW-Authenticate"] = 'Basic realm="AI Research Stack"'
     return Response(
         status_code=401,
-        headers={"WWW-Authenticate": 'Basic realm="AI Research Stack"'},
+        headers=headers,
         content="Unauthorized Access"
     )
 

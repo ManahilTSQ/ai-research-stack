@@ -585,7 +585,17 @@ class PaperDiscoveryService:
                 if pdf_url and pdf_url not in urls:
                     urls.append(pdf_url)
 
-        return urls
+        # 3. Construct Europe PMC mirror URLs for any PMC IDs found in URLs
+        mirror_urls = []
+        for u in urls:
+            pmc_match = re.search(r"PMC\d+", u, re.IGNORECASE)
+            if pmc_match:
+                pmcid = pmc_match.group(0).upper()
+                epmc_url = f"https://europepmc.org/backend/nhsv/loaddoc?pdfid={pmcid}"
+                if epmc_url not in urls and epmc_url not in mirror_urls:
+                    mirror_urls.append(epmc_url)
+
+        return mirror_urls + urls
 
     # ──────────────────────────────────────────────────────────────────────────
     # PUBLIC: Download PDF to papers/ Directory
@@ -905,6 +915,17 @@ class PaperDiscoveryService:
                     pdf_url = loc.get("pdf_url")
                     if pdf_url and pdf_url not in urls:
                         urls.append(pdf_url)
+
+                # 3. Construct Europe PMC mirror URLs for any PMC IDs found in URLs
+                mirror_urls = []
+                for u in urls:
+                    pmc_match = re.search(r"PMC\d+", u, re.IGNORECASE)
+                    if pmc_match:
+                        pmcid = pmc_match.group(0).upper()
+                        epmc_url = f"https://europepmc.org/backend/nhsv/loaddoc?pdfid={pmcid}"
+                        if epmc_url not in urls and epmc_url not in mirror_urls:
+                            mirror_urls.append(epmc_url)
+                urls = mirror_urls + urls
         except Exception as e:
             logger.error(f"OpenAlex lookup for all URLs failed: {e}")
         return urls
