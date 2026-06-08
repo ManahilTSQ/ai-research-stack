@@ -622,28 +622,59 @@ def download_paper(request: DownloadRequest, background_tasks: BackgroundTasks):
         abstract = enriched_abstract
 
         pdf_urls = []
-        
-        # Tier 1: Unpaywall (existing)
+
+        # Cascade order: ArXiv → Unpaywall → Core.ac.uk → MDPI API → PMC E-utilities → OpenAlex → S2 openAccessPdf
+
+        # Tier 1: ArXiv (never blocked, best for CS/ML papers)
+        if doi:
+            arxiv_url = discover_service.fetch_arxiv_pdf_url(doi)
+            if arxiv_url and arxiv_url not in pdf_urls:
+                pdf_urls.append(arxiv_url)
+
+        # Tier 2: Unpaywall
         if doi:
             unpaywall_urls = discover_service.fetch_all_open_access_pdf_urls(doi)
             for url in unpaywall_urls:
                 if url not in pdf_urls:
                     pdf_urls.append(url)
 
-        # Tier 2 (NEW): OpenAlex open access URL
+        # Tier 3: Core.ac.uk (by title)
+        if title:
+            core_url = discover_service.fetch_core_ac_pdf_url(title)
+            if core_url and core_url not in pdf_urls:
+                pdf_urls.append(core_url)
+
+        # Tier 4: MDPI research API (for MDPI DOIs)
+        if doi:
+            mdpi_url = discover_service.fetch_mdpi_api_pdf_url(doi)
+            if mdpi_url and mdpi_url not in pdf_urls:
+                pdf_urls.append(mdpi_url)
+
+        # Tier 5: PMC E-utilities (if PMCID available from OpenAlex)
+        if doi:
+            openalex_data = discover_service.fetch_openalex_metadata(doi)
+            if openalex_data:
+                ids = openalex_data.get("ids", {})
+                pmcid = ids.get("pmcid") if ids else None
+                if pmcid:
+                    pmc_url = discover_service.fetch_pmc_eutils_pdf_url(pmcid)
+                    if pmc_url and pmc_url not in pdf_urls:
+                        pdf_urls.append(pmc_url)
+
+        # Tier 6: OpenAlex open access URL
         if doi:
             openalex_urls = discover_service.fetch_all_openalex_pdf_urls(doi)
             for url in openalex_urls:
                 if url not in pdf_urls:
                     pdf_urls.append(url)
 
-        # Tier 3 (NEW): Semantic Scholar openAccessPdf field
+        # Tier 7: Semantic Scholar openAccessPdf field
         if request.externalIds:
             s2_pdf = (request.externalIds.get("openAccessPdf") or {}).get("url")
             if s2_pdf and s2_pdf not in pdf_urls:
                 pdf_urls.append(s2_pdf)
 
-        # Tier 4: arXiv direct (existing)
+        # Tier 8: arXiv direct (fallback for arxiv_id from S2)
         if arxiv_id:
             arxiv_url = f"https://arxiv.org/pdf/{arxiv_id}"
             if arxiv_url not in pdf_urls:
