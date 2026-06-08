@@ -49,11 +49,17 @@ if sys.platform.startswith("win"):
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
 # Logs go to stdout so they are visible in the terminal alongside print() output.
+# Explicitly force UTF-8 encoding for logging to clean journalctl streams
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
+# Force UTF-8 writing on stdout handler
+for handler in logging.root.handlers:
+    if isinstance(handler, logging.StreamHandler):
+        handler.setStream(open(sys.stdout.fileno(), mode='w', encoding='utf-8', closefd=False))
+
 logger = logging.getLogger("ai_research_cli")
 
 

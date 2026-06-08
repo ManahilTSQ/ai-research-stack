@@ -219,16 +219,28 @@ class MetadataService:
         return None
 
     def _extract_arxiv_id(self, identifier: str) -> Optional[str]:
-        """Extract arXiv ID from identifier string."""
+        """
+        Safely extracts an arXiv ID without misidentifying portions of a DOI string.
+        
+        Rejects if it looks like a standard publisher DOI and only matches if the identifier
+        explicitly mentions "arxiv" or matches standard standalone patterns.
+        """
         if not identifier:
             return None
         
-        # Match arXiv ID patterns: 1706.03762, arXiv:1706.03762, etc.
-        # Tightened regex to only match valid years (1991-2030) to prevent false positives from DOI suffixes
-        match = re.search(r"(?:arXiv[:\.])?((?:9[1-9]|0[0-9]|[1-2][0-9]|30)\d{2}\.\d{4,5}(?:v\d+?)?)", identifier, re.IGNORECASE)
+        # Reject if it looks like a standard publisher DOI
+        if "10." in identifier and "/" in identifier:
+            # It's a DOI, check if it explicitly mentions arXiv in the path
+            if "arxiv" not in identifier.lower():
+                return None
+        
+        # Strict regex pattern for old and modern arXiv IDs
+        # Matches: arXiv:YYMM.NNNNN, arxiv/YYMMNNN, or standalone modern patterns
+        arxiv_pattern = re.compile(r'(?:arxiv[:/])?(\d{4}\.\d{4,5})(?:v\d+)?', re.IGNORECASE)
+        match = arxiv_pattern.search(identifier)
+        
         if match:
             return match.group(1)
-        
         return None
 
     def _throttle_request(self, use_token_bucket: bool = False) -> None:

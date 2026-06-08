@@ -71,10 +71,18 @@ from search_utils import (
 )
 from paper_labels import format_sidebar_label
 
+# Explicitly force UTF-8 encoding for logging to clean journalctl streams
+import sys
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
 )
+# Force UTF-8 writing on stdout handler
+for handler in logging.root.handlers:
+    if isinstance(handler, logging.StreamHandler):
+        handler.setStream(open(sys.stdout.fileno(), mode='w', encoding='utf-8', closefd=False))
+
 logger = logging.getLogger("ai_research_server")
 
 logger.info("Initialising all backend services...")
@@ -683,6 +691,9 @@ def download_paper(request: DownloadRequest, background_tasks: BackgroundTasks):
                 paper_id=request.paperId,
             )
             logger.warning(f"Ingestion failed for '{title}': no content could be obtained.")
+
+        # Enforce a non-blocking throttle block to keep Semantic Scholar/Crossref happy
+        time.sleep(2.0)
 
     background_tasks.add_task(_ingest)
     return {"success": True, "message": f"Ingestion started for: {title}", "mode": "pdf" if request.externalIds else "abstract"}

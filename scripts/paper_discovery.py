@@ -23,7 +23,18 @@ from config import settings   # Flat import — scripts/ is on sys.path
 
 
 # ── Logger setup ──────────────────────────────────────────────────────────────
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+# Explicitly force UTF-8 encoding for logging to clean journalctl streams
+import sys
+logging.basicConfig(
+    level=logging.INFO, 
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+# Force UTF-8 writing on stdout handler
+for handler in logging.root.handlers:
+    if isinstance(handler, logging.StreamHandler):
+        handler.setStream(open(sys.stdout.fileno(), mode='w', encoding='utf-8', closefd=False))
+
 logger = logging.getLogger(__name__)
 
 # ── Cross-process rate-limit state file ──────────────────────────────────────
@@ -264,10 +275,26 @@ class PaperDiscoveryService:
         # ── Pre-strategy: Extract and try direct arXiv lookup if identifier contains arXiv ID ──
         # e.g., 10.48550/arXiv.1706.03762, arXiv:1706.03762, or bare 1706.03762
         import re
-        # Tightened regex to only match valid years (1991-2030) to prevent false positives from DOI suffixes
-        arxiv_match = re.search(r"(?:arXiv[:\.])?((?:9[1-9]|0[0-9]|[1-2][0-9]|30)\d{2}\.\d{4,5}(?:v\d+?)?)", paper_id, re.IGNORECASE)
-        if arxiv_match:
-            arxiv_id = arxiv_match.group(1)
+        # Safely extract arXiv ID without misidentifying portions of a DOI string
+        def extract_arxiv_id(identifier: str) -> str | None:
+            """Safely extracts an arXiv ID without misidentifying portions of a DOI string."""
+            # Reject if it looks like a standard publisher DOI
+            if "10." in identifier and "/" in identifier:
+                # It's a DOI, check if it explicitly mentions arXiv in the path
+                if "arxiv" not in identifier.lower():
+                    return None
+            
+            # Strict regex pattern for old and modern arXiv IDs
+            # Matches: arXiv:YYMM.NNNNN, arxiv/YYMMNNN, or standalone modern patterns
+            arxiv_pattern = re.compile(r'(?:arxiv[:/])?(\d{4}\.\d{4,5})(?:v\d+)?', re.IGNORECASE)
+            match = arxiv_pattern.search(identifier)
+            
+            if match:
+                return match.group(1)
+            return None
+        
+        arxiv_id = extract_arxiv_id(paper_id)
+        if arxiv_id:
             url = f"{self.SEMANTIC_SCHOLAR_BASE}/paper/ArXiv:{arxiv_id}"
             logger.info(f"Auto-detected arXiv ID '{arxiv_id}' from identifier. Attempting direct arXiv lookup: {url}")
             res = self._get_request(url, params=params)
@@ -544,6 +571,7 @@ class PaperDiscoveryService:
             Path object pointing to the saved file on success, or None on failure.
             Partially downloaded files are deleted on failure.
         """
+        import random
         save_path = settings.PDF_DOWNLOAD_DIR / save_filename
 
         # Rotate User-Agent strings to avoid detection
@@ -556,16 +584,30 @@ class PaperDiscoveryService:
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0"
         ]
 
+        # Add a tiny jitter delay before hitting sensitive open-access domains
+        if "mdpi.com" in pdf_url.lower():
+            time.sleep(random.uniform(1.5, 3.5))
+
+        # PDF byte validation function
+        def is_valid_pdf_bytes(content: bytes) -> bool:
+            """Checks if the byte stream starts with the standard %PDF magic number."""
+            return content.startswith(b"%PDF")
+
         # Try with different User-Agents on 403 errors
         for attempt, user_agent in enumerate(user_agents):
-            # Enhanced headers to mimic real browser
+            # Enhanced headers to mimic complete modern browser footprint
             headers = {
                 "User-Agent": user_agent,
-                "Referer": "https://www.google.com/",
-                "Accept": "application/pdf,*/*",
-                "Accept-Language": "en-US,en;q=0.9",
+                "Accept": "application/pdf,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
                 "Accept-Encoding": "gzip, deflate, br",
-                "DNT": "1"
+                "DNT": "1",
+                "Connection": "keep-alive",
+                "Upgrade-Insecure-Requests": "1",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+                "Sec-Fetch-User": "?1",
             }
 
             try:
@@ -574,11 +616,22 @@ class PaperDiscoveryService:
                 response = requests.get(pdf_url, headers=headers, stream=True, timeout=30)
 
                 if response.status_code == 200:
-                    # Determine the total file size for the progress bar (may be 0 if unknown)
-                    total_size = int(response.headers.get("content-length", 0))
+                    # Download content to memory first for validation
+                    content = response.content
+                    
+                    # Validate PDF magic number before saving
+                    if not is_valid_pdf_bytes(content):
+                        logger.warning(
+                            f"Downloaded payload is not a valid PDF binary string. "
+                            f"Triggering abstract-only fallback for: {pdf_url}"
+                        )
+                        return None
+                    
+                    # Determine the total file size for the progress bar
+                    total_size = len(content)
                     block_size = 1024  # Read in 1 KiB blocks
 
-                    # Write the file in blocks, updating the progress bar after each block
+                    # Write the validated file
                     with open(save_path, "wb") as f:
                         with tqdm(
                             total=total_size,
@@ -586,9 +639,10 @@ class PaperDiscoveryService:
                             unit_scale=True,
                             desc=save_filename[:20]  # Truncate long names for the progress bar
                         ) as bar:
-                            for data in response.iter_content(block_size):
-                                bar.update(len(data))
-                                f.write(data)
+                            for i in range(0, total_size, block_size):
+                                chunk = content[i:i+block_size]
+                                bar.update(len(chunk))
+                                f.write(chunk)
 
                     logger.info(f"PDF saved to: {save_path}")
                     return save_path
