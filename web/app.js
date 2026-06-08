@@ -705,7 +705,7 @@ document.addEventListener("DOMContentLoaded", () => {
         btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i>`;
 
         try {
-            const resp = await fetch(`${API_BASE}/api/papers/download-zip`, { credentials: 'include' });
+            const resp = await fetch(`${API_BASE}/api/papers/download-zip`);
             
             if (!resp.ok) {
                 const errorData = await resp.json().catch(() => ({ detail: "Unknown error" }));
@@ -746,7 +746,7 @@ document.addEventListener("DOMContentLoaded", () => {
      */
     async function fetchLocalPDFs() {
         try {
-            const resp = await fetch(`${API_BASE}/api/pdfs`, { credentials: 'include' });
+            const resp = await fetch(`${API_BASE}/api/pdfs`);
             const files = await resp.json();
 
             // Update the global ingested-papers cache used for duplicate detection in Paper Discovery
@@ -873,7 +873,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     btn.disabled = true;
                     btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i>`;
                     // Await the delete to fully complete before refreshing stats
-                    await fetch(`${API_BASE}/api/papers/${filename}`, { method: "DELETE", credentials: 'include' });
+                    await fetch(`${API_BASE}/api/papers/${filename}`, { method: "DELETE" });
                 } catch (delErr) {
                     // Continue even on network error
                 } finally {
@@ -1118,7 +1118,7 @@ document.addEventListener("DOMContentLoaded", () => {
         btn.innerHTML = `<i class="fa-solid fa-arrows-spin fa-spin"></i> Scanning folder...`;
 
         try {
-            const resp = await fetch(`${API_BASE}/api/ingest-pending`, { method: "POST", credentials: 'include' });
+            const resp = await fetch(`${API_BASE}/api/ingest-pending`, { method: "POST" });
             const result = await resp.json();
 
             btn.disabled = false;
@@ -1162,7 +1162,7 @@ document.addEventListener("DOMContentLoaded", () => {
         btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i> Deleting all papers...`;
 
         try {
-            const resp = await fetch(`${API_BASE}/api/papers`, { method: "DELETE", credentials: 'include' });
+            const resp = await fetch(`${API_BASE}/api/papers`, { method: "DELETE" });
             const result = await resp.json();
 
             btn.disabled = false;
@@ -1764,7 +1764,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
             // Poll the job status endpoint every 1.5 seconds
             citationPollInterval = setInterval(async () => {
-                const statusResp = await fetch(`${API_BASE}/api/analyze-citations/${activeCitationRunId}`, { credentials: 'include' });
+                const statusResp = await fetch(`${API_BASE}/api/analyze-citations/${activeCitationRunId}`);
                 const status = await statusResp.json();
 
                 // Update the UI progress display

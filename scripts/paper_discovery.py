@@ -549,6 +549,44 @@ class PaperDiscoveryService:
         logger.info(f"No open-access PDF found on Unpaywall for DOI: {doi}")
         return None
 
+    def fetch_all_open_access_pdf_urls(self, doi: str) -> list[str]:
+        """
+        Query the Unpaywall API to find all legal, open-access PDF URLs for a DOI.
+
+        Args:
+            doi: The paper's DOI string.
+
+        Returns:
+            List of PDF URL strings.
+        """
+        if not doi:
+            logger.warning("No DOI provided — skipping Unpaywall lookup.")
+            return []
+
+        # Strip any URL prefix
+        doi = doi.replace("https://doi.org/", "").strip()
+
+        url = f"{self.UNPAYWALL_BASE}/{quote(doi)}"
+        params = {"email": settings.UNPAYWALL_EMAIL}
+
+        logger.info(f"Querying Unpaywall for all PDF URLs of DOI: {doi}")
+        data = self._get_request(url, params=params)
+
+        urls = []
+        if data and data.get("is_oa"):
+            # 1. Best OA location URL
+            best_location = data.get("best_oa_location")
+            if best_location and best_location.get("url_for_pdf"):
+                urls.append(best_location["url_for_pdf"])
+
+            # 2. All other OA locations
+            for loc in data.get("oa_locations", []):
+                pdf_url = loc.get("url_for_pdf")
+                if pdf_url and pdf_url not in urls:
+                    urls.append(pdf_url)
+
+        return urls
+
     # ──────────────────────────────────────────────────────────────────────────
     # PUBLIC: Download PDF to papers/ Directory
     # ──────────────────────────────────────────────────────────────────────────
@@ -600,7 +638,7 @@ class PaperDiscoveryService:
                 "User-Agent": user_agent,
                 "Accept": "application/pdf,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.5",
-                "Accept-Encoding": "gzip, deflate, br",
+                "Accept-Encoding": "gzip, deflate",
                 "DNT": "1",
                 "Connection": "keep-alive",
                 "Upgrade-Insecure-Requests": "1",
@@ -833,4 +871,42 @@ class PaperDiscoveryService:
         except Exception as e:
             logger.error(f"OpenAlex lookup failed for '{doi_or_title}': {e}")
         return None
+
+    def fetch_all_openalex_pdf_urls(self, doi: str) -> list[str]:
+        """
+        Query OpenAlex API by DOI and return all available open-access PDF URLs.
+
+        Args:
+            doi: The paper's DOI string.
+
+        Returns:
+            List of PDF URL strings.
+        """
+        if not doi:
+            return []
+        doi = doi.replace("https://doi.org/", "").strip()
+        url = f"https://api.openalex.org/works/doi:{doi}"
+        headers = {
+            "User-Agent": f"AIResearchStack/1.0 (mailto:{settings.UNPAYWALL_EMAIL})"
+        }
+        urls = []
+        try:
+            logger.info(f"Querying OpenAlex for all PDF URLs of DOI: {doi}")
+            resp = requests.get(url, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                work = resp.json()
+                # 1. From open_access.oa_url
+                oa_url = (work.get("open_access") or {}).get("oa_url")
+                if oa_url and oa_url.endswith(".pdf"):
+                    urls.append(oa_url)
+                
+                # 2. From locations list
+                for loc in work.get("locations", []):
+                    pdf_url = loc.get("pdf_url")
+                    if pdf_url and pdf_url not in urls:
+                        urls.append(pdf_url)
+        except Exception as e:
+            logger.error(f"OpenAlex lookup for all URLs failed: {e}")
+        return urls
+
 

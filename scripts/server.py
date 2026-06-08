@@ -141,6 +141,10 @@ app.add_middleware(
 # ── HTTP Basic Authentication Middleware ──────────────────────────────────────
 @app.middleware("http")
 async def basic_auth_middleware(request: Request, call_next):
+    # Bypass OPTIONS preflight requests
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
     # Bypass public routes
     if request.url.path in ["/api/health", "/sw.js", "/service-worker.js"]:
         return await call_next(request)
@@ -149,7 +153,7 @@ async def basic_auth_middleware(request: Request, call_next):
     if not auth_header or not auth_header.startswith("Basic "):
         return Response(
             status_code=401,
-            headers={"WWW-Authenticate": "Basic realm='AI Research Stack'"},
+            headers={"WWW-Authenticate": 'Basic realm="AI Research Stack"'},
             content="Unauthorized Access"
         )
 
@@ -165,7 +169,7 @@ async def basic_auth_middleware(request: Request, call_next):
 
     return Response(
         status_code=401,
-        headers={"WWW-Authenticate": "Basic realm='AI Research Stack'"},
+        headers={"WWW-Authenticate": 'Basic realm="AI Research Stack"'},
         content="Unauthorized Access"
     )
 
@@ -597,38 +601,43 @@ def download_paper(request: DownloadRequest, background_tasks: BackgroundTasks):
         doi = enriched_doi
         abstract = enriched_abstract
 
-        pdf_url = None
+        pdf_urls = []
         
         # Tier 1: Unpaywall (existing)
         if doi:
-            pdf_url = discover_service.fetch_open_access_pdf_url(doi)
-            if pdf_url:
-                logger.info(f"Found PDF via Unpaywall: {pdf_url}")
+            unpaywall_urls = discover_service.fetch_all_open_access_pdf_urls(doi)
+            for url in unpaywall_urls:
+                if url not in pdf_urls:
+                    pdf_urls.append(url)
 
         # Tier 2 (NEW): OpenAlex open access URL
-        if not pdf_url and doi:
-            oa_meta = discover_service.fetch_openalex_metadata(doi)
-            if oa_meta:
-                oa_url = (oa_meta.get("open_access") or {}).get("oa_url")
-                if oa_url and oa_url.endswith(".pdf"):
-                    pdf_url = oa_url
-                    logger.info(f"Found PDF via OpenAlex: {pdf_url}")
+        if doi:
+            openalex_urls = discover_service.fetch_all_openalex_pdf_urls(doi)
+            for url in openalex_urls:
+                if url not in pdf_urls:
+                    pdf_urls.append(url)
 
         # Tier 3 (NEW): Semantic Scholar openAccessPdf field
-        if not pdf_url and request.externalIds:
+        if request.externalIds:
             s2_pdf = (request.externalIds.get("openAccessPdf") or {}).get("url")
-            if s2_pdf:
-                pdf_url = s2_pdf
-                logger.info(f"Found PDF via Semantic Scholar openAccessPdf: {pdf_url}")
+            if s2_pdf and s2_pdf not in pdf_urls:
+                pdf_urls.append(s2_pdf)
 
         # Tier 4: arXiv direct (existing)
-        if not pdf_url and arxiv_id:
-            pdf_url = f"https://arxiv.org/pdf/{arxiv_id}"
-            logger.info(f"Using arXiv direct PDF: {pdf_url}")
+        if arxiv_id:
+            arxiv_url = f"https://arxiv.org/pdf/{arxiv_id}"
+            if arxiv_url not in pdf_urls:
+                pdf_urls.append(arxiv_url)
 
-        if pdf_url:
+        pdf_path = None
+        if pdf_urls:
             safe_name = sanitize_filename(title)
-            pdf_path  = discover_service.download_pdf(pdf_url, safe_name)
+            for url in pdf_urls:
+                logger.info(f"Attempting download from candidate URL: {url}")
+                pdf_path = discover_service.download_pdf(url, safe_name)
+                if pdf_path and pdf_path.exists():
+                    logger.info(f"Successfully downloaded PDF from: {url}")
+                    break
 
             if pdf_path and pdf_path.exists():
                 try:
@@ -1663,15 +1672,31 @@ def _recover_abstract_only_papers():
                 doi = doi.replace("https://doi.org/", "").strip()
                 
                 logger.info(f"Attempting PDF recovery for '{title}' (DOI: {doi})")
-                pdf_url = discover_service.fetch_open_access_pdf_url(doi)
+                pdf_urls = []
                 
-                if pdf_url:
-                    logger.info(f"Found OA PDF for '{title}': {pdf_url}")
-                    
+                # Fetch Unpaywall URLs
+                unpaywall_urls = discover_service.fetch_all_open_access_pdf_urls(doi)
+                for url in unpaywall_urls:
+                    if url not in pdf_urls:
+                        pdf_urls.append(url)
+                
+                # Fetch OpenAlex URLs
+                openalex_urls = discover_service.fetch_all_openalex_pdf_urls(doi)
+                for url in openalex_urls:
+                    if url not in pdf_urls:
+                        pdf_urls.append(url)
+
+                pdf_path = None
+                if pdf_urls:
                     # Download PDF
                     safe_name = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).strip()
                     safe_name = safe_name[:50]
-                    pdf_path = discover_service.download_pdf(pdf_url, f"{safe_name}.pdf")
+                    for url in pdf_urls:
+                        logger.info(f"Attempting download from candidate URL: {url}")
+                        pdf_path = discover_service.download_pdf(url, f"{safe_name}.pdf")
+                        if pdf_path and pdf_path.exists():
+                            logger.info(f"Successfully downloaded PDF from: {url}")
+                            break
                     
                     if pdf_path and pdf_path.exists():
                         # Extract and chunk
@@ -1679,7 +1704,10 @@ def _recover_abstract_only_papers():
                         if len(full_text) >= 8000:
                             chunks = pdf_service.chunk_text(full_text, char_to_page, chunk_size=2000, chunk_overlap=400)
                             
-                            # Ingest full-text FIRST (so paper is always queryable)
+                            # First delete old abstract-only chunks
+                            vector_store.collection.delete(where={"title": title})
+                            
+                            # Ingest full-text chunks (so paper is always queryable)
                             authors = meta.get("authors", "Unknown Authors")
                             year = meta.get("year")
                             venue = meta.get("venue")
@@ -1692,9 +1720,6 @@ def _recover_abstract_only_papers():
                                 year=year,
                                 venue=venue,
                             )
-                            
-                            # Then delete old abstract-only chunks
-                            vector_store.collection.delete(where={"title": title})
                             
                             logger.info(f"Successfully recovered and re-ingested '{title}' with {len(chunks)} chunks")
                             recovered_count += 1
