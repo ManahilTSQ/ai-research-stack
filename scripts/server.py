@@ -19,7 +19,6 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks, Response, Request, 
 from fastapi.websockets import WebSocket
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel
@@ -122,16 +121,31 @@ class CSPMiddleware(BaseHTTPMiddleware):
 app.add_middleware(CSPMiddleware)
 
 # ── CORS + Trusted Host Middleware ────────────────────────────────────────────
-# Required for Cloudflare Tunnel access. Cloudflare sends WebSocket probes and
-# requests with external hostnames; without these middlewares the app returns
-# 403 Forbidden and Cloudflare reports "Unable to connect to origin".
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Dynamic CORS middleware that echoes the request Origin back.
+# Using allow_origins=["*"] with allow_credentials=True violates the CORS spec
+# and browsers reject credentialed responses. By reflecting the actual Origin
+# we satisfy the spec while still allowing any Cloudflare tunnel hostname.
+class DynamicCORSMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        origin = request.headers.get("origin", "")
+        if request.method == "OPTIONS":
+            # Preflight — return immediately with the correct CORS headers
+            response = Response(status_code=204)
+            if origin:
+                response.headers["Access-Control-Allow-Origin"] = origin
+                response.headers["Access-Control-Allow-Credentials"] = "true"
+                response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+                response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, Accept"
+                response.headers["Vary"] = "Origin"
+            return response
+        response = await call_next(request)
+        if origin:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers["Vary"] = "Origin"
+        return response
+
+app.add_middleware(DynamicCORSMiddleware)
 
 app.add_middleware(
     TrustedHostMiddleware,

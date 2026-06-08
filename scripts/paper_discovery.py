@@ -14,6 +14,7 @@ so the throttle is respected across multiple CLI invocations in the same session
 """
 
 import time
+import re
 import logging
 import requests
 from urllib.parse import quote

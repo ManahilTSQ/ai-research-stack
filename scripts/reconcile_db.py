@@ -17,6 +17,7 @@ import sys
 import argparse
 import logging
 from pathlib import Path
+import re
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")

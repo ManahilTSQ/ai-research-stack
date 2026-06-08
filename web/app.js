@@ -6,6 +6,17 @@ document.addEventListener("DOMContentLoaded", () => {
     // API Endpoint Base — empty string means all /api/* calls go to the same origin
     const API_BASE = "";
 
+    /**
+     * Central fetch wrapper for all /api/* calls.
+     * Always includes `credentials: 'include'` so the browser sends the Basic Auth
+     * Authorization header even when the app is accessed through a Cloudflare Tunnel
+     * (cross-origin). Without this flag, the browser silently omits credentials on
+     * cross-origin requests and every API call returns 401 Unauthorized.
+     */
+    function apiFetch(url, options = {}) {
+        return fetch(url, { credentials: "include", ...options });
+    }
+
     // App State — track running citation job and current source chunks
     let activeCitationRunId = null;
     let citationPollInterval = null;
@@ -116,7 +127,7 @@ document.addEventListener("DOMContentLoaded", () => {
      */
     async function checkHealth() {
         try {
-            const resp = await fetch(`${API_BASE}/api/health`);
+            const resp = await apiFetch(`${API_BASE}/api/health`);
             const data = await resp.json();
 
             // Update the Ollama and ChromaDB status dot + label in the header
@@ -286,7 +297,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         try {
             const exactAuthor = document.getElementById("search-exact-author")?.checked ? "true" : "false";
-            const resp = await fetch(
+            const resp = await apiFetch(
                 `${API_BASE}/api/search?q=${encodeURIComponent(query)}&limit=${limit}&offset=0&exact_author=${exactAuthor}`
             );
             const papers = await resp.json();
@@ -339,7 +350,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         try {
             const exactAuthor = document.getElementById("search-exact-author")?.checked ? "true" : "false";
-            const resp = await fetch(
+            const resp = await apiFetch(
                 `${API_BASE}/api/search?q=${encodeURIComponent(currentSearchQuery)}&limit=${currentSearchLimit}&offset=${currentSearchOffset}&exact_author=${exactAuthor}`
             );
             const papers = await resp.json();
@@ -527,7 +538,7 @@ document.addEventListener("DOMContentLoaded", () => {
         button.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i> ${paper.has_pdf ? "Downloading PDF..." : "Ingesting abstract..."}`;
 
         try {
-            const resp = await fetch(`${API_BASE}/api/download`, {
+            const resp = await apiFetch(`${API_BASE}/api/download`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 credentials: 'include',
@@ -625,7 +636,7 @@ document.addEventListener("DOMContentLoaded", () => {
             }
 
             try {
-                const resp = await fetch(`${API_BASE}/api/download`, {
+                const resp = await apiFetch(`${API_BASE}/api/download`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     credentials: 'include',
@@ -705,7 +716,7 @@ document.addEventListener("DOMContentLoaded", () => {
         btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i>`;
 
         try {
-            const resp = await fetch(`${API_BASE}/api/papers/download-zip`);
+            const resp = await apiFetch(`${API_BASE}/api/papers/download-zip`);
             
             if (!resp.ok) {
                 const errorData = await resp.json().catch(() => ({ detail: "Unknown error" }));
@@ -746,7 +757,7 @@ document.addEventListener("DOMContentLoaded", () => {
      */
     async function fetchLocalPDFs() {
         try {
-            const resp = await fetch(`${API_BASE}/api/pdfs`);
+            const resp = await apiFetch(`${API_BASE}/api/pdfs`);
             const files = await resp.json();
 
             // Update the global ingested-papers cache used for duplicate detection in Paper Discovery
@@ -873,7 +884,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     btn.disabled = true;
                     btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i>`;
                     // Await the delete to fully complete before refreshing stats
-                    await fetch(`${API_BASE}/api/papers/${filename}`, { method: "DELETE" });
+                    await apiFetch(`${API_BASE}/api/papers/${filename}`, { method: "DELETE" });
                 } catch (delErr) {
                     // Continue even on network error
                 } finally {
@@ -1118,7 +1129,7 @@ document.addEventListener("DOMContentLoaded", () => {
         btn.innerHTML = `<i class="fa-solid fa-arrows-spin fa-spin"></i> Scanning folder...`;
 
         try {
-            const resp = await fetch(`${API_BASE}/api/ingest-pending`, { method: "POST" });
+            const resp = await apiFetch(`${API_BASE}/api/ingest-pending`, { method: "POST" });
             const result = await resp.json();
 
             btn.disabled = false;
@@ -1162,7 +1173,7 @@ document.addEventListener("DOMContentLoaded", () => {
         btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i> Deleting all papers...`;
 
         try {
-            const resp = await fetch(`${API_BASE}/api/papers`, { method: "DELETE" });
+            const resp = await apiFetch(`${API_BASE}/api/papers`, { method: "DELETE" });
             const result = await resp.json();
 
             btn.disabled = false;
@@ -1246,7 +1257,7 @@ document.addEventListener("DOMContentLoaded", () => {
             files.forEach(file => formData.append("files", file));
             if (subfolder) formData.append("subfolder", subfolder);
 
-            const resp = await fetch(`${API_BASE}/api/upload`, {
+            const resp = await apiFetch(`${API_BASE}/api/upload`, {
                 method: "POST",
                 credentials: 'include',
                 body: formData
@@ -1352,7 +1363,7 @@ document.addEventListener("DOMContentLoaded", () => {
             }
             if (templateVars) payload.template_vars = templateVars;
 
-            const resp = await fetch(`${API_BASE}/api/query-rag`, {
+            const resp = await apiFetch(`${API_BASE}/api/query-rag`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 credentials: 'include',
@@ -1739,7 +1750,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         try {
             // Start the citation analysis job on the server
-            const resp = await fetch(`${API_BASE}/api/analyze-citations`, {
+            const resp = await apiFetch(`${API_BASE}/api/analyze-citations`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 credentials: 'include',
@@ -1764,7 +1775,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
             // Poll the job status endpoint every 1.5 seconds
             citationPollInterval = setInterval(async () => {
-                const statusResp = await fetch(`${API_BASE}/api/analyze-citations/${activeCitationRunId}`);
+                const statusResp = await apiFetch(`${API_BASE}/api/analyze-citations/${activeCitationRunId}`);
                 const status = await statusResp.json();
 
                 // Update the UI progress display
@@ -1843,7 +1854,7 @@ document.addEventListener("DOMContentLoaded", () => {
     async function fetchReports() {
         const grid = document.getElementById("reports-grid-list");
         try {
-            const resp = await fetch(`${API_BASE}/api/reports?ts=${Date.now()}`);
+            const resp = await apiFetch(`${API_BASE}/api/reports?ts=${Date.now()}`);
             const reports = await resp.json();
 
             if (reports.length === 0) {
@@ -1885,7 +1896,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     btn.disabled = true;
                     btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i>`;
                     try {
-                        const response = await fetch(`${API_BASE}/api/reports/${encodeURIComponent(filename)}`, {
+                        const response = await apiFetch(`${API_BASE}/api/reports/${encodeURIComponent(filename)}`, {
                             method: "DELETE",
                             credentials: 'include',
                         });
@@ -1923,7 +1934,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const select = document.getElementById("rag-template-select");
 
         try {
-            const resp = await fetch(`${API_BASE}/api/prompts`);
+            const resp = await apiFetch(`${API_BASE}/api/prompts`);
             const prompts = await resp.json();
 
             if (prompts.length === 0) {
@@ -1992,7 +2003,7 @@ document.addEventListener("DOMContentLoaded", () => {
      */
     async function loadPromptIntoEditor(name) {
         try {
-            const resp = await fetch(`${API_BASE}/api/prompts/${encodeURIComponent(name)}`);
+            const resp = await apiFetch(`${API_BASE}/api/prompts/${encodeURIComponent(name)}`);
             if (!resp.ok) throw new Error("Could not load template");
             const data = await resp.json();
             editingPromptName = data.name;
@@ -2035,7 +2046,7 @@ document.addEventListener("DOMContentLoaded", () => {
         };
 
         try {
-            const resp = await fetch(`${API_BASE}/api/prompts`, {
+            const resp = await apiFetch(`${API_BASE}/api/prompts`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 credentials: 'include',
@@ -2062,7 +2073,7 @@ document.addEventListener("DOMContentLoaded", () => {
     async function deletePromptTemplate(name) {
         if (!confirm(`Delete prompt template "${name}"? This cannot be undone.`)) return;
         try {
-            const resp = await fetch(`${API_BASE}/api/prompts/${encodeURIComponent(name)}`, {
+            const resp = await apiFetch(`${API_BASE}/api/prompts/${encodeURIComponent(name)}`, {
                 method: "DELETE",
                 credentials: 'include',
             });
