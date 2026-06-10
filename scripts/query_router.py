@@ -49,6 +49,63 @@ class QueryRouter:
         r"\bshow\s+(?:all\s+)?papers?\s+with\s+doi\b",
         r"\bshow\s+doi\s+information\b",
         r"\benumerate\s+papers?\b",
+        # Citation count queries
+        r"\bhow\s+many\s+citations?\b",
+        r"\bcitation\s+count\b",
+        r"\bnumber\s+of\s+citations?\b",
+        r"\bmost\s+cited\s+(?:paper|article)\b",
+        r"\bleast\s+cited\s+(?:paper|article)\b",
+        r"\btop\s+\d+\s+most\s+cited\b",
+        r"\bpapers?\s+with\s+(?:more|less)\s+than\s+\d+\s+citations?\b",
+        r"\bhighly\s+cited\s+papers?\b",
+        # Abstract queries
+        r"\bwhat\s+is\s+the\s+abstract\b",
+        r"\bshow\s+abstract\b",
+        r"\babstract\s+of\s+(?:the\s+)?(?:paper|article)\b",
+        # Title-based queries
+        r"\bpapers?\s+with\s+title\s+containing\b",
+        r"\btitle\s+contains\b",
+        r"\bfind\s+paper\s+with\s+title\b",
+        # External ID queries
+        r"\barxiv\s+id\b",
+        r"\barxiv\s+identifier\b",
+        r"\bcorpus\s+id\b",
+        r"\bcorpus\s+identifier\b",
+        r"\bfind\s+by\s+arxiv\b",
+        r"\bfind\s+by\s+corpus\b",
+        # Missing metadata queries
+        r"\bpapers?\s+without\s+doi\b",
+        r"\bpapers?\s+without\s+venue\b",
+        r"\bpapers?\s+without\s+authors?\b",
+        r"\bpapers?\s+missing\s+metadata\b",
+        # Comparison queries
+        r"\bpapers?\s+(?:newer|older)\s+than\s+\d{4}\b",
+        r"\bpapers?\s+(?:after|before)\s+\d{4}\b",
+        # Sorting/ordering queries
+        r"\bpapers?\s+sorted\s+by\s+year\b",
+        r"\bpapers?\s+sorted\s+by\s+title\b",
+        r"\bpapers?\s+sorted\s+by\s+citations?\b",
+        r"\bsort\s+by\s+year\b",
+        r"\bsort\s+by\s+title\b",
+        r"\bsort\s+by\s+citations?\b",
+        # Statistics queries
+        r"\baverage\s+citation\s+count\b",
+        r"\bpapers?\s+per\s+year\b",
+        r"\bpapers?\s+per\s+venue\b",
+        r"\bmost\s+common\s+venue\b",
+        r"\bmost\s+prolific\s+author\b",
+        r"\btotal\s+citations?\b",
+        r"\bstatistics?\s+for\s+papers?\b",
+        # Co-author queries
+        r"\bco-?authored\s+by\s+",
+        r"\bco-?authors?\s+of\s+",
+        r"\bwho\s+co-?authored\s+",
+        r"\bwho\s+co-?wrote\s+",
+        r"\bpapers?\s+co-?authored\s+by\s+",
+        r"\bjointly\s+authored\s+by\s+",
+        r"\bjointly\s+written\s+by\s+",
+        r"\bcollaboration\s+with\s+",
+        r"\bcollaborated\s+with\s+",
     ]
     
     # Patterns for local content queries

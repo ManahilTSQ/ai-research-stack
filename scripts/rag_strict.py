@@ -785,6 +785,25 @@ def is_catalog_metadata_query(query: str) -> bool:
     ]
     if any(re.search(pat, q) for pat in author_patterns):
         return True
+
+    # Co-author query patterns - match queries about co-authored papers
+    coauthor_patterns = [
+        r"\bco-?authored\s+by\s+",
+        r"\bco-?authors?\s+of\s+",
+        r"\bwho\s+co-?authored\s+",
+        r"\bwho\s+co-?wrote\s+",
+        r"\bpapers?\s+co-?authored\s+by\s+",
+        r"\barticles?\s+co-?authored\s+by\s+",
+        r"\bjointly\s+authored\s+by\s+",
+        r"\bjointly\s+written\s+by\s+",
+        r"\btogether\s+with\s+",
+        r"\bcollaboration\s+with\s+",
+        r"\bcollaborated\s+with\s+",
+        r"\bco-?writer\s+",
+        r"\bco-?writers?\s+of\s+",
+    ]
+    if any(re.search(pat, q) for pat in coauthor_patterns):
+        return True
     # Match "list all authors" / "show all authors" but NOT:
     # - "list articles with Jhanjhi as author or co-author" (role context)
     # - "show full metadata including authors" (authors is a display field, not subject)
@@ -811,6 +830,167 @@ def is_catalog_metadata_query(query: str) -> bool:
         return True
     if _YEAR_SINGLE_RE.search(q) and re.search(r"\b(papers?|articles?|publications?)\b", q):
         return True
+
+    # ── Citation count queries ───────────────────────────────────────────────
+    citation_patterns = [
+        r"\bhow\s+many\s+citations?\b",
+        r"\bcitation\s+count\b",
+        r"\bnumber\s+of\s+citations?\b",
+        r"\bcited\s+(?:by\s+)?\d+\s+times?\b",
+        r"\bhas\s+\d+\s+citations?\b",
+        r"\bmost\s+cited\s+(?:paper|article)\b",
+        r"\bleast\s+cited\s+(?:paper|article)\b",
+        r"\btop\s+\d+\s+most\s+cited\b",
+        r"\bpapers?\s+with\s+(?:more|greater|higher)\s+than\s+\d+\s+citations?\b",
+        r"\bpapers?\s+with\s+(?:less|fewer|lower)\s+than\s+\d+\s+citations?\b",
+        r"\bhighly\s+cited\s+papers?\b",
+        r"\bwell\s+cited\s+papers?\b",
+        r"\bpapers?\s+sorted\s+by\s+citations?\b",
+        r"\bsort\s+by\s+citations?\b",
+        r"\border\s+by\s+citation\s+count\b",
+    ]
+    if any(re.search(pat, q) for pat in citation_patterns):
+        return True
+
+    # ── Abstract queries ───────────────────────────────────────────────────────
+    abstract_patterns = [
+        r"\bwhat\s+is\s+the\s+abstract\b",
+        r"\bshow\s+abstract\b",
+        r"\bdisplay\s+abstract\b",
+        r"\babstract\s+of\s+(?:the\s+)?(?:paper|article)\b",
+        r"\bget\s+abstract\b",
+        r"\babstract\s+for\b",
+        r"\bpapers?\s+with\s+abstract\s+containing\b",
+        r"\babstract\s+contains\b",
+        r"\babstract\s+mentions\b",
+    ]
+    if any(re.search(pat, q) for pat in abstract_patterns):
+        return True
+
+    # ── Title-based queries ───────────────────────────────────────────────────
+    title_patterns = [
+        r"\bpapers?\s+with\s+title\s+containing\b",
+        r"\btitle\s+contains\b",
+        r"\btitle\s+includes\b",
+        r"\bfind\s+paper\s+with\s+title\b",
+        r"\bpaper\s+titled\b",
+        r"\barticle\s+titled\b",
+        r"\btitled\s+[\"']",
+        r"\btitle\s+starting\s+with\b",
+        r"\btitle\s+beginning\s+with\b",
+        r"\btitle\s+ending\s+with\b",
+        r"\bexact\s+title\b",
+        r"\bmatch\s+title\b",
+    ]
+    if any(re.search(pat, q) for pat in title_patterns):
+        return True
+
+    # ── External ID queries ───────────────────────────────────────────────────
+    external_id_patterns = [
+        r"\barxiv\s+id\b",
+        r"\barxiv\s+identifier\b",
+        r"\bcorpus\s+id\b",
+        r"\bcorpus\s+identifier\b",
+        r"\bsemantic\s+scholar\s+id\b",
+        r"\bpaper\s+id\b",
+        r"\bfind\s+by\s+arxiv\b",
+        r"\bfind\s+by\s+corpus\b",
+        r"\barxiv[:\s]+\d+\.\d+",
+        r"\bcorpus[:\s]+\d+",
+    ]
+    if any(re.search(pat, q) for pat in external_id_patterns):
+        return True
+
+    # ── Combination filter queries ─────────────────────────────────────────────
+    if re.search(r"\bpapers?\s+by\s+.+?\s+(?:in|from|during)\s+\d{4}\b", q):
+        return True
+    if re.search(r"\bpapers?\s+in\s+.+?\s+(?:after|before|since)\s+\d{4}\b", q):
+        return True
+    if re.search(r"\bpapers?\s+by\s+.+?\s+in\s+.+?\b", q):
+        return True
+    if re.search(r"\bpapers?\s+(?:from|between)\s+\d{4}\s+(?:to|and)\s+\d{4}\s+by\b", q):
+        return True
+    if re.search(r"\bpapers?\s+with\s+(?:more|less)\s+than\s+\d+\s+citations?\s+in\s+\d{4}\b", q):
+        return True
+
+    # ── Missing metadata queries ─────────────────────────────────────────────
+    missing_metadata_patterns = [
+        r"\bpapers?\s+without\s+doi\b",
+        r"\bpapers?\s+missing\s+doi\b",
+        r"\bpapers?\s+without\s+venue\b",
+        r"\bpapers?\s+missing\s+venue\b",
+        r"\bpapers?\s+without\s+authors?\b",
+        r"\bpapers?\s+missing\s+authors?\b",
+        r"\bpapers?\s+without\s+year\b",
+        r"\bpapers?\s+missing\s+year\b",
+        r"\bpapers?\s+without\s+abstract\b",
+        r"\bpapers?\s+with\s+missing\s+metadata\b",
+        r"\bincomplete\s+metadata\b",
+        r"\bpapers?\s+with\s+no\s+doi\b",
+        r"\bpapers?\s+with\s+no\s+venue\b",
+    ]
+    if any(re.search(pat, q) for pat in missing_metadata_patterns):
+        return True
+
+    # ── Comparison queries ───────────────────────────────────────────────────
+    comparison_patterns = [
+        r"\bpapers?\s+(?:newer|more\s+recent)\s+than\s+\d{4}\b",
+        r"\bpapers?\s+(?:older|less\s+recent)\s+than\s+\d{4}\b",
+        r"\bpapers?\s+after\s+\d{4}\b",
+        r"\bpapers?\s+before\s+\d{4}\b",
+        r"\bpapers?\s+with\s+more\s+citations?\s+than\b",
+        r"\bpapers?\s+with\s+fewer\s+citations?\s+than\b",
+        r"\bmore\s+cited\s+than\b",
+        r"\bless\s+cited\s+than\b",
+    ]
+    if any(re.search(pat, q) for pat in comparison_patterns):
+        return True
+
+    # ── Sorting/ordering queries ───────────────────────────────────────────────
+    sorting_patterns = [
+        r"\bpapers?\s+sorted\s+by\s+year\b",
+        r"\bpapers?\s+ordered\s+by\s+year\b",
+        r"\bsort\s+by\s+year\b",
+        r"\border\s+by\s+year\b",
+        r"\bpapers?\s+sorted\s+alphabetically\b",
+        r"\bpapers?\s+sorted\s+by\s+title\b",
+        r"\bsort\s+by\s+title\b",
+        r"\border\s+by\s+title\b",
+        r"\bpapers?\s+sorted\s+by\s+citations?\b",
+        r"\bpapers?\s+ordered\s+by\s+citations?\b",
+        r"\bsort\s+by\s+citations?\b",
+        r"\bnewest\s+first\b",
+        r"\boldest\s+first\b",
+        r"\bmost\s+recent\s+first\b",
+        r"\bleast\s+recent\s+first\b",
+        r"\bdescending\s+order\b",
+        r"\bascending\s+order\b",
+    ]
+    if any(re.search(pat, q) for pat in sorting_patterns):
+        return True
+
+    # ── Paper statistics queries ───────────────────────────────────────────────
+    statistics_patterns = [
+        r"\baverage\s+citation\s+count\b",
+        r"\bmean\s+citation\s+count\b",
+        r"\bpapers?\s+per\s+year\b",
+        r"\bpapers?\s+by\s+year\b",
+        r"\bpapers?\s+per\s+venue\b",
+        r"\bpapers?\s+by\s+venue\b",
+        r"\bmost\s+common\s+venue\b",
+        r"\bmost\s+frequent\s+venue\b",
+        r"\bmost\s+prolific\s+author\b",
+        r"\bmost\s+productive\s+author\b",
+        r"\bauthor\s+with\s+most\s+papers\b",
+        r"\btotal\s+citations?\b",
+        r"\bsum\s+of\s+citations?\b",
+        r"\bstatistics?\s+for\s+papers?\b",
+        r"\bpaper\s+statistics?\b",
+        r"\boverview\s+of\s+papers?\b",
+    ]
+    if any(re.search(pat, q) for pat in statistics_patterns):
+        return True
+
     return False
 
 
@@ -896,7 +1076,7 @@ def answer_individual_paper_metadata_query(query: str, papers_metadata: dict) ->
     
     # 1. Identify target field (or "all" for multi-field requests)
     target_field = None
-    _META_FIELD_COUNT = sum(1 for f in ("author", "authors", "venue", "year", "doi") if f in q)
+    _META_FIELD_COUNT = sum(1 for f in ("author", "authors", "venue", "year", "doi", "citation", "abstract", "arxiv", "corpus") if f in q)
     if (any(pat in q for pat in ["who wrote", "who authored", "who are the authors", "who is the author", "list the authors of", "show the authors of", "name the authors of", "what are the authors of", "what is the authors of"])
         or (("author" in q or "authors" in q) and any(pat in q for pat in ["what is the name of the", "what are the names of the", "names of the author", "name of the author"]))):
         target_field = "authors"
@@ -906,6 +1086,16 @@ def answer_individual_paper_metadata_query(query: str, papers_metadata: dict) ->
         target_field = "venue"
     elif "doi" in q:
         target_field = "doi"
+    elif any(pat in q for pat in ["how many citations", "citation count", "number of citations", "cited by", "has citations", "most cited", "least cited", "highly cited", "well cited"]):
+        target_field = "citationCount"
+    elif any(pat in q for pat in ["what is the abstract", "show abstract", "display abstract", "abstract of", "get abstract", "abstract for"]):
+        target_field = "abstract"
+    elif any(pat in q for pat in ["arxiv id", "arxiv identifier", "find by arxiv"]):
+        target_field = "arxivId"
+    elif any(pat in q for pat in ["corpus id", "corpus identifier", "find by corpus"]):
+        target_field = "corpusId"
+    elif any(pat in q for pat in ["co-authored by", "co-authors of", "who co-authored", "who co-wrote", "jointly authored", "jointly written", "together with", "collaboration with", "collaborated with"]):
+        target_field = "coauthors"
 
     # Multi-field request: "What are the authors, venue, and year of X?"
     # When 2+ metadata fields are requested together, return a combined answer.
@@ -981,6 +1171,16 @@ def answer_individual_paper_metadata_query(query: str, papers_metadata: dict) ->
                 answers.append(f"The paper \"{title}\" was published in {val}.")
             elif target_field == "doi":
                 answers.append(f"The DOI of the paper \"{title}\" is {val}.")
+            elif target_field == "citationCount":
+                answers.append(f"The paper \"{title}\" has been cited {val} times.")
+            elif target_field == "abstract":
+                answers.append(f"**Abstract of \"{title}\":**\n\n{val}")
+            elif target_field == "arxivId":
+                answers.append(f"The arXiv ID of the paper \"{title}\" is: {val}.")
+            elif target_field == "corpusId":
+                answers.append(f"The Corpus ID of the paper \"{title}\" is: {val}.")
+            elif target_field == "coauthors":
+                answers.append(f"The co-author(s) of the paper \"{title}\" are: {val}.")
 
     if not answers:
         return None
